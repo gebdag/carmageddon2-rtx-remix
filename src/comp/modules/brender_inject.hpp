@@ -133,9 +133,25 @@ namespace comp
 		std::vector<queued_model> m_queue;
 		std::unordered_map<game::br_model*, model_geometry> m_geometry;
 
+		// One placement of a model that has never been seen to move. The transform is baked
+		// into the merged vertices, so scenery placed anywhere in the level joins the static
+		// batches rather than costing a draw of its own.
+		struct static_instance
+		{
+			game::br_model* model;
+			game::br_material* material;
+			game::br_matrix34 world;
+		};
+
 		std::vector<static_batch> m_static_batches;
-		std::unordered_map<game::br_model*, game::br_material*> m_static_models;
-		size_t m_static_models_merged = 0;
+		std::unordered_map<uint64_t, static_instance> m_static_models;
+
+		// First placement seen for each model, and the models that have since appeared at a
+		// different one. A model that moves can never be baked -- it would leave a ghost at
+		// its original position.
+		std::unordered_map<game::br_model*, game::br_matrix34> m_placements;
+		std::unordered_set<game::br_model*> m_moving_models;
+		bool m_static_dirty = false;
 		uint32_t m_static_rebuilt_scene = 0;
 		uint32_t m_scene_models = 0;
 

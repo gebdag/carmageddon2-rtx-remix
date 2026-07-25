@@ -96,20 +96,37 @@ namespace comp
 			return true;
 		}
 
-		bool is_identity(const game::br_matrix34& m)
+		bool same_placement(const game::br_matrix34& a, const game::br_matrix34& b)
 		{
-			constexpr float eps = 1e-4f;
+			// Loose on translation because the game's own maths jitters in the low bits;
+			// anything that actually moves shifts far more than this.
+			constexpr float eps = 1e-3f;
 			for (int row = 0; row < 4; ++row)
 			{
 				for (int col = 0; col < 3; ++col)
 				{
-					const float expected = (row == col) ? 1.0f : 0.0f;
-					if (fabsf(m.m[row][col] - expected) > eps) {
+					if (fabsf(a.m[row][col] - b.m[row][col]) > eps) {
 						return false;
 					}
 				}
 			}
 			return true;
+		}
+
+		uint64_t placement_key(const game::br_model* model, const game::br_matrix34& world)
+		{
+			uint64_t hash = 1469598103934665603ull;
+			const auto mix = [&hash](const void* data, const size_t bytes)
+			{
+				const auto p = static_cast<const uint8_t*>(data);
+				for (size_t i = 0; i < bytes; ++i) {
+					hash = (hash ^ p[i]) * 1099511628211ull;
+				}
+			};
+
+			mix(&model, sizeof(model));
+			mix(&world, sizeof(world));
+			return hash;
 		}
 
 		// Asks the live renderer for its current model_to_view. Mirrors the call
@@ -658,14 +675,29 @@ namespace comp
 		};
 		std::vector<accumulator> batches;
 
-		for (const auto& [model, fallback_material] : m_static_models)
+		for (const auto& [key, instance] : m_static_models)
 		{
 			std::vector<ffp_vertex> vertices;
 			std::vector<geometry_part> parts;
 			std::vector<uint32_t> indices;
 
-			if (!extract_geometry(dev, model, fallback_material, vertices, parts, indices)) {
+			if (!extract_geometry(dev, instance.model, instance.material, vertices, parts, indices)) {
 				continue;
+			}
+
+			// Bake the placement in, since the merged batch is drawn with WORLD = identity.
+			const game::br_matrix34& w = instance.world;
+			for (auto& v : vertices)
+			{
+				const float x = v.x, y = v.y, z = v.z;
+				v.x = x * w.m[0][0] + y * w.m[1][0] + z * w.m[2][0] + w.m[3][0];
+				v.y = x * w.m[0][1] + y * w.m[1][1] + z * w.m[2][1] + w.m[3][1];
+				v.z = x * w.m[0][2] + y * w.m[1][2] + z * w.m[2][2] + w.m[3][2];
+
+				const float nx = v.nx, ny = v.ny, nz = v.nz;
+				v.nx = nx * w.m[0][0] + ny * w.m[1][0] + nz * w.m[2][0];
+				v.ny = nx * w.m[0][1] + ny * w.m[1][1] + nz * w.m[2][1];
+				v.nz = nx * w.m[0][2] + ny * w.m[1][2] + nz * w.m[2][2];
 			}
 
 			for (const auto& part : parts)
@@ -732,7 +764,7 @@ namespace comp
 			m_static_batches.push_back(batch);
 		}
 
-		m_static_models_merged = m_static_models.size();
+		m_static_dirty = false;
 		m_static_rebuilt_scene = m_scenes_submitted;
 
 		uint32_t total_vertices = 0;
@@ -801,13 +833,36 @@ namespace comp
 		game::br_matrix34 model_to_world{};
 		mul34(model_to_view, m_view_inverse, model_to_world);
 
-		// Level geometry is a world-space child with no transform of its own. Those models
-		// go into the merged static batches instead of costing a draw each; anything with a
-		// real transform is a car, wheel or powerup and keeps its own instance.
-		if (is_identity(model_to_world))
+		// Scenery keeps the same placement for the whole race, so it can be baked into the
+		// merged batches whatever its transform. Only things that actually move -- cars,
+		// wheels, spinning powerups -- need an instance of their own.
+		if (!m_moving_models.contains(model))
 		{
-			m_static_models.try_emplace(model, fallback_material);
-			return;
+			const auto [placement, first_sighting] = m_placements.try_emplace(model, model_to_world);
+
+			if (first_sighting || same_placement(placement->second, model_to_world))
+			{
+				if (m_static_models.try_emplace(placement_key(model, model_to_world),
+					static_instance{ model, fallback_material, model_to_world }).second)
+				{
+					m_static_dirty = true;
+				}
+				return;
+			}
+
+			// It moved. Drop every baked copy, or it would leave a ghost behind.
+			m_moving_models.insert(model);
+			for (auto it = m_static_models.begin(); it != m_static_models.end(); )
+			{
+				if (it->second.model == model)
+				{
+					it = m_static_models.erase(it);
+					m_static_dirty = true;
+				}
+				else {
+					++it;
+				}
+			}
 		}
 
 		queued_model queued{};
@@ -934,8 +989,8 @@ namespace comp
 			dev->SetTexture(stage, nullptr);
 		}
 
-		// Only a genuinely larger set is worth the rebuild; see invalidate_geometry.
-		if (m_static_models.size() > m_static_models_merged
+		// Only a real change to the set is worth the rebuild; see invalidate_geometry.
+		if (m_static_dirty
 			&& m_scenes_submitted - m_static_rebuilt_scene >= STATIC_REBUILD_INTERVAL_SCENES)
 		{
 			rebuild_static_batches(dev);
