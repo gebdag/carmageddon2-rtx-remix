@@ -639,6 +639,68 @@ namespace comp
 		return !parts.empty();
 	}
 
+	/*
+	 * Extracts a model once, bakes its placement into the vertices and keeps the result.
+	 *
+	 * Everything the merged batches need is captured here, so a rebuild never touches the
+	 * game's memory again -- models are freed between races and re-reading them would be a
+	 * use-after-free.
+	 */
+	bool brender_inject::bake_static_model(game::br_model* model, game::br_material* fallback_material,
+		const game::br_matrix34& world)
+	{
+		const auto dev = shared::globals::d3d_device;
+		if (!dev) {
+			return false;
+		}
+
+		static_instance instance{};
+		instance.model = model;
+
+		if (!extract_geometry(dev, model, fallback_material, instance.vertices, instance.parts, instance.indices)) {
+			return false;
+		}
+
+		// The merged batches draw with WORLD = identity, so the placement lives in the data.
+		for (auto& v : instance.vertices)
+		{
+			const float x = v.x, y = v.y, z = v.z;
+			v.x = x * world.m[0][0] + y * world.m[1][0] + z * world.m[2][0] + world.m[3][0];
+			v.y = x * world.m[0][1] + y * world.m[1][1] + z * world.m[2][1] + world.m[3][1];
+			v.z = x * world.m[0][2] + y * world.m[1][2] + z * world.m[2][2] + world.m[3][2];
+
+			const float nx = v.nx, ny = v.ny, nz = v.nz;
+			v.nx = nx * world.m[0][0] + ny * world.m[1][0] + nz * world.m[2][0];
+			v.ny = nx * world.m[0][1] + ny * world.m[1][1] + nz * world.m[2][1];
+			v.nz = nx * world.m[0][2] + ny * world.m[1][2] + nz * world.m[2][2];
+		}
+
+		m_static_models.insert_or_assign(placement_key(model, world), std::move(instance));
+		m_static_dirty = true;
+		return true;
+	}
+
+	// A model that turns up somewhere new was never scenery. Its baked copies have to go
+	// immediately, hitch or not: leaving them would show the object in two places at once.
+	void brender_inject::forget_static_model(game::br_model* model)
+	{
+		m_moving_models.insert(model);
+		m_placements.erase(model);
+
+		for (auto it = m_static_models.begin(); it != m_static_models.end(); )
+		{
+			if (it->second.model == model)
+			{
+				it = m_static_models.erase(it);
+				m_static_dirty = true;
+				m_static_urgent = true;
+			}
+			else {
+				++it;
+			}
+		}
+	}
+
 	void brender_inject::release_static_batches()
 	{
 		for (auto& batch : m_static_batches)
@@ -677,30 +739,10 @@ namespace comp
 
 		for (const auto& [key, instance] : m_static_models)
 		{
-			std::vector<ffp_vertex> vertices;
-			std::vector<geometry_part> parts;
-			std::vector<uint32_t> indices;
+			const std::vector<ffp_vertex>& vertices = instance.vertices;
+			const std::vector<uint32_t>& indices = instance.indices;
 
-			if (!extract_geometry(dev, instance.model, instance.material, vertices, parts, indices)) {
-				continue;
-			}
-
-			// Bake the placement in, since the merged batch is drawn with WORLD = identity.
-			const game::br_matrix34& w = instance.world;
-			for (auto& v : vertices)
-			{
-				const float x = v.x, y = v.y, z = v.z;
-				v.x = x * w.m[0][0] + y * w.m[1][0] + z * w.m[2][0] + w.m[3][0];
-				v.y = x * w.m[0][1] + y * w.m[1][1] + z * w.m[2][1] + w.m[3][1];
-				v.z = x * w.m[0][2] + y * w.m[1][2] + z * w.m[2][2] + w.m[3][2];
-
-				const float nx = v.nx, ny = v.ny, nz = v.nz;
-				v.nx = nx * w.m[0][0] + ny * w.m[1][0] + nz * w.m[2][0];
-				v.ny = nx * w.m[0][1] + ny * w.m[1][1] + nz * w.m[2][1];
-				v.nz = nx * w.m[0][2] + ny * w.m[1][2] + nz * w.m[2][2];
-			}
-
-			for (const auto& part : parts)
+			for (const auto& part : instance.parts)
 			{
 				auto it = std::find_if(batches.begin(), batches.end(),
 					[&](const accumulator& a) { return a.texture == part.texture && a.has_alpha == part.has_alpha; });
@@ -765,6 +807,7 @@ namespace comp
 		}
 
 		m_static_dirty = false;
+		m_static_urgent = false;
 		m_static_rebuilt_scene = m_scenes_submitted;
 
 		uint32_t total_vertices = 0;
@@ -833,34 +876,36 @@ namespace comp
 		game::br_matrix34 model_to_world{};
 		mul34(model_to_view, m_view_inverse, model_to_world);
 
-		// Scenery keeps the same placement for the whole race, so it can be baked into the
-		// merged batches whatever its transform. Only things that actually move -- cars,
-		// wheels, spinning powerups -- need an instance of their own.
+		// Scenery holds one placement for the whole race, so it can be baked into the merged
+		// batches whatever its transform. Only things that actually move -- cars, wheels,
+		// spinning powerups -- need an instance of their own. A model has to hold still for
+		// several frames first: baking on sight would bake every car at its starting
+		// position and leave a ghost there the moment it drove off.
 		if (!m_moving_models.contains(model))
 		{
-			const auto [placement, first_sighting] = m_placements.try_emplace(model, model_to_world);
+			auto [placement, first_sighting] = m_placements.try_emplace(
+				model, placement_record{ model_to_world, 1, false });
 
-			if (first_sighting || same_placement(placement->second, model_to_world))
-			{
-				if (m_static_models.try_emplace(placement_key(model, model_to_world),
-					static_instance{ model, fallback_material, model_to_world }).second)
-				{
-					m_static_dirty = true;
-				}
-				return;
+			if (first_sighting) {
+				// Falls through and draws dynamically until it has proved it is stationary.
 			}
-
-			// It moved. Drop every baked copy, or it would leave a ghost behind.
-			m_moving_models.insert(model);
-			for (auto it = m_static_models.begin(); it != m_static_models.end(); )
+			else if (!same_placement(placement->second.world, model_to_world))
 			{
-				if (it->second.model == model)
+				forget_static_model(model);
+			}
+			else
+			{
+				++placement->second.sightings;
+
+				if (placement->second.sightings >= STATIC_PROMOTE_SIGHTINGS)
 				{
-					it = m_static_models.erase(it);
-					m_static_dirty = true;
-				}
-				else {
-					++it;
+					if (!placement->second.baked) {
+						placement->second.baked = bake_static_model(model, fallback_material, model_to_world);
+					}
+
+					if (placement->second.baked) {
+						return;
+					}
 				}
 			}
 		}
@@ -989,9 +1034,10 @@ namespace comp
 			dev->SetTexture(stage, nullptr);
 		}
 
-		// Only a real change to the set is worth the rebuild; see invalidate_geometry.
+		// Additions can wait for the next window, but a removal means something is currently
+		// drawn in two places and has to be corrected now.
 		if (m_static_dirty
-			&& m_scenes_submitted - m_static_rebuilt_scene >= STATIC_REBUILD_INTERVAL_SCENES)
+			&& (m_static_urgent || m_scenes_submitted - m_static_rebuilt_scene >= STATIC_REBUILD_INTERVAL_SCENES))
 		{
 			rebuild_static_batches(dev);
 		}

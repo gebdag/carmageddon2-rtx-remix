@@ -119,6 +119,9 @@ namespace comp
 		                      std::vector<geometry_part>& parts,
 		                      std::vector<uint32_t>& indices);
 
+		bool bake_static_model(game::br_model* model, game::br_material* fallback_material,
+		                       const game::br_matrix34& world);
+		void forget_static_model(game::br_model* model);
 		void rebuild_static_batches(IDirect3DDevice9* dev);
 		void release_static_batches();
 		void release_geometry(model_geometry& geometry);
@@ -133,25 +136,38 @@ namespace comp
 		std::vector<queued_model> m_queue;
 		std::unordered_map<game::br_model*, model_geometry> m_geometry;
 
-		// One placement of a model that has never been seen to move. The transform is baked
-		// into the merged vertices, so scenery placed anywhere in the level joins the static
-		// batches rather than costing a draw of its own.
+		// One placement of a model that has held still long enough to be considered scenery.
+		// The geometry is extracted and the transform baked in once, at promotion time, and
+		// the game's own memory is never read again: models get freed between races, and a
+		// rebuild must not depend on them still being alive.
 		struct static_instance
 		{
-			game::br_model* model;
-			game::br_material* material;
+			game::br_model* model;   // identity only, never dereferenced
+			std::vector<ffp_vertex> vertices;
+			std::vector<geometry_part> parts;
+			std::vector<uint32_t> indices;
+		};
+
+		struct placement_record
+		{
 			game::br_matrix34 world;
+			uint32_t sightings;
+			bool baked;
 		};
 
 		std::vector<static_batch> m_static_batches;
 		std::unordered_map<uint64_t, static_instance> m_static_models;
 
-		// First placement seen for each model, and the models that have since appeared at a
-		// different one. A model that moves can never be baked -- it would leave a ghost at
-		// its original position.
-		std::unordered_map<game::br_model*, game::br_matrix34> m_placements;
+		// Where each model was last seen, and the models that have since turned up somewhere
+		// else. Anything that moves must never be baked -- it would leave a ghost behind.
+		std::unordered_map<game::br_model*, placement_record> m_placements;
 		std::unordered_set<game::br_model*> m_moving_models;
 		bool m_static_dirty = false;
+		bool m_static_urgent = false;
+
+		// Frames a model must hold one placement before it counts as scenery. Cars fail on
+		// their second frame and are never baked.
+		static constexpr uint32_t STATIC_PROMOTE_SIGHTINGS = 3;
 		uint32_t m_static_rebuilt_scene = 0;
 		uint32_t m_scene_models = 0;
 
