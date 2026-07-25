@@ -31,7 +31,7 @@ namespace comp
 
 		void begin_scene(game::br_actor* camera);
 		void capture_camera();
-		void capture_model(game::br_model* model);
+		void capture_model(game::br_model* model, game::br_material* fallback_material);
 		void end_scene();
 
 		// Called from the BrModelUpdate detour while the authored face array is still alive.
@@ -70,6 +70,7 @@ namespace comp
 			bool has_alpha;
 		};
 
+		void note_untextured(const batched_draw& draw);
 		void ensure_white_texture(IDirect3DDevice9* dev);
 		texture_entry texture_for(IDirect3DDevice9* dev, game::br_material* material);
 		IDirect3DTexture9* upload_pixelmap(IDirect3DDevice9* dev, const game::br_pixelmap* pm);
@@ -87,6 +88,12 @@ namespace comp
 		// A prepared group only records br_material::stored, so this maps that token — and
 		// the material pointer itself, in case the group holds one — back to the material.
 		std::unordered_map<uint32_t, game::br_material*> m_materials;
+
+		// Models BrZbModelRender was called for that produced no draw.
+		std::map<std::string, std::string> m_skipped_models;
+
+		// Models that reached Remix without a texture, with the reason.
+		std::map<std::string, std::string> m_untextured_models;
 
 		std::vector<ffp_vertex> m_vertices;
 		std::vector<uint16_t> m_indices;

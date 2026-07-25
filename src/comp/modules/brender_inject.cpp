@@ -167,7 +167,7 @@ namespace comp
 		                             uint32_t style, uint32_t bounds, uint32_t use_custom)
 		{
 			if (const auto self = brender_inject::get(); self && model) {
-				self->capture_model(model);
+				self->capture_model(model, static_cast<game::br_material*>(material));
 			}
 
 			o_model_render(actor, model, material, env, style, bounds, use_custom);
@@ -267,6 +267,27 @@ namespace comp
 
 			const auto end = static_cast<const uint8_t*>(mbi.BaseAddress) + mbi.RegionSize;
 			return static_cast<const uint8_t*>(p) + bytes <= end;
+		}
+	}
+
+	// Reports each model that renders white the first time it is seen. Which of the three
+	// causes applies decides where the fix belongs: a missing material means the group's
+	// token never resolved, a missing colour_map means the material is untextured by design,
+	// and a failed upload means an unhandled pixel format.
+	void brender_inject::note_untextured(const batched_draw& draw)
+	{
+		const char* reason = "texture upload failed";
+		if (!draw.material) {
+			reason = "no material";
+		}
+		else if (!draw.material->colour_map) {
+			reason = "material has no colour_map";
+		}
+
+		const std::string name = draw.model_name ? draw.model_name : "<null>";
+		if (m_untextured_models.try_emplace(name, reason).second) {
+			shared::common::log("BRender", std::format("untextured: '{}' - {}", name, reason),
+				shared::common::LOG_TYPE::LOG_TYPE_DEFAULT, false);
 		}
 	}
 
@@ -419,14 +440,24 @@ namespace comp
 			&& invert34(m_world_to_view, m_view_inverse);
 	}
 
-	void brender_inject::capture_model(game::br_model* model)
+	void brender_inject::capture_model(game::br_model* model, game::br_material* fallback_material)
 	{
 		if (!m_capturing || !m_camera_valid) {
 			return;
 		}
 
 		const auto prepared = model->prepared;
-		if (!prepared || !prepared->groups || !prepared->ngroups) {
+		if (!prepared || !prepared->groups || !prepared->ngroups)
+		{
+			// Never becomes a draw at all. Anything visible in-game but missing from our
+			// batch is coming from nGlide's rasterized output instead, so these names are
+			// worth having when something looks untextured rather than absent.
+			const std::string name = model->identifier ? model->identifier : "<null>";
+			const char* reason = (model->flags & 0x20) ? "custom render callback" : "no prepared geometry";
+			if (m_skipped_models.try_emplace(name, reason).second) {
+				shared::common::log("BRender", std::format("skipped: '{}' - {}", name, reason),
+					shared::common::LOG_TYPE::LOG_TYPE_DEFAULT, false);
+			}
 			return;
 		}
 
@@ -450,7 +481,13 @@ namespace comp
 			draw.world = world;
 			draw.model_name = model->identifier ? model->identifier : "<null>";
 
-			if (const auto it = m_materials.find(group.material_token); it != m_materials.end()) {
+			// BrModelUpdate writes a zero token for faces that carry no material of their
+			// own — wheels and car shells among them. Those inherit whatever material the
+			// render call was given, which is the argument BrZbModelRender received.
+			if (group.material_token == 0) {
+				draw.material = fallback_material;
+			}
+			else if (const auto it = m_materials.find(group.material_token); it != m_materials.end()) {
 				draw.material = it->second;
 			}
 
@@ -668,6 +705,10 @@ namespace comp
 			dev->SetTransform(D3DTS_WORLD, &draw.world);
 
 			const texture_entry tex = texture_for(dev, draw.material);
+			if (!tex.texture || tex.texture == m_white_texture) {
+				note_untextured(draw);
+			}
+
 			dev->SetTexture(0, tex.texture);
 			dev->SetRenderState(D3DRS_ALPHABLENDENABLE, tex.has_alpha ? TRUE : FALSE);
 
@@ -740,6 +781,7 @@ namespace comp
 				"  materials: {}/{} draws resolved, {} known | textures: {} uploaded, {} failed",
 				resolved, m_draws.size(), m_materials.size(), m_textures_ok, m_textures_failed),
 				resolved ? shared::common::LOG_TYPE::LOG_TYPE_GREEN : shared::common::LOG_TYPE::LOG_TYPE_ERROR, true);
+
 
 		}
 		else if ((m_scenes_submitted % 300) == 0)
