@@ -60,6 +60,18 @@ namespace shared::common
 			std::string output_dir = "captures";
 		} tracer;
 
+		struct culling_settings
+		{
+			// Overrides br_camera::yon_z each frame. Carmageddon 2 ships 35 world units,
+			// which is far too short for path tracing. 0 leaves the game's value alone.
+			float far_plane = 0.0f;
+
+			// Radius around the camera within which geometry is submitted even when the
+			// frustum test rejects it, so walls behind the camera keep occluding and
+			// bouncing light. 0 disables it.
+			float bubble_radius = 0.0f;
+		} culling;
+
 	private:
 		std::string ini_path_;
 		bool loaded_ = false;

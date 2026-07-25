@@ -89,6 +89,10 @@ namespace shared::common
 		tracer.backtrace_depth = get_int("Tracer", "BacktraceDepth", 8);
 		tracer.output_dir = get_string("Tracer", "OutputDir", "captures");
 
+		// [Culling]
+		culling.far_plane = get_float("Culling", "FarPlane", 0.0f);
+		culling.bubble_radius = get_float("Culling", "BubbleRadius", 0.0f);
+
 		log("Config", std::format("Loaded from: {}", ini_path_));
 		log("Config", std::format("FFP={} AlbedoStage={}", ffp.enabled ? 1 : 0, ffp.albedo_stage));
 		if (skinning.enabled)

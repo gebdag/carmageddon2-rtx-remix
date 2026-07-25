@@ -44,6 +44,18 @@ namespace comp::game
 	typedef int(__cdecl* renderer_template_query_t)(void* self, uint32_t part, uint32_t index,
 	                                                int* count, void* buffer, uint32_t size, uint32_t token);
 
+	// boundsTest(self, &out_token, bounds) — BrZbActorRender culls the actor when the token
+	// comes back BRT_BOUNDS_OUTSIDE. Bounds are model space; the renderer's current
+	// model_to_view has already been pushed by the time this is called.
+	typedef int(__cdecl* renderer_bounds_test_t)(void* self, uint32_t* out_token, const float* bounds);
+
+	enum br_bounds_result : uint32_t
+	{
+		BRT_BOUNDS_PARTIAL = 0x113,
+		BRT_BOUNDS_INSIDE = 0x114,
+		BRT_BOUNDS_OUTSIDE = 0x115,
+	};
+
 	// --------------
 	// game variables
 

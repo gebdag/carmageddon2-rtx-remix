@@ -212,6 +212,7 @@ namespace comp::game
 		RD_PART_SET = 0x80,
 		RD_TEMPLATE_QUERY = 0x8C,
 		RD_MODEL_MUL = 0xA4,
+		RD_BOUNDS_TEST = 0xD0,
 		RD_FLUSH = 0xFC,
 	};
 }

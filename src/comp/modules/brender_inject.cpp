@@ -1,5 +1,6 @@
 #include "std_include.hpp"
 #include "brender_inject.hpp"
+#include "shared/common/config.hpp"
 
 namespace comp
 {
@@ -118,8 +119,70 @@ namespace comp
 			return query(rend, game::BRT_MATRIX, 0, &count, &out, sizeof(out), game::BRT_MODEL_TO_VIEW) == 0;
 		}
 
+		game::renderer_bounds_test_t o_bounds_test = nullptr;
+
+		// BrZbActorRender drops any actor this reports as outside, which for path tracing
+		// removes exactly the geometry that should still occlude and bounce light: walls
+		// behind and beside the camera. Anything within the bubble is downgraded to
+		// PARTIAL rather than INSIDE so BRender still clips it correctly for its own
+		// rasterized pass.
+		int __cdecl hk_bounds_test(void* self, uint32_t* out_token, const float* bounds)
+		{
+			const int result = o_bounds_test(self, out_token, bounds);
+
+			const float radius = shared::common::config::get().culling.bubble_radius;
+			if (radius <= 0.0f || !out_token || *out_token != game::BRT_BOUNDS_OUTSIDE || !bounds) {
+				return result;
+			}
+
+			game::br_matrix34 model_to_view{};
+			if (!query_model_to_view(model_to_view)) {
+				return result;
+			}
+
+			// bounds is min[3] then max[3] in model space. The camera sits at the origin in
+			// view space, so the transformed centre is already the camera-relative position.
+			const float cx = (bounds[0] + bounds[3]) * 0.5f;
+			const float cy = (bounds[1] + bounds[4]) * 0.5f;
+			const float cz = (bounds[2] + bounds[5]) * 0.5f;
+
+			float view[3];
+			for (int col = 0; col < 3; ++col)
+			{
+				view[col] = cx * model_to_view.m[0][col]
+				          + cy * model_to_view.m[1][col]
+				          + cz * model_to_view.m[2][col]
+				          + model_to_view.m[3][col];
+			}
+
+			const float ex = (bounds[3] - bounds[0]) * 0.5f;
+			const float ey = (bounds[4] - bounds[1]) * 0.5f;
+			const float ez = (bounds[5] - bounds[2]) * 0.5f;
+			const float extent = sqrtf(ex * ex + ey * ey + ez * ez);
+
+			const float distance = sqrtf(view[0] * view[0] + view[1] * view[1] + view[2] * view[2]);
+			if (distance - extent <= radius) {
+				*out_token = game::BRT_BOUNDS_PARTIAL;
+			}
+
+			return result;
+		}
+
 		void __cdecl hk_scene_begin(game::br_actor* world, game::br_actor* camera, void* colour, void* depth)
 		{
+			// Cameras are built once by FUN_0047E3B0, which bakes the "Yon" option into
+			// br_camera::yon_z (the mirror camera gets half). Rewriting it here each frame
+			// is what makes the override stick, and it reaches the game's own frustum
+			// culling as well as the projection we hand Remix.
+			if (const float far_plane = shared::common::config::get().culling.far_plane;
+				far_plane > 0.0f && camera && camera->type_data)
+			{
+				const auto cam = static_cast<game::br_camera*>(camera->type_data);
+				if (cam->yon_z < far_plane) {
+					cam->yon_z = far_plane;
+				}
+			}
+
 			if (const auto self = brender_inject::get(); self) {
 				self->begin_scene(camera);
 			}
@@ -417,8 +480,44 @@ namespace comp
 		return tex;
 	}
 
+	// Deferred because the renderer object does not exist until BrRendererBegin has run,
+	// which is long after this module is constructed.
+	void brender_inject::install_bounds_test_hook()
+	{
+		if (m_bounds_hook_attempted) {
+			return;
+		}
+
+		void* rend = game::get_renderer();
+		if (!rend) {
+			return;
+		}
+
+		m_bounds_hook_attempted = true;
+
+		const auto dispatch = *reinterpret_cast<uint8_t**>(rend);
+		const auto target = *reinterpret_cast<void**>(dispatch + game::RD_BOUNDS_TEST);
+
+		if (shared::utils::hook::detour(reinterpret_cast<DWORD>(target), hk_bounds_test,
+			reinterpret_cast<void**>(&o_bounds_test)))
+		{
+			MH_EnableHook(target);
+			shared::common::log("BRender", std::format("bounds test hooked at {:#010x} — bubble radius {:.1f}",
+				reinterpret_cast<uint32_t>(target), shared::common::config::get().culling.bubble_radius),
+				shared::common::LOG_TYPE::LOG_TYPE_GREEN, true);
+		}
+		else {
+			shared::common::log("BRender", "failed to hook the renderer bounds test — bubble disabled",
+				shared::common::LOG_TYPE::LOG_TYPE_ERROR, true);
+		}
+	}
+
 	void brender_inject::begin_scene(game::br_actor* camera)
 	{
+		if (shared::common::config::get().culling.bubble_radius > 0.0f) {
+			install_bounds_test_hook();
+		}
+
 		m_camera = camera;
 		m_camera_valid = false;
 		m_capturing = m_enabled && !m_overlay_scene;

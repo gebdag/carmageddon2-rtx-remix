@@ -71,9 +71,12 @@ namespace comp
 		};
 
 		void note_untextured(const batched_draw& draw);
+		void install_bounds_test_hook();
 		void ensure_white_texture(IDirect3DDevice9* dev);
 		texture_entry texture_for(IDirect3DDevice9* dev, game::br_material* material);
 		IDirect3DTexture9* upload_pixelmap(IDirect3DDevice9* dev, const game::br_pixelmap* pm);
+
+		bool m_bounds_hook_attempted = false;
 
 		IDirect3DTexture9* m_white_texture = nullptr;
 		IDirect3DVertexDeclaration9* m_vertex_decl = nullptr;
