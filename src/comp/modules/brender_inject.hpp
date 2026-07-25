@@ -53,9 +53,12 @@ namespace comp
 		};
 
 		// One draw's worth of a model: the run of indices sharing a single material.
+		// The texture is resolved when the geometry is built rather than per draw, so
+		// submit never dereferences a br_material that the game may since have freed.
 		struct geometry_part
 		{
-			game::br_material* material;
+			IDirect3DTexture9* texture;
+			bool has_alpha;
 			uint32_t index_start;
 			uint32_t triangle_count;
 		};
@@ -69,6 +72,11 @@ namespace comp
 			std::vector<geometry_part> parts;
 			uint32_t vertex_count;
 			uint32_t last_used_scene;
+
+			// BrModelUpdate can fire mid-scene, after this geometry is already queued for
+			// submission. Marking instead of erasing keeps queued pointers valid; the
+			// rebuild happens the next time the model is captured.
+			bool dirty;
 		};
 
 		struct queued_model
@@ -91,7 +99,7 @@ namespace comp
 		void release_geometry(model_geometry& geometry);
 		void evict_stale_geometry();
 
-		void note_untextured(const queued_model& queued, game::br_material* material);
+		void note_untextured(const game::br_model* model, const game::br_material* material);
 		void install_bounds_test_hook();
 		void ensure_white_texture(IDirect3DDevice9* dev);
 		texture_entry texture_for(IDirect3DDevice9* dev, game::br_material* material);

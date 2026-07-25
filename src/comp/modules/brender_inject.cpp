@@ -381,10 +381,11 @@ namespace comp
 
 	void brender_inject::invalidate_geometry(game::br_model* model)
 	{
-		if (const auto it = m_geometry.find(model); it != m_geometry.end())
-		{
-			release_geometry(it->second);
-			m_geometry.erase(it);
+		// Erasing here would destroy a map node that the current scene's queue may already
+		// point at -- BrModelUpdate runs mid-scene for deforming cars. The rebuild is
+		// deferred to the next capture of this model instead.
+		if (const auto it = m_geometry.find(model); it != m_geometry.end()) {
+			it->second.dirty = true;
 		}
 	}
 
@@ -427,7 +428,13 @@ namespace comp
 		if (const auto it = m_geometry.find(model); it != m_geometry.end())
 		{
 			it->second.last_used_scene = m_scenes_submitted;
-			return it->second.vertex_buffer ? &it->second : nullptr;
+			if (!it->second.dirty) {
+				return it->second.vertex_buffer ? &it->second : nullptr;
+			}
+
+			// Rebuilt into the same node below; erasing would invalidate any pointer the
+			// current scene's queue already holds.
+			release_geometry(it->second);
 		}
 
 		const auto prepared = model->prepared;
@@ -467,7 +474,7 @@ namespace comp
 		// 16-bit indices are enough for every model this game ships; anything larger is
 		// corrupt data rather than a real mesh.
 		if (groups.empty() || total_vertices == 0 || total_vertices > 0xFFFF) {
-			m_geometry.emplace(model, geometry);
+			m_geometry[model] = geometry;
 			return nullptr;
 		}
 
@@ -505,8 +512,14 @@ namespace comp
 
 		for (game::br_material* material : ordered)
 		{
+			const texture_entry tex = texture_for(dev, material);
+			if (!tex.texture || tex.texture == m_white_texture) {
+				note_untextured(model, material);
+			}
+
 			geometry_part part{};
-			part.material = material;
+			part.texture = tex.texture;
+			part.has_alpha = tex.has_alpha;
 			part.index_start = static_cast<uint32_t>(indices.size());
 
 			for (const auto& ref : groups)
@@ -539,7 +552,7 @@ namespace comp
 				D3DPOOL_MANAGED, &geometry.index_buffer, nullptr)))
 		{
 			release_geometry(geometry);
-			m_geometry.emplace(model, geometry);
+			m_geometry[model] = geometry;
 			return nullptr;
 		}
 
@@ -558,8 +571,9 @@ namespace comp
 
 		geometry.vertex_count = total_vertices;
 
-		const auto [it, inserted] = m_geometry.emplace(model, geometry);
-		return &it->second;
+		auto& slot = m_geometry[model];
+		slot = std::move(geometry);
+		return slot.vertex_buffer ? &slot : nullptr;
 	}
 
 	void brender_inject::begin_scene(game::br_actor* camera)
@@ -749,13 +763,8 @@ namespace comp
 
 			for (const auto& part : geometry.parts)
 			{
-				const texture_entry tex = texture_for(dev, part.material);
-				if (!tex.texture || tex.texture == m_white_texture) {
-					note_untextured(queued, part.material);
-				}
-
-				dev->SetTexture(0, tex.texture);
-				dev->SetRenderState(D3DRS_ALPHABLENDENABLE, tex.has_alpha ? TRUE : FALSE);
+				dev->SetTexture(0, part.texture);
+				dev->SetRenderState(D3DRS_ALPHABLENDENABLE, part.has_alpha ? TRUE : FALSE);
 
 				if (SUCCEEDED(dev->DrawIndexedPrimitive(D3DPT_TRIANGLELIST, 0, 0,
 					geometry.vertex_count, part.index_start, part.triangle_count)))
@@ -827,7 +836,7 @@ namespace comp
 			false);
 	}
 
-	void brender_inject::note_untextured(const queued_model& queued, game::br_material* material)
+	void brender_inject::note_untextured(const game::br_model* model, const game::br_material* material)
 	{
 		const char* reason = "texture upload failed";
 		if (!material) {
@@ -837,7 +846,7 @@ namespace comp
 			reason = "material has no colour_map";
 		}
 
-		const std::string name = queued.model_name ? queued.model_name : "<null>";
+		const std::string name = model->identifier ? model->identifier : "<null>";
 		if (m_untextured_models.try_emplace(name, reason).second) {
 			shared::common::log("BRender", std::format("untextured: '{}' - {}", name, reason),
 				shared::common::LOG_TYPE::LOG_TYPE_DEFAULT, false);
