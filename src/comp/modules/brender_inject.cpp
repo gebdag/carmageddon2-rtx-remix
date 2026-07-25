@@ -338,7 +338,9 @@ namespace comp
 			reinterpret_cast<void**>(&o_model_update), "BrModelUpdate");
 
 		if (ok) {
-			shared::common::log("BRender", "Hooked the BRender scene walk - model-space injection armed.",
+			shared::common::log("BRender", std::format(
+				"Hooked the BRender scene walk - model-space injection armed. Static merging {}.",
+				shared::common::config::get().optimization.merge_static_geometry ? "ON" : "off"),
 				shared::common::LOG_TYPE::LOG_TYPE_GREEN, true);
 		}
 	}
@@ -881,7 +883,8 @@ namespace comp
 		// spinning powerups -- need an instance of their own. A model has to hold still for
 		// several frames first: baking on sight would bake every car at its starting
 		// position and leave a ghost there the moment it drove off.
-		if (!m_moving_models.contains(model))
+		if (shared::common::config::get().optimization.merge_static_geometry
+			&& !m_moving_models.contains(model))
 		{
 			auto [placement, first_sighting] = m_placements.try_emplace(
 				model, placement_record{ model_to_world, 1, false });

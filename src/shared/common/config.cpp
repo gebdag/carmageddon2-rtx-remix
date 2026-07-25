@@ -93,6 +93,9 @@ namespace shared::common
 		culling.far_plane = get_float("Culling", "FarPlane", 0.0f);
 		culling.bubble_radius = get_float("Culling", "BubbleRadius", 0.0f);
 
+		// [Optimization]
+		optimization.merge_static_geometry = get_bool("Optimization", "MergeStaticGeometry", false);
+
 		log("Config", std::format("Loaded from: {}", ini_path_));
 		log("Config", std::format("FFP={} AlbedoStage={}", ffp.enabled ? 1 : 0, ffp.albedo_stage));
 		if (skinning.enabled)

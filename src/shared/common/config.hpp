@@ -60,6 +60,15 @@ namespace shared::common
 			std::string output_dir = "captures";
 		} tracer;
 
+		struct optimization_settings
+		{
+			// Merges stationary scenery into one buffer per texture, cutting draw calls
+			// several-fold in dense areas. Shelved by default: rebuilding the merged
+			// buffers when new scenery is discovered causes an occasional hitch, and the
+			// gain did not justify it.
+			bool merge_static_geometry = false;
+		} optimization;
+
 		struct culling_settings
 		{
 			// Overrides br_camera::yon_z each frame. Carmageddon 2 ships 35 world units,
