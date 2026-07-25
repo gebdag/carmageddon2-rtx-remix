@@ -406,9 +406,11 @@ namespace comp
 			it->second.dirty = true;
 		}
 
-		if (m_static_models.contains(model)) {
-			m_static_dirty = true;
-		}
+		// Deliberately does not touch the static batches. BrModelUpdate fires on level
+		// models routinely without their geometry changing, and rebuilding costs a full
+		// re-upload of every static vertex plus a Remix acceleration structure rebuild.
+		// A model that sits at the world origin with an identity transform is scenery; the
+		// things that actually deform are cars, and they have real transforms.
 	}
 
 	void brender_inject::release_geometry(model_geometry& geometry)
@@ -730,7 +732,7 @@ namespace comp
 			m_static_batches.push_back(batch);
 		}
 
-		m_static_dirty = false;
+		m_static_models_merged = m_static_models.size();
 		m_static_rebuilt_scene = m_scenes_submitted;
 
 		uint32_t total_vertices = 0;
@@ -804,9 +806,7 @@ namespace comp
 		// real transform is a car, wheel or powerup and keeps its own instance.
 		if (is_identity(model_to_world))
 		{
-			if (m_static_models.try_emplace(model, fallback_material).second) {
-				m_static_dirty = true;
-			}
+			m_static_models.try_emplace(model, fallback_material);
 			return;
 		}
 
@@ -934,7 +934,10 @@ namespace comp
 			dev->SetTexture(stage, nullptr);
 		}
 
-		if (m_static_dirty && m_scenes_submitted - m_static_rebuilt_scene >= STATIC_REBUILD_INTERVAL_SCENES) {
+		// Only a genuinely larger set is worth the rebuild; see invalidate_geometry.
+		if (m_static_models.size() > m_static_models_merged
+			&& m_scenes_submitted - m_static_rebuilt_scene >= STATIC_REBUILD_INTERVAL_SCENES)
+		{
 			rebuild_static_batches(dev);
 		}
 

@@ -135,7 +135,7 @@ namespace comp
 
 		std::vector<static_batch> m_static_batches;
 		std::unordered_map<game::br_model*, game::br_material*> m_static_models;
-		bool m_static_dirty = false;
+		size_t m_static_models_merged = 0;
 		uint32_t m_static_rebuilt_scene = 0;
 		uint32_t m_scene_models = 0;
 
