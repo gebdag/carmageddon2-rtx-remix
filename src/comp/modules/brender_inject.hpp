@@ -130,6 +130,9 @@ namespace comp
 		void note_untextured(const game::br_model* model, const game::br_material* material);
 		void install_bounds_test_hook();
 		void ensure_white_texture(IDirect3DDevice9* dev);
+		texture_entry solid_colour_texture(IDirect3DDevice9* dev, uint32_t rgb);
+		void probe_flat_material(const game::br_model* model, const game::br_material* material,
+		                         const game::v1_group& group);
 		texture_entry texture_for(IDirect3DDevice9* dev, game::br_material* material);
 		IDirect3DTexture9* upload_pixelmap(IDirect3DDevice9* dev, const game::br_pixelmap* pm);
 
@@ -194,6 +197,10 @@ namespace comp
 		// share one upload and Remix sees one stable hash for them.
 		std::unordered_map<const game::br_pixelmap*, texture_entry> m_textures;
 		std::set<uint32_t> m_unsupported_types;
+
+		// 1x1 swatches for materials BRender colours flat instead of texturing.
+		std::unordered_map<uint32_t, IDirect3DTexture9*> m_colour_textures;
+		uint32_t m_flat_probes = 0;
 
 		// A prepared group only records br_material::stored, so this maps that token -- and
 		// the material pointer itself, in case the group holds one -- back to the material.

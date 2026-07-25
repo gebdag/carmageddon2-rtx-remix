@@ -357,6 +357,10 @@ namespace comp
 			if (entry.texture) { entry.texture->Release(); }
 		}
 
+		for (auto& [rgb, texture] : m_colour_textures) {
+			if (texture) { texture->Release(); }
+		}
+
 		if (m_white_texture) { m_white_texture->Release(); }
 		if (m_vertex_decl) { m_vertex_decl->Release(); }
 	}
@@ -550,6 +554,9 @@ namespace comp
 		const uint32_t vertex_base = static_cast<uint32_t>(vertices.size());
 		uint32_t total_vertices = 0;
 
+		// Flat colour per untextured material, taken from the group that first used it.
+		std::vector<std::pair<game::br_material*, uint32_t>> flat_colours;
+
 		for (uint16_t g = 0; g < prepared->ngroups; ++g)
 		{
 			const game::v1_group& group = prepared->groups[g];
@@ -565,6 +572,21 @@ namespace comp
 				if (const auto it = m_materials.find(group.material_token); it != m_materials.end()) {
 					material = it->second;
 				}
+			}
+
+			// Debris chunks, car bodies and similar carry no texture; BRender colours them
+			// flat. BrModelUpdate packs each face's authored colour into face_colours as
+			// 0xIIRRGGBB, with the palette index in the top byte.
+			if ((!material || !material->colour_map) && group.face_colours && group.nfaces)
+			{
+				const uint32_t colour = group.face_colours[0] & 0x00FFFFFFu;
+				if (std::find_if(flat_colours.begin(), flat_colours.end(),
+					[&](const auto& e) { return e.first == material; }) == flat_colours.end())
+				{
+					flat_colours.emplace_back(material, colour);
+				}
+
+				probe_flat_material(model, material, group);
 			}
 
 			groups.push_back({ &group, material, vertex_base + total_vertices });
@@ -607,9 +629,22 @@ namespace comp
 
 		for (game::br_material* material : ordered)
 		{
-			const texture_entry tex = texture_for(dev, material);
-			if (!tex.texture || tex.texture == m_white_texture) {
-				note_untextured(model, material);
+			texture_entry tex = texture_for(dev, material);
+
+			// An untextured material is not a failure -- it is a flat colour. Feeding Remix
+			// a solid swatch gives it a real albedo, and a distinct hash per colour so the
+			// swatch can still be replaced.
+			if (!tex.texture || tex.texture == m_white_texture)
+			{
+				const auto flat = std::find_if(flat_colours.begin(), flat_colours.end(),
+					[&](const auto& e) { return e.first == material; });
+
+				if (flat != flat_colours.end() && flat->second != 0) {
+					tex = solid_colour_texture(dev, flat->second);
+				}
+				else {
+					note_untextured(model, material);
+				}
 			}
 
 			geometry_part part{};
@@ -1288,6 +1323,54 @@ namespace comp
 
 		tex->UnlockRect(0);
 		return tex;
+	}
+
+	brender_inject::texture_entry brender_inject::solid_colour_texture(IDirect3DDevice9* dev, const uint32_t rgb)
+	{
+		if (const auto it = m_colour_textures.find(rgb); it != m_colour_textures.end()) {
+			return { it->second, false };
+		}
+
+		IDirect3DTexture9* tex = nullptr;
+		if (FAILED(dev->CreateTexture(1, 1, 1, 0, D3DFMT_A8R8G8B8, D3DPOOL_MANAGED, &tex, nullptr)) || !tex) {
+			return { m_white_texture, false };
+		}
+
+		D3DLOCKED_RECT rect{};
+		if (SUCCEEDED(tex->LockRect(0, &rect, nullptr, 0)))
+		{
+			*static_cast<uint32_t*>(rect.pBits) = 0xFF000000u | rgb;
+			tex->UnlockRect(0);
+		}
+
+		m_colour_textures[rgb] = tex;
+		return { tex, false };
+	}
+
+	// Records what an untextured material actually holds, so the flat colour can be sourced
+	// from the material itself if the per-face colours turn out not to carry it.
+	void brender_inject::probe_flat_material(const game::br_model* model,
+		const game::br_material* material, const game::v1_group& group)
+	{
+		if (m_flat_probes >= 4 || !material || !readable(material, 0x30)) {
+			return;
+		}
+
+		++m_flat_probes;
+		const auto bytes = reinterpret_cast<const uint8_t*>(material);
+
+		std::string hex;
+		for (uint32_t i = 0; i < 0x30; ++i)
+		{
+			hex += std::format("{:02X}", bytes[i]);
+			if ((i & 3) == 3) { hex += ' '; }
+		}
+
+		shared::common::log("BRender", std::format("flat '{}' face={:#08x} vertex={:#08x} | {}",
+			model->identifier ? model->identifier : "<null>",
+			group.face_colours ? group.face_colours[0] : 0u,
+			group.vertex_colours ? group.vertex_colours[0] : 0u, hex),
+			shared::common::LOG_TYPE::LOG_TYPE_DEFAULT, false);
 	}
 
 	void brender_inject::ensure_white_texture(IDirect3DDevice9* dev)
