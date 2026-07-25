@@ -86,6 +86,20 @@ namespace comp
 			const char* model_name;
 		};
 
+		// The level's static geometry, merged across models into one buffer per texture.
+		// Track pieces are world-space children with an identity transform, so they can all
+		// share a draw; that collapses thousands of per-model draws into a few dozen and
+		// gives Remix an acceleration structure that never has to be rebuilt.
+		struct static_batch
+		{
+			IDirect3DTexture9* texture;
+			bool has_alpha;
+			IDirect3DVertexBuffer9* vertex_buffer;
+			IDirect3DIndexBuffer9* index_buffer;
+			uint32_t vertex_count;
+			uint32_t triangle_count;
+		};
+
 		struct texture_entry
 		{
 			IDirect3DTexture9* texture;
@@ -96,6 +110,17 @@ namespace comp
 		bool build_projection(D3DMATRIX& out) const;
 		const model_geometry* geometry_for(IDirect3DDevice9* dev, game::br_model* model,
 		                                   game::br_material* fallback_material);
+
+		// Walks a model's prepared groups into CPU-side vertices and per-texture index runs.
+		// Shared by the per-model buffers and the merged static batches.
+		bool extract_geometry(IDirect3DDevice9* dev, game::br_model* model,
+		                      game::br_material* fallback_material,
+		                      std::vector<ffp_vertex>& vertices,
+		                      std::vector<geometry_part>& parts,
+		                      std::vector<uint32_t>& indices);
+
+		void rebuild_static_batches(IDirect3DDevice9* dev);
+		void release_static_batches();
 		void release_geometry(model_geometry& geometry);
 		void evict_stale_geometry();
 
@@ -107,6 +132,16 @@ namespace comp
 
 		std::vector<queued_model> m_queue;
 		std::unordered_map<game::br_model*, model_geometry> m_geometry;
+
+		std::vector<static_batch> m_static_batches;
+		std::unordered_map<game::br_model*, game::br_material*> m_static_models;
+		bool m_static_dirty = false;
+		uint32_t m_static_rebuilt_scene = 0;
+		uint32_t m_scene_models = 0;
+
+		// Rebuilding walks every static model, so discoveries are batched up rather than
+		// triggering a rebuild each time a new corner of the track comes into view.
+		static constexpr uint32_t STATIC_REBUILD_INTERVAL_SCENES = 120;
 
 		game::br_actor* m_camera = nullptr;
 		game::br_matrix34 m_world_to_view{};

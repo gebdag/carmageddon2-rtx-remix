@@ -96,6 +96,22 @@ namespace comp
 			return true;
 		}
 
+		bool is_identity(const game::br_matrix34& m)
+		{
+			constexpr float eps = 1e-4f;
+			for (int row = 0; row < 4; ++row)
+			{
+				for (int col = 0; col < 3; ++col)
+				{
+					const float expected = (row == col) ? 1.0f : 0.0f;
+					if (fabsf(m.m[row][col] - expected) > eps) {
+						return false;
+					}
+				}
+			}
+			return true;
+		}
+
 		// Asks the live renderer for its current model_to_view. Mirrors the call
 		// SceneSetupCameraMatrices makes at 0x00521DA9.
 		bool query_model_to_view(game::br_matrix34& out)
@@ -312,6 +328,8 @@ namespace comp
 
 	brender_inject::~brender_inject()
 	{
+		release_static_batches();
+
 		for (auto& [model, geometry] : m_geometry) {
 			release_geometry(geometry);
 		}
@@ -387,6 +405,10 @@ namespace comp
 		if (const auto it = m_geometry.find(model); it != m_geometry.end()) {
 			it->second.dirty = true;
 		}
+
+		if (m_static_models.contains(model)) {
+			m_static_dirty = true;
+		}
 	}
 
 	void brender_inject::release_geometry(model_geometry& geometry)
@@ -437,17 +459,75 @@ namespace comp
 			release_geometry(it->second);
 		}
 
-		const auto prepared = model->prepared;
+		std::vector<ffp_vertex> vertices;
+		std::vector<geometry_part> parts;
+		std::vector<uint32_t> indices;
+
 		model_geometry geometry{};
 		geometry.last_used_scene = m_scenes_submitted;
+
+		// 16-bit indices are enough for any single model this game ships; anything larger is
+		// corrupt data rather than a real mesh.
+		if (!extract_geometry(dev, model, fallback_material, vertices, parts, indices)
+			|| vertices.size() > 0xFFFF)
+		{
+			m_geometry[model] = geometry;
+			return nullptr;
+		}
+
+		const UINT vertex_bytes = static_cast<UINT>(vertices.size() * sizeof(ffp_vertex));
+		const UINT index_bytes = static_cast<UINT>(indices.size() * sizeof(uint16_t));
+
+		if (FAILED(dev->CreateVertexBuffer(vertex_bytes, D3DUSAGE_WRITEONLY, 0, D3DPOOL_MANAGED,
+			&geometry.vertex_buffer, nullptr))
+			|| FAILED(dev->CreateIndexBuffer(index_bytes, D3DUSAGE_WRITEONLY, D3DFMT_INDEX16,
+				D3DPOOL_MANAGED, &geometry.index_buffer, nullptr)))
+		{
+			release_geometry(geometry);
+			m_geometry[model] = geometry;
+			return nullptr;
+		}
+
+		void* mapped = nullptr;
+		if (SUCCEEDED(geometry.vertex_buffer->Lock(0, vertex_bytes, &mapped, 0)))
+		{
+			memcpy(mapped, vertices.data(), vertex_bytes);
+			geometry.vertex_buffer->Unlock();
+		}
+
+		if (SUCCEEDED(geometry.index_buffer->Lock(0, index_bytes, &mapped, 0)))
+		{
+			auto dst = static_cast<uint16_t*>(mapped);
+			for (size_t i = 0; i < indices.size(); ++i) {
+				dst[i] = static_cast<uint16_t>(indices[i]);
+			}
+			geometry.index_buffer->Unlock();
+		}
+
+		geometry.parts = std::move(parts);
+		geometry.vertex_count = static_cast<uint32_t>(vertices.size());
+
+		auto& slot = m_geometry[model];
+		slot = std::move(geometry);
+		return slot.vertex_buffer ? &slot : nullptr;
+	}
+
+	bool brender_inject::extract_geometry(IDirect3DDevice9* dev, game::br_model* model,
+		game::br_material* fallback_material, std::vector<ffp_vertex>& vertices,
+		std::vector<geometry_part>& parts, std::vector<uint32_t>& indices)
+	{
+		const auto prepared = model->prepared;
+		if (!prepared || !prepared->groups || !prepared->ngroups) {
+			return false;
+		}
 
 		// Resolve every group's material up front so groups can be ordered by it.
 		struct group_ref { const game::v1_group* group; game::br_material* material; uint32_t vertex_base; };
 		std::vector<group_ref> groups;
 		groups.reserve(prepared->ngroups);
 
+		const uint32_t vertex_base = static_cast<uint32_t>(vertices.size());
 		uint32_t total_vertices = 0;
-		uint32_t total_indices = 0;
 
 		for (uint16_t g = 0; g < prepared->ngroups; ++g)
 		{
@@ -466,21 +546,15 @@ namespace comp
 				}
 			}
 
-			groups.push_back({ &group, material, total_vertices });
+			groups.push_back({ &group, material, vertex_base + total_vertices });
 			total_vertices += group.nvertices;
-			total_indices += group.nfaces * 3u;
 		}
 
-		// 16-bit indices are enough for every model this game ships; anything larger is
-		// corrupt data rather than a real mesh.
-		if (groups.empty() || total_vertices == 0 || total_vertices > 0xFFFF) {
-			m_geometry[model] = geometry;
-			return nullptr;
+		if (groups.empty() || total_vertices == 0) {
+			return false;
 		}
 
-		std::vector<ffp_vertex> vertices(total_vertices);
-		std::vector<uint16_t> indices;
-		indices.reserve(total_indices);
+		vertices.resize(vertex_base + total_vertices);
 
 		for (const auto& ref : groups)
 		{
@@ -501,7 +575,7 @@ namespace comp
 			}
 		}
 
-		// Emit indices grouped by material so each material is one contiguous draw.
+		// Emit indices grouped by material so each material forms one contiguous draw.
 		std::vector<game::br_material*> ordered;
 		for (const auto& ref : groups)
 		{
@@ -531,49 +605,142 @@ namespace comp
 				for (uint16_t f = 0; f < ref.group->nfaces; ++f)
 				{
 					const game::v1_online_face& face = ref.group->faces[f];
-					indices.push_back(static_cast<uint16_t>(ref.vertex_base + face.v[0]));
-					indices.push_back(static_cast<uint16_t>(ref.vertex_base + face.v[1]));
-					indices.push_back(static_cast<uint16_t>(ref.vertex_base + face.v[2]));
+					indices.push_back(ref.vertex_base + face.v[0]);
+					indices.push_back(ref.vertex_base + face.v[1]);
+					indices.push_back(ref.vertex_base + face.v[2]);
 				}
 			}
 
 			part.triangle_count = (static_cast<uint32_t>(indices.size()) - part.index_start) / 3u;
 			if (part.triangle_count) {
-				geometry.parts.push_back(part);
+				parts.push_back(part);
 			}
 		}
 
-		const UINT vertex_bytes = total_vertices * sizeof(ffp_vertex);
-		const UINT index_bytes = static_cast<UINT>(indices.size()) * sizeof(uint16_t);
+		return !parts.empty();
+	}
 
-		if (FAILED(dev->CreateVertexBuffer(vertex_bytes, D3DUSAGE_WRITEONLY, 0, D3DPOOL_MANAGED,
-			&geometry.vertex_buffer, nullptr))
-			|| FAILED(dev->CreateIndexBuffer(index_bytes, D3DUSAGE_WRITEONLY, D3DFMT_INDEX16,
-				D3DPOOL_MANAGED, &geometry.index_buffer, nullptr)))
+	void brender_inject::release_static_batches()
+	{
+		for (auto& batch : m_static_batches)
 		{
-			release_geometry(geometry);
-			m_geometry[model] = geometry;
-			return nullptr;
+			if (batch.vertex_buffer) { batch.vertex_buffer->Release(); }
+			if (batch.index_buffer) { batch.index_buffer->Release(); }
+		}
+		m_static_batches.clear();
+	}
+
+	/*
+	 * Merges every static model into one buffer per texture.
+	 *
+	 * Frame time measured almost perfectly linear in draw count -- roughly 3.5 ms plus 8 us
+	 * per draw -- and vertex count barely registered, so the level's ~800 world models at
+	 * ~4 materials each were the entire cost. They all sit at the world origin with an
+	 * identity transform, which means they can share draws. Merging them turns thousands of
+	 * per-model draws into one per distinct texture, and since the merged buffers never
+	 * change, Remix keeps the acceleration structure it builds for them.
+	 *
+	 * Everything static is submitted every frame regardless of visibility. That is cheaper
+	 * than culling it and removes the light leak the bubble was working around.
+	 */
+	void brender_inject::rebuild_static_batches(IDirect3DDevice9* dev)
+	{
+		release_static_batches();
+
+		struct accumulator
+		{
+			IDirect3DTexture9* texture;
+			bool has_alpha;
+			std::vector<ffp_vertex> vertices;
+			std::vector<uint32_t> indices;
+		};
+		std::vector<accumulator> batches;
+
+		for (const auto& [model, fallback_material] : m_static_models)
+		{
+			std::vector<ffp_vertex> vertices;
+			std::vector<geometry_part> parts;
+			std::vector<uint32_t> indices;
+
+			if (!extract_geometry(dev, model, fallback_material, vertices, parts, indices)) {
+				continue;
+			}
+
+			for (const auto& part : parts)
+			{
+				auto it = std::find_if(batches.begin(), batches.end(),
+					[&](const accumulator& a) { return a.texture == part.texture && a.has_alpha == part.has_alpha; });
+
+				if (it == batches.end())
+				{
+					batches.push_back({ part.texture, part.has_alpha, {}, {} });
+					it = batches.end() - 1;
+				}
+
+				// Indices are model-local; rebase them onto this batch's vertex block.
+				const uint32_t base = static_cast<uint32_t>(it->vertices.size());
+				it->vertices.insert(it->vertices.end(), vertices.begin(), vertices.end());
+
+				const uint32_t end = part.index_start + part.triangle_count * 3u;
+				for (uint32_t i = part.index_start; i < end; ++i) {
+					it->indices.push_back(base + indices[i]);
+				}
+			}
 		}
 
-		void* mapped = nullptr;
-		if (SUCCEEDED(geometry.vertex_buffer->Lock(0, vertex_bytes, &mapped, 0)))
+		for (auto& acc : batches)
 		{
-			memcpy(mapped, vertices.data(), vertex_bytes);
-			geometry.vertex_buffer->Unlock();
+			if (acc.vertices.empty() || acc.indices.empty()) {
+				continue;
+			}
+
+			static_batch batch{};
+			batch.texture = acc.texture;
+			batch.has_alpha = acc.has_alpha;
+			batch.vertex_count = static_cast<uint32_t>(acc.vertices.size());
+			batch.triangle_count = static_cast<uint32_t>(acc.indices.size()) / 3u;
+
+			const UINT vertex_bytes = batch.vertex_count * sizeof(ffp_vertex);
+			const UINT index_bytes = static_cast<UINT>(acc.indices.size()) * sizeof(uint32_t);
+
+			// A merged batch spans far more than 65535 vertices, so these are 32-bit.
+			if (FAILED(dev->CreateVertexBuffer(vertex_bytes, D3DUSAGE_WRITEONLY, 0, D3DPOOL_MANAGED,
+				&batch.vertex_buffer, nullptr))
+				|| FAILED(dev->CreateIndexBuffer(index_bytes, D3DUSAGE_WRITEONLY, D3DFMT_INDEX32,
+					D3DPOOL_MANAGED, &batch.index_buffer, nullptr)))
+			{
+				if (batch.vertex_buffer) { batch.vertex_buffer->Release(); }
+				if (batch.index_buffer) { batch.index_buffer->Release(); }
+				continue;
+			}
+
+			void* mapped = nullptr;
+			if (SUCCEEDED(batch.vertex_buffer->Lock(0, vertex_bytes, &mapped, 0)))
+			{
+				memcpy(mapped, acc.vertices.data(), vertex_bytes);
+				batch.vertex_buffer->Unlock();
+			}
+
+			if (SUCCEEDED(batch.index_buffer->Lock(0, index_bytes, &mapped, 0)))
+			{
+				memcpy(mapped, acc.indices.data(), index_bytes);
+				batch.index_buffer->Unlock();
+			}
+
+			m_static_batches.push_back(batch);
 		}
 
-		if (SUCCEEDED(geometry.index_buffer->Lock(0, index_bytes, &mapped, 0)))
-		{
-			memcpy(mapped, indices.data(), index_bytes);
-			geometry.index_buffer->Unlock();
+		m_static_dirty = false;
+		m_static_rebuilt_scene = m_scenes_submitted;
+
+		uint32_t total_vertices = 0;
+		for (const auto& batch : m_static_batches) {
+			total_vertices += batch.vertex_count;
 		}
 
-		geometry.vertex_count = total_vertices;
-
-		auto& slot = m_geometry[model];
-		slot = std::move(geometry);
-		return slot.vertex_buffer ? &slot : nullptr;
+		shared::common::log("BRender", std::format("static geometry merged: {} models -> {} draws, {} verts",
+			m_static_models.size(), m_static_batches.size(), total_vertices),
+			shared::common::LOG_TYPE::LOG_TYPE_GREEN, true);
 	}
 
 	void brender_inject::begin_scene(game::br_actor* camera)
@@ -585,6 +752,7 @@ namespace comp
 		m_camera = camera;
 		m_camera_valid = false;
 		m_capturing = !m_overlay_scene;
+		m_scene_models = 0;
 		m_queue.clear();
 	}
 
@@ -626,8 +794,21 @@ namespace comp
 			return;
 		}
 
+		++m_scene_models;
+
 		game::br_matrix34 model_to_world{};
 		mul34(model_to_view, m_view_inverse, model_to_world);
+
+		// Level geometry is a world-space child with no transform of its own. Those models
+		// go into the merged static batches instead of costing a draw each; anything with a
+		// real transform is a car, wheel or powerup and keeps its own instance.
+		if (is_identity(model_to_world))
+		{
+			if (m_static_models.try_emplace(model, fallback_material).second) {
+				m_static_dirty = true;
+			}
+			return;
+		}
 
 		queued_model queued{};
 		queued.geometry = nullptr;
@@ -678,7 +859,10 @@ namespace comp
 		// the race view plus one-model 3D HUD widgets such as the opponent-car icon.
 		// Forwarding a widget hands Remix a second camera with a ~35 unit far plane, and it
 		// path-traces the icon instead of the track.
-		if (m_queue.size() < MIN_WORLD_SCENE_MODELS) {
+		// Counts every model the scene walked, not just the queued dynamic ones -- level
+		// geometry goes to the static batches and would otherwise make a race look like a
+		// one-model widget scene.
+		if (m_scene_models < MIN_WORLD_SCENE_MODELS) {
 			return;
 		}
 
@@ -750,8 +934,30 @@ namespace comp
 			dev->SetTexture(stage, nullptr);
 		}
 
+		if (m_static_dirty && m_scenes_submitted - m_static_rebuilt_scene >= STATIC_REBUILD_INTERVAL_SCENES) {
+			rebuild_static_batches(dev);
+		}
+
 		uint32_t draws = 0;
 		uint32_t vertices = 0;
+
+		const D3DMATRIX identity = to_d3d(game::br_matrix34{ { {1,0,0}, {0,1,0}, {0,0,1}, {0,0,0} } });
+		dev->SetTransform(D3DTS_WORLD, &identity);
+
+		for (const auto& batch : m_static_batches)
+		{
+			dev->SetStreamSource(0, batch.vertex_buffer, 0, sizeof(ffp_vertex));
+			dev->SetIndices(batch.index_buffer);
+			dev->SetTexture(0, batch.texture);
+			dev->SetRenderState(D3DRS_ALPHABLENDENABLE, batch.has_alpha ? TRUE : FALSE);
+
+			if (SUCCEEDED(dev->DrawIndexedPrimitive(D3DPT_TRIANGLELIST, 0, 0,
+				batch.vertex_count, 0, batch.triangle_count)))
+			{
+				++draws;
+				vertices += batch.vertex_count;
+			}
+		}
 
 		for (const auto& queued : m_queue)
 		{
@@ -792,7 +998,7 @@ namespace comp
 		frame_stats stats{};
 		stats.draws = draws;
 		stats.vertices = vertices;
-		stats.models = static_cast<uint32_t>(m_queue.size());
+		stats.models = static_cast<uint32_t>(m_queue.size() + m_static_models.size());
 		stats.submit_ms = static_cast<double>(end.QuadPart - start.QuadPart) / m_ticks_per_ms;
 		stats.frame_ms = m_last_scene_ticks
 			? static_cast<double>(start.QuadPart - m_last_scene_ticks) / m_ticks_per_ms
