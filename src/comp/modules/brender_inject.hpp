@@ -45,25 +45,6 @@ namespace comp
 		void set_overlay_scene(const bool active) { m_overlay_scene = active; }
 
 	private:
-		/*
-		 * How a texture's alpha channel should be handled.
-		 *
-		 * Blending is right for anything using alpha for softness or cutout -- smoke,
-		 * foliage, fences -- and that is how the game draws them. It is wrong for surfaces
-		 * whose alpha is uniformly high, like water: Remix classifies blended draws
-		 * separately and those surfaces disappeared from the path-traced output entirely.
-		 * A texture whose alpha never drops low is not doing cutout or gradient work, so it
-		 * is treated as opaque instead.
-		 */
-		enum class alpha_mode : uint8_t
-		{
-			Opaque,
-			Blend,
-		};
-
-		// Alpha below this counts as the texture genuinely going transparent.
-		static constexpr uint32_t ALPHA_BLEND_THRESHOLD = 250;
-
 		struct ffp_vertex
 		{
 			float x, y, z;
@@ -77,7 +58,7 @@ namespace comp
 		struct geometry_part
 		{
 			IDirect3DTexture9* texture;
-			alpha_mode alpha;
+			bool has_alpha;
 			uint32_t index_start;
 			uint32_t triangle_count;
 		};
@@ -112,7 +93,7 @@ namespace comp
 		struct static_batch
 		{
 			IDirect3DTexture9* texture;
-			alpha_mode alpha;
+			bool has_alpha;
 			IDirect3DVertexBuffer9* vertex_buffer;
 			IDirect3DIndexBuffer9* index_buffer;
 			uint32_t vertex_count;
@@ -122,7 +103,7 @@ namespace comp
 		struct texture_entry
 		{
 			IDirect3DTexture9* texture;
-			alpha_mode alpha;
+			bool has_alpha;
 		};
 
 		void submit(IDirect3DDevice9* dev);
@@ -152,8 +133,7 @@ namespace comp
 		texture_entry solid_colour_texture(IDirect3DDevice9* dev, uint32_t rgb);
 		void note_flat_colour(const game::br_model* model, const game::br_material* material);
 		texture_entry texture_for(IDirect3DDevice9* dev, game::br_material* material);
-		IDirect3DTexture9* upload_pixelmap(IDirect3DDevice9* dev, const game::br_pixelmap* pm,
-		                                   uint32_t& min_alpha);
+		IDirect3DTexture9* upload_pixelmap(IDirect3DDevice9* dev, const game::br_pixelmap* pm);
 
 		std::vector<queued_model> m_queue;
 		std::unordered_map<game::br_model*, model_geometry> m_geometry;
@@ -211,7 +191,6 @@ namespace comp
 		IDirect3DVertexDeclaration9* m_vertex_decl = nullptr;
 		uint32_t m_textures_ok = 0;
 		uint32_t m_textures_failed = 0;
-		uint32_t m_textures_blended = 0;
 
 		// Keyed on the colour_map rather than the material, so materials sharing a texture
 		// share one upload and Remix sees one stable hash for them.
