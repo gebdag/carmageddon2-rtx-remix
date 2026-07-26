@@ -627,7 +627,7 @@ namespace comp
 
 			geometry_part part{};
 			part.texture = tex.texture;
-			part.has_alpha = tex.has_alpha;
+			part.alpha = tex.alpha;
 			part.index_start = static_cast<uint32_t>(indices.size());
 
 			for (const auto& ref : groups)
@@ -746,7 +746,7 @@ namespace comp
 		struct accumulator
 		{
 			IDirect3DTexture9* texture;
-			bool has_alpha;
+			alpha_mode alpha;
 			std::vector<ffp_vertex> vertices;
 			std::vector<uint32_t> indices;
 		};
@@ -760,11 +760,11 @@ namespace comp
 			for (const auto& part : instance.parts)
 			{
 				auto it = std::find_if(batches.begin(), batches.end(),
-					[&](const accumulator& a) { return a.texture == part.texture && a.has_alpha == part.has_alpha; });
+					[&](const accumulator& a) { return a.texture == part.texture && a.alpha == part.alpha; });
 
 				if (it == batches.end())
 				{
-					batches.push_back({ part.texture, part.has_alpha, {}, {} });
+					batches.push_back({ part.texture, part.alpha, {}, {} });
 					it = batches.end() - 1;
 				}
 
@@ -787,7 +787,7 @@ namespace comp
 
 			static_batch batch{};
 			batch.texture = acc.texture;
-			batch.has_alpha = acc.has_alpha;
+			batch.alpha = acc.alpha;
 			batch.vertex_count = static_cast<uint32_t>(acc.vertices.size());
 			batch.triangle_count = static_cast<uint32_t>(acc.indices.size()) / 3u;
 
@@ -1021,14 +1021,9 @@ namespace comp
 		dev->SetRenderState(D3DRS_ZENABLE, D3DZB_TRUE);
 		dev->SetRenderState(D3DRS_ZWRITEENABLE, TRUE);
 		dev->SetRenderState(D3DRS_CULLMODE, D3DCULL_NONE);
-
-		// Alpha-textured surfaces are alpha *tested*, not blended. Blended draws get
-		// classified separately by Remix and the water surfaces vanished from the
-		// path-traced output entirely; tested geometry stays ordinary opaque geometry, which
-		// is what a path tracer wants, and still cuts out fully transparent texels.
-		dev->SetRenderState(D3DRS_ALPHABLENDENABLE, FALSE);
-		dev->SetRenderState(D3DRS_ALPHAFUNC, D3DCMP_GREATEREQUAL);
-		dev->SetRenderState(D3DRS_ALPHAREF, 128);
+		dev->SetRenderState(D3DRS_ALPHATESTENABLE, FALSE);
+		dev->SetRenderState(D3DRS_SRCBLEND, D3DBLEND_SRCALPHA);
+		dev->SetRenderState(D3DRS_DESTBLEND, D3DBLEND_INVSRCALPHA);
 
 		ensure_white_texture(dev);
 		dev->SetTextureStageState(0, D3DTSS_COLOROP, D3DTOP_SELECTARG1);
@@ -1075,7 +1070,8 @@ namespace comp
 			dev->SetStreamSource(0, batch.vertex_buffer, 0, sizeof(ffp_vertex));
 			dev->SetIndices(batch.index_buffer);
 			dev->SetTexture(0, batch.texture);
-			dev->SetRenderState(D3DRS_ALPHATESTENABLE, batch.has_alpha ? TRUE : FALSE);
+			dev->SetRenderState(D3DRS_ALPHABLENDENABLE,
+				batch.alpha == alpha_mode::Blend ? TRUE : FALSE);
 
 			if (SUCCEEDED(dev->DrawIndexedPrimitive(D3DPT_TRIANGLELIST, 0, 0,
 				batch.vertex_count, 0, batch.triangle_count)))
@@ -1096,7 +1092,8 @@ namespace comp
 			for (const auto& part : geometry.parts)
 			{
 				dev->SetTexture(0, part.texture);
-				dev->SetRenderState(D3DRS_ALPHATESTENABLE, part.has_alpha ? TRUE : FALSE);
+				dev->SetRenderState(D3DRS_ALPHABLENDENABLE,
+					part.alpha == alpha_mode::Blend ? TRUE : FALSE);
 
 				if (SUCCEEDED(dev->DrawIndexedPrimitive(D3DPT_TRIANGLELIST, 0, 0,
 					geometry.vertex_count, part.index_start, part.triangle_count)))
@@ -1188,26 +1185,44 @@ namespace comp
 	brender_inject::texture_entry brender_inject::texture_for(IDirect3DDevice9* dev, game::br_material* material)
 	{
 		if (!material || !material->colour_map) {
-			return { m_white_texture, false };
+			return { m_white_texture, alpha_mode::Opaque };
 		}
 
 		const auto pm = static_cast<const game::br_pixelmap*>(material->colour_map);
 		if (const auto it = m_textures.find(pm); it != m_textures.end()) {
-			return it->second.texture ? it->second : texture_entry{ m_white_texture, false };
+			return it->second.texture ? it->second : texture_entry{ m_white_texture, alpha_mode::Opaque };
 		}
 
-		const texture_entry entry{ upload_pixelmap(dev, pm), pm->type == game::BR_PMT_RGBA_4444
-			|| pm->type == game::BR_PMT_RGBA_8888 };
+		// Only a texture that actually goes transparent somewhere needs blending. Water's
+		// alpha sits uniformly high, so it renders as an ordinary opaque surface; smoke and
+		// foliage fade to nothing and keep blending.
+		uint32_t min_alpha = 255;
+		texture_entry entry{ upload_pixelmap(dev, pm, min_alpha), alpha_mode::Opaque };
+		if (min_alpha < ALPHA_BLEND_THRESHOLD) {
+			entry.alpha = alpha_mode::Blend;
+		}
+
 		m_textures[pm] = entry;
 
-		if (entry.texture) { ++m_textures_ok; }
-		else { ++m_textures_failed; }
+		if (entry.texture)
+		{
+			++m_textures_ok;
+			if (entry.alpha == alpha_mode::Blend) {
+				++m_textures_blended;
+			}
+		}
+		else {
+			++m_textures_failed;
+		}
 
-		return entry.texture ? entry : texture_entry{ m_white_texture, false };
+		return entry.texture ? entry : texture_entry{ m_white_texture, alpha_mode::Opaque };
 	}
 
-	IDirect3DTexture9* brender_inject::upload_pixelmap(IDirect3DDevice9* dev, const game::br_pixelmap* pm)
+	IDirect3DTexture9* brender_inject::upload_pixelmap(IDirect3DDevice9* dev, const game::br_pixelmap* pm,
+		uint32_t& min_alpha)
 	{
+		min_alpha = 255;
+
 		const uint32_t w = pm->width;
 		const uint32_t h = pm->height;
 
@@ -1301,6 +1316,7 @@ namespace comp
 					break;
 				}
 
+				min_alpha = (std::min)(min_alpha, a);
 				dst[x] = (a << 24) | (r << 16) | (g << 8) | b;
 			}
 		}
@@ -1312,12 +1328,12 @@ namespace comp
 	brender_inject::texture_entry brender_inject::solid_colour_texture(IDirect3DDevice9* dev, const uint32_t rgb)
 	{
 		if (const auto it = m_colour_textures.find(rgb); it != m_colour_textures.end()) {
-			return { it->second, false };
+			return { it->second, alpha_mode::Opaque };
 		}
 
 		IDirect3DTexture9* tex = nullptr;
 		if (FAILED(dev->CreateTexture(1, 1, 1, 0, D3DFMT_A8R8G8B8, D3DPOOL_MANAGED, &tex, nullptr)) || !tex) {
-			return { m_white_texture, false };
+			return { m_white_texture, alpha_mode::Opaque };
 		}
 
 		D3DLOCKED_RECT rect{};
@@ -1328,7 +1344,7 @@ namespace comp
 		}
 
 		m_colour_textures[rgb] = tex;
-		return { tex, false };
+		return { tex, alpha_mode::Opaque };
 	}
 
 	void brender_inject::note_flat_colour(const game::br_model* model, const game::br_material* material)
