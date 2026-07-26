@@ -554,9 +554,6 @@ namespace comp
 		const uint32_t vertex_base = static_cast<uint32_t>(vertices.size());
 		uint32_t total_vertices = 0;
 
-		// Flat colour per untextured material, taken from the group that first used it.
-		std::vector<std::pair<game::br_material*, uint32_t>> flat_colours;
-
 		for (uint16_t g = 0; g < prepared->ngroups; ++g)
 		{
 			const game::v1_group& group = prepared->groups[g];
@@ -572,21 +569,6 @@ namespace comp
 				if (const auto it = m_materials.find(group.material_token); it != m_materials.end()) {
 					material = it->second;
 				}
-			}
-
-			// Debris chunks, car bodies and similar carry no texture; BRender colours them
-			// flat. BrModelUpdate packs each face's authored colour into face_colours as
-			// 0xIIRRGGBB, with the palette index in the top byte.
-			if ((!material || !material->colour_map) && group.face_colours && group.nfaces)
-			{
-				const uint32_t colour = group.face_colours[0] & 0x00FFFFFFu;
-				if (std::find_if(flat_colours.begin(), flat_colours.end(),
-					[&](const auto& e) { return e.first == material; }) == flat_colours.end())
-				{
-					flat_colours.emplace_back(material, colour);
-				}
-
-				probe_flat_material(model, material, group);
 			}
 
 			groups.push_back({ &group, material, vertex_base + total_vertices });
@@ -631,20 +613,16 @@ namespace comp
 		{
 			texture_entry tex = texture_for(dev, material);
 
-			// An untextured material is not a failure -- it is a flat colour. Feeding Remix
-			// a solid swatch gives it a real albedo, and a distinct hash per colour so the
-			// swatch can still be replaced.
-			if (!tex.texture || tex.texture == m_white_texture)
+			// An untextured material is not a failure -- it is a flat colour, held in
+			// br_material::colour. Feeding Remix a solid swatch gives it a real albedo and
+			// a distinct hash per colour, so the swatch stays replaceable.
+			if ((!tex.texture || tex.texture == m_white_texture) && material)
 			{
-				const auto flat = std::find_if(flat_colours.begin(), flat_colours.end(),
-					[&](const auto& e) { return e.first == material; });
-
-				if (flat != flat_colours.end() && flat->second != 0) {
-					tex = solid_colour_texture(dev, flat->second);
-				}
-				else {
-					note_untextured(model, material);
-				}
+				tex = solid_colour_texture(dev, material->colour & 0x00FFFFFFu);
+				note_flat_colour(model, material);
+			}
+			else if (!tex.texture || tex.texture == m_white_texture) {
+				note_untextured(model, nullptr);
 			}
 
 			geometry_part part{};
@@ -1043,8 +1021,14 @@ namespace comp
 		dev->SetRenderState(D3DRS_ZENABLE, D3DZB_TRUE);
 		dev->SetRenderState(D3DRS_ZWRITEENABLE, TRUE);
 		dev->SetRenderState(D3DRS_CULLMODE, D3DCULL_NONE);
-		dev->SetRenderState(D3DRS_SRCBLEND, D3DBLEND_SRCALPHA);
-		dev->SetRenderState(D3DRS_DESTBLEND, D3DBLEND_INVSRCALPHA);
+
+		// Alpha-textured surfaces are alpha *tested*, not blended. Blended draws get
+		// classified separately by Remix and the water surfaces vanished from the
+		// path-traced output entirely; tested geometry stays ordinary opaque geometry, which
+		// is what a path tracer wants, and still cuts out fully transparent texels.
+		dev->SetRenderState(D3DRS_ALPHABLENDENABLE, FALSE);
+		dev->SetRenderState(D3DRS_ALPHAFUNC, D3DCMP_GREATEREQUAL);
+		dev->SetRenderState(D3DRS_ALPHAREF, 128);
 
 		ensure_white_texture(dev);
 		dev->SetTextureStageState(0, D3DTSS_COLOROP, D3DTOP_SELECTARG1);
@@ -1091,7 +1075,7 @@ namespace comp
 			dev->SetStreamSource(0, batch.vertex_buffer, 0, sizeof(ffp_vertex));
 			dev->SetIndices(batch.index_buffer);
 			dev->SetTexture(0, batch.texture);
-			dev->SetRenderState(D3DRS_ALPHABLENDENABLE, batch.has_alpha ? TRUE : FALSE);
+			dev->SetRenderState(D3DRS_ALPHATESTENABLE, batch.has_alpha ? TRUE : FALSE);
 
 			if (SUCCEEDED(dev->DrawIndexedPrimitive(D3DPT_TRIANGLELIST, 0, 0,
 				batch.vertex_count, 0, batch.triangle_count)))
@@ -1112,7 +1096,7 @@ namespace comp
 			for (const auto& part : geometry.parts)
 			{
 				dev->SetTexture(0, part.texture);
-				dev->SetRenderState(D3DRS_ALPHABLENDENABLE, part.has_alpha ? TRUE : FALSE);
+				dev->SetRenderState(D3DRS_ALPHATESTENABLE, part.has_alpha ? TRUE : FALSE);
 
 				if (SUCCEEDED(dev->DrawIndexedPrimitive(D3DPT_TRIANGLELIST, 0, 0,
 					geometry.vertex_count, part.index_start, part.triangle_count)))
@@ -1347,30 +1331,16 @@ namespace comp
 		return { tex, false };
 	}
 
-	// Records what an untextured material actually holds, so the flat colour can be sourced
-	// from the material itself if the per-face colours turn out not to carry it.
-	void brender_inject::probe_flat_material(const game::br_model* model,
-		const game::br_material* material, const game::v1_group& group)
+	void brender_inject::note_flat_colour(const game::br_model* model, const game::br_material* material)
 	{
-		if (m_flat_probes >= 4 || !material || !readable(material, 0x30)) {
-			return;
-		}
-
-		++m_flat_probes;
-		const auto bytes = reinterpret_cast<const uint8_t*>(material);
-
-		std::string hex;
-		for (uint32_t i = 0; i < 0x30; ++i)
+		const std::string name = model->identifier ? model->identifier : "<null>";
+		if (m_untextured_models.try_emplace(name, "flat colour").second)
 		{
-			hex += std::format("{:02X}", bytes[i]);
-			if ((i & 3) == 3) { hex += ' '; }
+			shared::common::log("BRender", std::format("flat colour: '{}' material '{}' = {:#08x}",
+				name, readable(material->identifier, 1) ? material->identifier : "<null>",
+				material->colour & 0x00FFFFFFu),
+				shared::common::LOG_TYPE::LOG_TYPE_DEFAULT, false);
 		}
-
-		shared::common::log("BRender", std::format("flat '{}' face={:#08x} vertex={:#08x} | {}",
-			model->identifier ? model->identifier : "<null>",
-			group.face_colours ? group.face_colours[0] : 0u,
-			group.vertex_colours ? group.vertex_colours[0] : 0u, hex),
-			shared::common::LOG_TYPE::LOG_TYPE_DEFAULT, false);
 	}
 
 	void brender_inject::ensure_white_texture(IDirect3DDevice9* dev)

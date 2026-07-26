@@ -98,9 +98,21 @@ namespace comp::game
 
 	// Offsets recovered from MaterialNeedsAlpha (0x0051F630), which tests colour_map->type
 	// and walks the token-value list. The struct is larger than stock BRender 1.3.
+	// The prefix matches stock BRender and was confirmed against a live material:
+	// 'MOVER01' reads colour 0x212121, opacity 0xFF, ka 0.2, kd 0.8, power 20.0.
 	struct br_material
 	{
-		uint8_t pad00[0x40];
+		br_material* next;      // 0x00
+		char* identifier;       // 0x04
+		uint32_t colour;        // 0x08  0x00RRGGBB, used when there is no colour_map
+		uint8_t opacity;        // 0x0C
+		uint8_t pad0D[3];
+		float ka;               // 0x10
+		float kd;               // 0x14
+		float ks;               // 0x18
+		float power;            // 0x1C
+		uint32_t flags;         // 0x20
+		uint8_t pad24[0x1C];
 		void* colour_map;       // 0x40  br_pixelmap*
 		uint8_t pad44[0x08];
 		void* index_shade;      // 0x4C
