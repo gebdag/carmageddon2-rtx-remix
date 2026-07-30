@@ -9,6 +9,7 @@
 #include "diagnostics.hpp"
 #include "skinning.hpp"
 #include "shared/common/shader_cache.hpp"
+#include "shared/common/ffp_state.hpp"
 
 using comp::tracer;
 #include "tracer_dispatch.inc"
@@ -560,7 +561,10 @@ namespace comp
 	HRESULT d3d9ex::D3D9Device::DrawPrimitiveUP(D3DPRIMITIVETYPE PrimitiveType, UINT PrimitiveCount, CONST void* pVertexStreamZeroData, UINT VertexStreamZeroStride)
 	{
 		TRACE_IF_ACTIVE(trace_DrawPrimitiveUP, PrimitiveType, PrimitiveCount, pVertexStreamZeroData, VertexStreamZeroStride);
-		// You might want to wrap this if your game uses this
+		// Counted but not routed through the FFP converter: a user-pointer draw carries its
+		// own vertices, so there is no stream or declaration for that path to act on. nGlide
+		// batches Glide triangles this way, which makes this the game's whole draw stream.
+		shared::common::ffp_state::get().increment_draw_count();
 		const auto hr = m_pIDirect3DDevice9->DrawPrimitiveUP(PrimitiveType, PrimitiveCount, pVertexStreamZeroData, VertexStreamZeroStride);
 		return hr;
 	}
@@ -576,7 +580,7 @@ namespace comp
 		[[maybe_unused]] UINT VertexStreamZeroStride)
 	{
 		TRACE_IF_ACTIVE(trace_DrawIndexedPrimitiveUP, PrimitiveType, MinVertexIndex, NumVertices, PrimitiveCount, pIndexData, IndexDataFormat, pVertexStreamZeroData, VertexStreamZeroStride);
-		// You might want to wrap this if your game uses this
+		shared::common::ffp_state::get().increment_draw_count();
 		return m_pIDirect3DDevice9->DrawIndexedPrimitiveUP(PrimitiveType, MinVertexIndex, NumVertices, PrimitiveCount, pIndexData, IndexDataFormat, pVertexStreamZeroData, VertexStreamZeroStride);
 	}
 
