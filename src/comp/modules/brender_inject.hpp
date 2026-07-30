@@ -58,6 +58,7 @@ namespace comp
 			int64_t capture_ticks;      // our BrZbModelRender tap
 			int64_t bounds_ticks;       // our addition to the renderer's bounds test
 			int64_t game_render_ticks;  // the original BrZbModelRender: software T&L then Glide
+			int64_t scene_end_ticks;    // BrZbSceneRenderEnd: bucket sort, rasterize, nGlide
 			uint32_t model_updates;     // BrModelUpdate calls the scene made
 			uint32_t rebuilds;          // models whose geometry was re-extracted and re-uploaded
 			uint32_t glide_draws;       // draws the device took this frame before ours
@@ -218,6 +219,10 @@ namespace comp
 
 		void note_untextured(const game::br_model* model, const game::br_material* material);
 		void note_unsupported_style(const game::br_model* model, uint32_t style);
+
+		// Geometry that reached the capture but did not make it to Remix, and is therefore
+		// only ever rasterized by the game. This is the injection's coverage gap.
+		void note_not_injected(const game::br_model* model, const char* reason);
 		void install_bounds_test_hook();
 		void ensure_white_texture(IDirect3DDevice9* dev);
 		IDirect3DTexture9* solid_colour_texture(IDirect3DDevice9* dev, uint32_t rgb);
@@ -326,6 +331,7 @@ namespace comp
 			double capture_ms;
 			double bounds_ms;
 			double game_render_ms;
+			double scene_end_ms;
 			double submit_ms;
 			double present_ms;
 			double overlay_ms;

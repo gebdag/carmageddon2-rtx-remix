@@ -398,11 +398,22 @@ namespace comp
 			}
 		}
 
+		/*
+		 * BrZbSceneRenderEnd is where BRender sorts its buckets and rasterizes them, which is
+		 * also where nGlide receives the frame's triangles and pushes them across the bridge.
+		 * None of that is BrZbModelRender, so none of it was covered by the game timer -- it
+		 * fell into the unattributed remainder, and it is the part that scales with draw
+		 * distance.
+		 */
 		void __cdecl hk_scene_end()
 		{
+			const int64_t start = now_ticks();
 			o_scene_end();
+			const int64_t elapsed = now_ticks() - start;
 
-			if (const auto self = brender_inject::get(); self) {
+			if (const auto self = brender_inject::get(); self)
+			{
+				self->profile().scene_end_ticks += elapsed;
 				self->end_scene();
 			}
 		}
@@ -1157,7 +1168,9 @@ namespace comp
 		}
 
 		game::br_matrix34 model_to_view{};
-		if (!query_model_to_view(model_to_view)) {
+		if (!query_model_to_view(model_to_view))
+		{
+			note_not_injected(model, "renderer would not give a model_to_view");
 			return false;
 		}
 
@@ -1235,8 +1248,13 @@ namespace comp
 			return false;
 		}
 
+		// Anything that reaches here and fails is geometry the game will still draw and Remix
+		// will only ever rasterize. Naming it is the difference between knowing the injection's
+		// coverage gap and guessing at it from what looks wrong on screen.
 		const auto geometry = geometry_for(dev, model, fallback_material);
-		if (!geometry) {
+		if (!geometry)
+		{
+			note_not_injected(model, "geometry could not be built");
 			return false;
 		}
 
@@ -1509,6 +1527,7 @@ namespace comp
 		stats.capture_ms = static_cast<double>(m_profile.capture_ticks) / m_ticks_per_ms;
 		stats.bounds_ms = static_cast<double>(m_profile.bounds_ticks) / m_ticks_per_ms;
 		stats.game_render_ms = static_cast<double>(m_profile.game_render_ticks) / m_ticks_per_ms;
+		stats.scene_end_ms = static_cast<double>(m_profile.scene_end_ticks) / m_ticks_per_ms;
 		stats.submit_ms = static_cast<double>(end.QuadPart - start.QuadPart) / m_ticks_per_ms;
 
 		// Present, the overlay passes and the frame's full draw count all belong to the stretch
@@ -1809,17 +1828,18 @@ namespace comp
 		// Whatever nothing above accounts for: game logic, physics, AI and nGlide's own work.
 		// Negative only if the scene straddled a stall, so it is left signed.
 		const double other_ms = stats.frame_ms - (stats.capture_ms + stats.bounds_ms
-			+ stats.game_render_ms + stats.submit_ms + stats.present_ms + stats.overlay_ms);
+			+ stats.game_render_ms + stats.scene_end_ms + stats.submit_ms
+			+ stats.present_ms + stats.overlay_ms);
 
 		shared::common::log("BRender", std::format(
 			"scene {}: {:.1f} fps ({:.1f} ms) | {} models, {} draws (+{} glide, {} frame),"
-			" {} verts, {} segments | game {:.2f} overlay {:.2f} capture {:.2f} bounds {:.2f}"
-			" submit {:.2f} present {:.2f} other {:.2f} ms | {} updates, {} rebuilds"
-			" | geometry cached {}{}",
+			" {} verts, {} segments | game {:.2f} sceneend {:.2f} overlay {:.2f} capture {:.2f}"
+			" bounds {:.2f} submit {:.2f} present {:.2f} other {:.2f} ms | {} updates,"
+			" {} rebuilds | geometry cached {}{}",
 			m_scenes_submitted, fps, stats.frame_ms, stats.models, stats.draws,
 			stats.glide_draws, stats.frame_draws, stats.vertices, stats.segments,
-			stats.game_render_ms, stats.overlay_ms, stats.capture_ms, stats.bounds_ms,
-			stats.submit_ms, stats.present_ms, other_ms,
+			stats.game_render_ms, stats.scene_end_ms, stats.overlay_ms, stats.capture_ms,
+			stats.bounds_ms, stats.submit_ms, stats.present_ms, other_ms,
 			stats.model_updates, stats.rebuilds, m_geometry.size(),
 			worse && !first ? "  <-- new worst" : ""),
 			worse && !first ? shared::common::LOG_TYPE::LOG_TYPE_WARN : shared::common::LOG_TYPE::LOG_TYPE_DEFAULT,
@@ -1840,6 +1860,15 @@ namespace comp
 		if (m_untextured_models.try_emplace(name, reason).second) {
 			shared::common::log("BRender", std::format("untextured: '{}' - {}", name, reason),
 				shared::common::LOG_TYPE::LOG_TYPE_DEFAULT, false);
+		}
+	}
+
+	void brender_inject::note_not_injected(const game::br_model* model, const char* reason)
+	{
+		const std::string name = model->identifier ? model->identifier : "<null>";
+		if (m_skipped_models.try_emplace(name, reason).second) {
+			shared::common::log("BRender", std::format("not injected: '{}' - {}", name, reason),
+				shared::common::LOG_TYPE::LOG_TYPE_WARN, false);
 		}
 	}
 
