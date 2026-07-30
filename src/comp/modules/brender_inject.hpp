@@ -314,6 +314,7 @@ namespace comp
 			double bounds_ms;
 			double game_render_ms;
 			double submit_ms;
+			double present_ms;
 			double frame_ms;
 		};
 

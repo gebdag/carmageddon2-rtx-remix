@@ -1503,6 +1503,10 @@ namespace comp
 		stats.bounds_ms = static_cast<double>(m_profile.bounds_ticks) / m_ticks_per_ms;
 		stats.game_render_ms = static_cast<double>(m_profile.game_render_ticks) / m_ticks_per_ms;
 		stats.submit_ms = static_cast<double>(end.QuadPart - start.QuadPart) / m_ticks_per_ms;
+
+		// Present runs after this scene closes, so this is the previous frame's. Over a steady
+		// stretch that is the same thing, and it is the only way to see it from here.
+		stats.present_ms = shared::common::ffp_state::get().last_present_ms();
 		stats.frame_ms = m_last_scene_ticks
 			? static_cast<double>(start.QuadPart - m_last_scene_ticks) / m_ticks_per_ms
 			: 0.0;
@@ -1765,19 +1769,19 @@ namespace comp
 
 		const double fps = stats.frame_ms > 0.0 ? 1000.0 / stats.frame_ms : 0.0;
 
-		// Whatever the four hooks did not spend: game logic, physics, AI, nGlide's own work
-		// and Present. Negative only if the scene straddled a stall, so it is left signed.
+		// Whatever nothing above accounts for: game logic, physics, AI and nGlide's own work.
+		// Negative only if the scene straddled a stall, so it is left signed.
 		const double other_ms = stats.frame_ms - (stats.capture_ms + stats.bounds_ms
-			+ stats.game_render_ms + stats.submit_ms);
+			+ stats.game_render_ms + stats.submit_ms + stats.present_ms);
 
 		shared::common::log("BRender", std::format(
 			"scene {}: {:.1f} fps ({:.1f} ms) | {} models, {} draws (+{} glide), {} verts,"
-			" {} segments | game {:.2f} capture {:.2f} bounds {:.2f} submit {:.2f} other {:.2f} ms"
-			" | {} updates, {} rebuilds | geometry cached {}{}",
+			" {} segments | game {:.2f} capture {:.2f} bounds {:.2f} submit {:.2f}"
+			" present {:.2f} other {:.2f} ms | {} updates, {} rebuilds | geometry cached {}{}",
 			m_scenes_submitted, fps, stats.frame_ms, stats.models, stats.draws,
 			stats.glide_draws, stats.vertices, stats.segments, stats.game_render_ms,
-			stats.capture_ms, stats.bounds_ms, stats.submit_ms, other_ms, stats.model_updates,
-			stats.rebuilds, m_geometry.size(),
+			stats.capture_ms, stats.bounds_ms, stats.submit_ms, stats.present_ms, other_ms,
+			stats.model_updates, stats.rebuilds, m_geometry.size(),
 			worse && !first ? "  <-- new worst" : ""),
 			worse && !first ? shared::common::LOG_TYPE::LOG_TYPE_WARN : shared::common::LOG_TYPE::LOG_TYPE_DEFAULT,
 			false);

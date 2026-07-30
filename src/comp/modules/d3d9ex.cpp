@@ -146,7 +146,17 @@ namespace comp
 		auto& ffp = shared::common::ffp_state::get();
 		if (auto* d = diagnostics::get()) d->on_present(ffp.frame_count(), ffp.draw_call_count(), ffp.scene_count());
 		ffp.on_present();
+
+		LARGE_INTEGER before{}, after{}, frequency{};
+		QueryPerformanceFrequency(&frequency);
+		QueryPerformanceCounter(&before);
+
 		auto hr = m_pIDirect3DDevice9->Present(pSourceRect, pDestRect, hDestWindowOverride, pDirtyRegion);
+
+		QueryPerformanceCounter(&after);
+		ffp.set_last_present_ms(static_cast<double>(after.QuadPart - before.QuadPart)
+			* 1000.0 / static_cast<double>(frequency.QuadPart));
+
 		if (auto* t = tracer::get()) t->on_present();
 		return hr;
 	}

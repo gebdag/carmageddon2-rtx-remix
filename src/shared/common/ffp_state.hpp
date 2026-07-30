@@ -67,6 +67,12 @@ namespace shared::common
 		const float* ps_const_data() const { return ps_const_; }
 		const int* vs_const_write_log() const { return vs_const_write_log_; }
 		UINT draw_call_count() const { return draw_call_count_; }
+
+		// How long the last Present took. Under Remix this is where the CPU blocks on the
+		// bridge, so it is the difference between the frame being spent on work and the frame
+		// being spent waiting for the renderer to catch up.
+		double last_present_ms() const { return last_present_ms_; }
+		void set_last_present_ms(const double ms) { last_present_ms_ = ms; }
 		UINT frame_count() const { return frame_count_; }
 		UINT scene_count() const { return scene_count_; }
 		DWORD create_tick() const { return create_tick_; }
@@ -172,6 +178,7 @@ namespace shared::common
 		// Frame/draw counters
 		UINT frame_count_ = 0;
 		UINT draw_call_count_ = 0;
+		double last_present_ms_ = 0.0;
 		UINT scene_count_ = 0;
 		DWORD create_tick_ = 0;
 
