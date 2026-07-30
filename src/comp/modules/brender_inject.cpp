@@ -543,6 +543,7 @@ namespace comp
 
 		if (m_white_texture) { m_white_texture->Release(); }
 		if (m_vertex_decl) { m_vertex_decl->Release(); }
+		if (m_saved_state) { m_saved_state->Release(); }
 	}
 
 	// Deferred because the renderer object does not exist until BrRendererBegin has run,
@@ -1393,19 +1394,23 @@ namespace comp
 		LARGE_INTEGER start{};
 		QueryPerformanceCounter(&start);
 
-		// Everything the device has drawn this frame before we add anything, which for a race
-		// scene is nGlide's rasterized output. Remix has rtx.useVertexCapture on, so those
-		// draws are not discarded -- they are un-projected and raytraced alongside ours, and
-		// they cross the same bridge. Sizing that stream is the only way to know whether our
-		// draw count is the one worth cutting.
+		// Everything the device has drawn this frame before we add anything. nGlide's
+		// screen-space output is not discarded by Remix -- a decl carrying POSITIONT comes
+		// back as RtxGeometryStatus::Rasterized, which preserves the draw and rasterizes it --
+		// so both streams cross the bridge and both end up on screen.
 		m_profile.glide_draws = shared::common::ffp_state::get().draw_call_count();
 
 		const D3DMATRIX view = to_d3d(m_world_to_view);
 
-		// nGlide owns the device for the rest of the frame, so every state this replay
-		// touches is captured and put back afterwards.
-		IDirect3DStateBlock9* saved = nullptr;
-		if (FAILED(dev->CreateStateBlock(D3DSBT_ALL, &saved))) {
+		// nGlide owns the device for the rest of the frame and sets its state lazily, so
+		// everything this replay touches is captured and put back afterwards. The block is
+		// built once and re-captured: creating and destroying a D3DSBT_ALL block every scene
+		// meant allocating and freeing the whole device state across the bridge every frame.
+		if (!m_saved_state && FAILED(dev->CreateStateBlock(D3DSBT_ALL, &m_saved_state))) {
+			return;
+		}
+
+		if (FAILED(m_saved_state->Capture())) {
 			return;
 		}
 
@@ -1478,8 +1483,7 @@ namespace comp
 				: draw_pass(dev, pass_kind::combined))
 			+ submit_lines(dev);
 
-		saved->Apply();
-		saved->Release();
+		m_saved_state->Apply();
 
 		// Restoring the block reverts VIEW and PROJECTION to whatever nGlide last had, which
 		// is nothing -- it draws exclusively with pre-transformed vertices and never touches
@@ -1544,6 +1548,32 @@ namespace comp
 		bool transform_active = false;
 		uint32_t draws = 0;
 
+		// Every one of these is a bridge round trip, and the queue repeats the same texture and
+		// the same blend mode across long runs of models. Tracking what is already bound turns
+		// those into nothing at all.
+		IDirect3DTexture9* bound_texture = nullptr;
+		bool texture_bound = false;
+		int bound_blend = -1;
+		const auto bind_texture = [&](IDirect3DTexture9* texture)
+		{
+			// Nothing is assumed about what the device already holds -- nGlide left it in an
+			// unknown state -- so the first bind of a pass always goes through.
+			if (!texture_bound || texture != bound_texture)
+			{
+				dev->SetTexture(0, texture);
+				bound_texture = texture;
+				texture_bound = true;
+			}
+		};
+		const auto bind_blend = [&](const bool alpha)
+		{
+			if (const int wanted = alpha ? 1 : 0; wanted != bound_blend)
+			{
+				dev->SetRenderState(D3DRS_ALPHABLENDENABLE, alpha ? TRUE : FALSE);
+				bound_blend = wanted;
+			}
+		};
+
 		dev->SetTransform(D3DTS_WORLD, &IDENTITY_MATRIX);
 
 		for (const auto& batch : m_static_batches)
@@ -1554,9 +1584,9 @@ namespace comp
 
 			dev->SetStreamSource(0, batch.vertex_buffer, 0, sizeof(ffp_vertex));
 			dev->SetIndices(batch.index_buffer);
-			dev->SetTexture(0, batch.texture);
+			bind_texture(batch.texture);
 			if (combined) {
-				dev->SetRenderState(D3DRS_ALPHABLENDENABLE, batch.has_alpha ? TRUE : FALSE);
+				bind_blend(batch.has_alpha);
 			}
 
 			if (SUCCEEDED(dev->DrawIndexedPrimitive(D3DPT_TRIANGLELIST, 0, 0,
@@ -1583,9 +1613,9 @@ namespace comp
 					continue;
 				}
 
-				dev->SetTexture(0, part.texture);
+				bind_texture(part.texture);
 				if (combined) {
-					dev->SetRenderState(D3DRS_ALPHABLENDENABLE, part.has_alpha ? TRUE : FALSE);
+					bind_blend(part.has_alpha);
 				}
 
 				// Off for all but a handful of runs, so the stage state is only touched when

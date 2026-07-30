@@ -271,6 +271,9 @@ namespace comp
 
 		IDirect3DTexture9* m_white_texture = nullptr;
 		IDirect3DVertexDeclaration9* m_vertex_decl = nullptr;
+
+		// Built on the first submit and re-captured each scene thereafter.
+		IDirect3DStateBlock9* m_saved_state = nullptr;
 		uint32_t m_textures_ok = 0;
 		uint32_t m_textures_failed = 0;
 
