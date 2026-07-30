@@ -427,12 +427,20 @@ namespace comp
 		                             uint32_t style, uint32_t bounds, uint32_t use_custom)
 		{
 			const auto self = brender_inject::get();
+			bool injected = false;
 
 			if (self && model)
 			{
 				const int64_t start = now_ticks();
-				self->capture_model(model, static_cast<game::br_material*>(material), style);
+				injected = self->capture_model(model, static_cast<game::br_material*>(material), style);
 				self->profile().capture_ticks += now_ticks() - start;
+			}
+
+			// The original transforms and lights this model on the CPU and hands the result to
+			// nGlide, which Remix then discards as pre-transformed. Once the model has been
+			// injected in model space, none of that reaches the screen.
+			if (injected && shared::common::config::get().optimization.suppress_game_render) {
+				return;
 			}
 
 			const int64_t start = now_ticks();
@@ -500,9 +508,10 @@ namespace comp
 			const auto& cfg = shared::common::config::get();
 			shared::common::log("BRender", std::format(
 				"Hooked the BRender scene walk - model-space injection armed. Static merging {},"
-				" translucent pass {}, texture transform {}, sparks {},"
+				" game render {}, translucent pass {}, texture transform {}, sparks {},"
 				" decal offset {:.3f}, spark width {:.3f}.",
 				cfg.optimization.merge_static_geometry ? "ON" : "off",
+				cfg.optimization.suppress_game_render ? "SUPPRESSED" : "on",
 				cfg.effects.translucent_pass ? "on" : "OFF",
 				cfg.effects.texture_transform ? "on" : "OFF",
 				cfg.effects.sparks ? "on" : "OFF",
@@ -1119,11 +1128,11 @@ namespace comp
 			&& invert34(m_world_to_view, m_view_inverse);
 	}
 
-	void brender_inject::capture_model(game::br_model* model, game::br_material* fallback_material,
+	bool brender_inject::capture_model(game::br_model* model, game::br_material* fallback_material,
 		const uint32_t style)
 	{
 		if (!m_capturing || !m_camera_valid) {
-			return;
+			return false;
 		}
 
 		const uint32_t effective_style = style & 0xFFu;
@@ -1139,12 +1148,12 @@ namespace comp
 				shared::common::log("BRender", std::format("skipped: '{}' - {}", name, reason),
 					shared::common::LOG_TYPE::LOG_TYPE_DEFAULT, false);
 			}
-			return;
+			return false;
 		}
 
 		game::br_matrix34 model_to_view{};
 		if (!query_model_to_view(model_to_view)) {
-			return;
+			return false;
 		}
 
 		game::br_matrix34 model_to_world{};
@@ -1155,10 +1164,12 @@ namespace comp
 		// path's per-model caching cannot represent anyway.
 		if (effective_style == game::BR_RSTYLE_EDGES)
 		{
-			if (shared::common::config::get().effects.sparks) {
-				capture_lines(model, model_to_world);
+			if (!shared::common::config::get().effects.sparks) {
+				return false;
 			}
-			return;
+
+			capture_lines(model, model_to_world);
+			return true;
 		}
 
 		// DEFAULT resolves to FACES. POINTS and the bounding-volume styles draw something
@@ -1167,7 +1178,7 @@ namespace comp
 		if (effective_style != game::BR_RSTYLE_DEFAULT && effective_style != game::BR_RSTYLE_FACES)
 		{
 			note_unsupported_style(model, effective_style);
-			return;
+			return false;
 		}
 
 		++m_scene_models;
@@ -1201,7 +1212,7 @@ namespace comp
 					}
 
 					if (placement->second.baked) {
-						return;
+						return true;
 					}
 				}
 			}
@@ -1214,15 +1225,20 @@ namespace comp
 
 		// The device is needed to build the buffers, and it exists by the time any scene
 		// runs; storing the model here and resolving in submit would need a second lookup.
-		if (const auto dev = shared::globals::d3d_device; dev)
-		{
-			if (const auto geometry = geometry_for(dev, model, fallback_material))
-			{
-				refresh_part_state(*geometry);
-				queued.geometry = geometry;
-				m_queue.push_back(queued);
-			}
+		const auto dev = shared::globals::d3d_device;
+		if (!dev) {
+			return false;
 		}
+
+		const auto geometry = geometry_for(dev, model, fallback_material);
+		if (!geometry) {
+			return false;
+		}
+
+		refresh_part_state(*geometry);
+		queued.geometry = geometry;
+		m_queue.push_back(queued);
+		return true;
 	}
 
 	/*

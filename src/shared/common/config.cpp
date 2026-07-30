@@ -95,6 +95,7 @@ namespace shared::common
 
 		// [Optimization]
 		optimization.merge_static_geometry = get_bool("Optimization", "MergeStaticGeometry", false);
+		optimization.suppress_game_render = get_bool("Optimization", "SuppressGameRender", false);
 
 		// [Effects]
 		effects.translucent_pass = get_bool("Effects", "TranslucentPass", true);

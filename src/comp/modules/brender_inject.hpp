@@ -32,7 +32,9 @@ namespace comp
 
 		void begin_scene(game::br_actor* camera);
 		void capture_camera();
-		void capture_model(game::br_model* model, game::br_material* fallback_material, uint32_t style);
+		// True when the model reached Remix, either as a queued draw, a merged static batch or
+		// a line segment. The caller uses it to decide whether the game still needs to draw it.
+		bool capture_model(game::br_model* model, game::br_material* fallback_material, uint32_t style);
 		void end_scene();
 
 		// Called from the BrModelUpdate detour while the authored face array is still alive.

@@ -67,6 +67,13 @@ namespace shared::common
 			// buffers when new scenery is discovered causes an occasional hitch, and the
 			// gain did not justify it.
 			bool merge_static_geometry = false;
+
+			// Drops the game's own render of every model the proxy has already injected.
+			// BRender transforms and lights on the CPU and nGlide rasterizes the result, and
+			// Remix discards all of it as pre-transformed, so with the injection running that
+			// work reaches nothing. Off by default: without Remix the injected geometry is
+			// the only thing left drawing the world.
+			bool suppress_game_render = false;
 		} optimization;
 
 		struct culling_settings
