@@ -1,6 +1,7 @@
 #include "std_include.hpp"
 #include "brender_inject.hpp"
 #include "shared/common/config.hpp"
+#include "shared/common/ffp_state.hpp"
 
 namespace comp
 {
@@ -1392,6 +1393,13 @@ namespace comp
 		LARGE_INTEGER start{};
 		QueryPerformanceCounter(&start);
 
+		// Everything the device has drawn this frame before we add anything, which for a race
+		// scene is nGlide's rasterized output. Remix has rtx.useVertexCapture on, so those
+		// draws are not discarded -- they are un-projected and raytraced alongside ours, and
+		// they cross the same bridge. Sizing that stream is the only way to know whether our
+		// draw count is the one worth cutting.
+		m_profile.glide_draws = shared::common::ffp_state::get().draw_call_count();
+
 		const D3DMATRIX view = to_d3d(m_world_to_view);
 
 		// nGlide owns the device for the rest of the frame, so every state this replay
@@ -1490,6 +1498,7 @@ namespace comp
 		stats.segments = static_cast<uint32_t>(m_lines.size());
 		stats.model_updates = m_profile.model_updates;
 		stats.rebuilds = m_profile.rebuilds;
+		stats.glide_draws = m_profile.glide_draws;
 		stats.capture_ms = static_cast<double>(m_profile.capture_ticks) / m_ticks_per_ms;
 		stats.bounds_ms = static_cast<double>(m_profile.bounds_ticks) / m_ticks_per_ms;
 		stats.game_render_ms = static_cast<double>(m_profile.game_render_ticks) / m_ticks_per_ms;
@@ -1762,12 +1771,12 @@ namespace comp
 			+ stats.game_render_ms + stats.submit_ms);
 
 		shared::common::log("BRender", std::format(
-			"scene {}: {:.1f} fps ({:.1f} ms) | {} models, {} draws, {} verts, {} segments"
-			" | game {:.2f} capture {:.2f} bounds {:.2f} submit {:.2f} other {:.2f} ms"
+			"scene {}: {:.1f} fps ({:.1f} ms) | {} models, {} draws (+{} glide), {} verts,"
+			" {} segments | game {:.2f} capture {:.2f} bounds {:.2f} submit {:.2f} other {:.2f} ms"
 			" | {} updates, {} rebuilds | geometry cached {}{}",
 			m_scenes_submitted, fps, stats.frame_ms, stats.models, stats.draws,
-			stats.vertices, stats.segments, stats.game_render_ms, stats.capture_ms,
-			stats.bounds_ms, stats.submit_ms, other_ms, stats.model_updates,
+			stats.glide_draws, stats.vertices, stats.segments, stats.game_render_ms,
+			stats.capture_ms, stats.bounds_ms, stats.submit_ms, other_ms, stats.model_updates,
 			stats.rebuilds, m_geometry.size(),
 			worse && !first ? "  <-- new worst" : ""),
 			worse && !first ? shared::common::LOG_TYPE::LOG_TYPE_WARN : shared::common::LOG_TYPE::LOG_TYPE_DEFAULT,

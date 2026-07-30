@@ -60,6 +60,7 @@ namespace comp
 			int64_t game_render_ticks;  // the original BrZbModelRender: software T&L then Glide
 			uint32_t model_updates;     // BrModelUpdate calls the scene made
 			uint32_t rebuilds;          // models whose geometry was re-extracted and re-uploaded
+			uint32_t glide_draws;       // draws the device took this frame before ours
 		};
 
 		scene_profile& profile() { return m_profile; }
@@ -308,6 +309,7 @@ namespace comp
 			uint32_t segments;
 			uint32_t model_updates;
 			uint32_t rebuilds;
+			uint32_t glide_draws;
 			double capture_ms;
 			double bounds_ms;
 			double game_render_ms;
