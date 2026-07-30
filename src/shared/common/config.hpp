@@ -83,6 +83,23 @@ namespace shared::common
 
 		struct effects_settings
 		{
+			// Each of the three effect fixes can be switched off on its own, so a change in
+			// frame rate can be attributed to one of them rather than to the set.
+
+			// Split submission into an opaque pass and a translucent pass drawn afterwards
+			// with depth writes off. Off restores a single pass with depth writes on and
+			// blending toggled per run, which is what the proxy did before.
+			bool translucent_pass = true;
+
+			// Follow br_material::map_transform into the texture stage matrix, which is how
+			// a car's rear light panel addresses one cell of its atlas. Off leaves the
+			// stage transform disabled and shows all four light states at once.
+			bool texture_transform = true;
+
+			// Rebuild BR_RSTYLE_EDGES models as billboards. Off drops them, which is what
+			// happens naturally otherwise: their faces are zero-area triangles.
+			bool sparks = true;
+
 			// Distance translucent surfaces are lifted along their normals. BRender kept
 			// tyre tracks, shadows and impact smears out of the road by drawing them in
 			// depth-sorted order; a path tracer has no draw order, so co-planar decals

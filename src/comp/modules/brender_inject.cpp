@@ -434,8 +434,12 @@ namespace comp
 			const auto& cfg = shared::common::config::get();
 			shared::common::log("BRender", std::format(
 				"Hooked the BRender scene walk - model-space injection armed. Static merging {},"
+				" translucent pass {}, texture transform {}, sparks {},"
 				" decal offset {:.3f}, spark width {:.3f}.",
 				cfg.optimization.merge_static_geometry ? "ON" : "off",
+				cfg.effects.translucent_pass ? "on" : "OFF",
+				cfg.effects.texture_transform ? "on" : "OFF",
+				cfg.effects.sparks ? "on" : "OFF",
 				cfg.effects.decal_offset, cfg.effects.spark_width),
 				shared::common::LOG_TYPE::LOG_TYPE_GREEN, true);
 		}
@@ -652,12 +656,14 @@ namespace comp
 	 */
 	void brender_inject::refresh_part_state(model_geometry& geometry) const
 	{
+		const bool follow_transform = shared::common::config::get().effects.texture_transform;
+
 		geometry.has_opaque = false;
 		geometry.has_blended = false;
 
 		for (auto& part : geometry.parts)
 		{
-			if (part.material && readable(part.material, sizeof(game::br_material)))
+			if (follow_transform && part.material && readable(part.material, sizeof(game::br_material)))
 			{
 				part.texture_transform_active =
 					build_texture_matrix(part.material->map_transform, part.texture_transform);
@@ -1053,7 +1059,9 @@ namespace comp
 		// path's per-model caching cannot represent anyway.
 		if (effective_style == game::BR_RSTYLE_EDGES)
 		{
-			capture_lines(model, model_to_world);
+			if (shared::common::config::get().effects.sparks) {
+				capture_lines(model, model_to_world);
+			}
 			return;
 		}
 
@@ -1345,8 +1353,9 @@ namespace comp
 			vertices += queued.geometry->vertex_count;
 		}
 
-		const uint32_t draws = draw_pass(dev, false)
-			+ draw_pass(dev, true)
+		const uint32_t draws = (shared::common::config::get().effects.translucent_pass
+				? draw_pass(dev, pass_kind::opaque) + draw_pass(dev, pass_kind::blended)
+				: draw_pass(dev, pass_kind::combined))
 			+ submit_lines(dev);
 
 		saved->Apply();
@@ -1389,9 +1398,15 @@ namespace comp
 	 * so its fully transparent texels can no longer claim depth that the surface underneath
 	 * then fails against. It is also the render state Remix reads to recognise a decal.
 	 */
-	uint32_t brender_inject::draw_pass(IDirect3DDevice9* dev, const bool blended)
+	uint32_t brender_inject::draw_pass(IDirect3DDevice9* dev, const pass_kind kind)
 	{
-		dev->SetRenderState(D3DRS_ALPHABLENDENABLE, blended ? TRUE : FALSE);
+		const bool combined = kind == pass_kind::combined;
+		const bool blended = kind == pass_kind::blended;
+
+		// In a combined pass blending is a property of each run, so it is set as they go.
+		if (!combined) {
+			dev->SetRenderState(D3DRS_ALPHABLENDENABLE, blended ? TRUE : FALSE);
+		}
 		dev->SetRenderState(D3DRS_ALPHATESTENABLE, blended ? TRUE : FALSE);
 		dev->SetRenderState(D3DRS_ZWRITEENABLE, blended ? FALSE : TRUE);
 		dev->SetTextureStageState(0, D3DTSS_TEXTURETRANSFORMFLAGS, D3DTTFF_DISABLE);
@@ -1403,13 +1418,16 @@ namespace comp
 
 		for (const auto& batch : m_static_batches)
 		{
-			if (batch.has_alpha != blended) {
+			if (!combined && batch.has_alpha != blended) {
 				continue;
 			}
 
 			dev->SetStreamSource(0, batch.vertex_buffer, 0, sizeof(ffp_vertex));
 			dev->SetIndices(batch.index_buffer);
 			dev->SetTexture(0, batch.texture);
+			if (combined) {
+				dev->SetRenderState(D3DRS_ALPHABLENDENABLE, batch.has_alpha ? TRUE : FALSE);
+			}
 
 			if (SUCCEEDED(dev->DrawIndexedPrimitive(D3DPT_TRIANGLELIST, 0, 0,
 				batch.vertex_count, 0, batch.triangle_count)))
@@ -1421,7 +1439,7 @@ namespace comp
 		for (const auto& queued : m_queue)
 		{
 			const model_geometry& geometry = *queued.geometry;
-			if (blended ? !geometry.has_blended : !geometry.has_opaque) {
+			if (!combined && (blended ? !geometry.has_blended : !geometry.has_opaque)) {
 				continue;
 			}
 
@@ -1431,11 +1449,14 @@ namespace comp
 
 			for (const auto& part : geometry.parts)
 			{
-				if (part.has_alpha != blended) {
+				if (!combined && part.has_alpha != blended) {
 					continue;
 				}
 
 				dev->SetTexture(0, part.texture);
+				if (combined) {
+					dev->SetRenderState(D3DRS_ALPHABLENDENABLE, part.has_alpha ? TRUE : FALSE);
+				}
 
 				// Off for all but a handful of runs, so the stage state is only touched when
 				// it actually has to change.

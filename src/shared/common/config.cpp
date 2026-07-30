@@ -97,6 +97,9 @@ namespace shared::common
 		optimization.merge_static_geometry = get_bool("Optimization", "MergeStaticGeometry", false);
 
 		// [Effects]
+		effects.translucent_pass = get_bool("Effects", "TranslucentPass", true);
+		effects.texture_transform = get_bool("Effects", "TextureTransform", true);
+		effects.sparks = get_bool("Effects", "Sparks", true);
 		effects.decal_offset = get_float("Effects", "DecalOffset", 0.02f);
 		effects.spark_width = get_float("Effects", "SparkWidth", 0.004f);
 

@@ -134,10 +134,17 @@ namespace comp
 
 		void submit(IDirect3DDevice9* dev);
 
+		enum class pass_kind
+		{
+			opaque,    // depth writes on, blending off
+			blended,   // drawn after opaque, depth writes off, alpha tested
+			combined,  // everything in scene-walk order, blending toggled per run
+		};
+
 		// Opaque geometry goes down first, then everything translucent with depth writes
 		// off, so a decal's fully transparent texels can no longer occlude the road under
 		// it. Returns the number of draws issued.
-		uint32_t draw_pass(IDirect3DDevice9* dev, bool blended);
+		uint32_t draw_pass(IDirect3DDevice9* dev, pass_kind kind);
 
 		void capture_lines(const game::br_model* model, const game::br_matrix34& model_to_world);
 		uint32_t submit_lines(IDirect3DDevice9* dev);
