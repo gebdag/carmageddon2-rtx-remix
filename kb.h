@@ -231,6 +231,7 @@ enum br_matrix_token {
 /* --- Carmageddon 2 effect subsystems (see findings.md) --- */
 @ 0x004f6b80 br_token DrawLine3D(br_vector3 *a /*ecx*/, br_vector3 *b /*edx*/, ...);  /* rewrites gLine_model, BrModelUpdate, BrZbSceneRenderAdd */
 @ 0x0047e610 void InitLineAndSmokeStuff(void);       /* builds gLine_model / gLine_material / gLine_actor */
+@ 0x004f7cb0 void SetLineColour(char white /*cl*/);  /* white: both verts ffffff. else v0=ff0000, v1=ffff00 (spark) */
 @ 0x004e9c40 void InitSpillsAndSkids(void);          /* shadow materials + the 100-quad ground decal ring */
 @ 0x004ea880 void InitImpactDecals(void);            /* the 50-quad "BANG!" decal pool */
 @ 0x00478930 void FunkApplyMapTransform(void);       /* copies a frame's br_matrix23 into material->map_transform */

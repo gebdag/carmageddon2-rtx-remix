@@ -101,11 +101,14 @@ namespace comp
 		// walking face edges, and Carmageddon 2's spark model is a single face with two
 		// coincident indices — a zero-area triangle, which a real rasterizer discards. The
 		// segments are collected here and expanded into camera-facing quads at submit time.
+		// The two ends carry different colours -- a spark runs yellow to red -- so both are
+		// kept and the streak is shaded between them.
 		struct line_segment
 		{
 			float a[3];
 			float b[3];
-			uint32_t rgb;
+			uint32_t rgb_a;
+			uint32_t rgb_b;
 		};
 
 		struct queued_model
@@ -140,10 +143,11 @@ namespace comp
 		uint32_t submit_lines(IDirect3DDevice9* dev);
 		void log_spark_geometry(const float camera[3]);
 
-		// A soft streak in the given colour, one texture per colour the emitter uses. Kept
-		// apart from the flat-colour swatches so sparks carry their own Remix hashes and can
-		// be tagged emissive without dragging every red-painted chunk of debris along.
-		IDirect3DTexture9* spark_texture(IDirect3DDevice9* dev, uint32_t rgb);
+		// A soft streak shading from one end colour to the other, one texture per pair the
+		// emitter uses. Kept apart from the flat-colour swatches so sparks carry their own
+		// Remix hashes and can be tagged emissive without dragging every red-painted chunk
+		// of debris along.
+		IDirect3DTexture9* spark_texture(IDirect3DDevice9* dev, uint32_t rgb_a, uint32_t rgb_b);
 
 		// Re-resolves the material state that the game animates: translucency and the UV
 		// transform that picks a cell out of a texture atlas.
@@ -247,8 +251,8 @@ namespace comp
 		std::unordered_map<uint32_t, IDirect3DTexture9*> m_colour_textures;
 		uint32_t m_flat_probes = 0;
 
-		// Streak swatches, keyed the same way but never shared with the flat colours above.
-		std::unordered_map<uint32_t, IDirect3DTexture9*> m_spark_textures;
+		// Streak swatches, keyed on both end colours and never shared with the flat colours.
+		std::unordered_map<uint64_t, IDirect3DTexture9*> m_spark_textures;
 		bool m_logged_spark_geometry = false;
 
 		// A prepared group only records br_material::stored, so this maps that token -- and

@@ -1096,7 +1096,9 @@ namespace comp
 	 * triangle that face has zero area and draws nothing, which is why sparks went missing.
 	 *
 	 * Colour lives in the authored vertices rather than the material: gLine_material is plain
-	 * white and BR_MATF_PRELIT tells BRender to take the vertex colours as final.
+	 * white and BR_MATF_PRELIT tells BRender to take the vertex colours as final. The two
+	 * ends differ -- 0x004F7CB0 writes ff0000 into one and ffff00 into the other, which is
+	 * where a spark's orange comes from -- so both are read.
 	 */
 	void brender_inject::capture_lines(const game::br_model* model, const game::br_matrix34& model_to_world)
 	{
@@ -1173,7 +1175,8 @@ namespace comp
 					line_segment segment{};
 					to_world(group.vertices[from], segment.a);
 					to_world(group.vertices[to], segment.b);
-					segment.rgb = colour_of(from);
+					segment.rgb_a = colour_of(from);
+					segment.rgb_b = colour_of(to);
 					m_lines.push_back(segment);
 				}
 			}
@@ -1469,17 +1472,22 @@ namespace comp
 		dev->SetTextureStageState(0, D3DTSS_TEXTURETRANSFORMFLAGS, D3DTTFF_DISABLE);
 		dev->SetTransform(D3DTS_WORLD, &IDENTITY_MATRIX);
 
+		// Batched by the pair of end colours, since that is what picks the streak texture.
+		const auto shade_of = [](const line_segment& s) {
+			return (static_cast<uint64_t>(s.rgb_a) << 32) | s.rgb_b;
+		};
+
 		std::sort(m_lines.begin(), m_lines.end(),
-			[](const line_segment& a, const line_segment& b) { return a.rgb < b.rgb; });
+			[&](const line_segment& a, const line_segment& b) { return shade_of(a) < shade_of(b); });
 
 		uint32_t draws = 0;
 
 		for (size_t i = 0; i < m_lines.size(); )
 		{
-			const uint32_t rgb = m_lines[i].rgb;
+			const uint64_t shade = shade_of(m_lines[i]);
 			m_line_vertices.clear();
 
-			for (; i < m_lines.size() && m_lines[i].rgb == rgb; ++i)
+			for (; i < m_lines.size() && shade_of(m_lines[i]) == shade; ++i)
 			{
 				const line_segment& segment = m_lines[i];
 
@@ -1541,7 +1549,8 @@ namespace comp
 				continue;
 			}
 
-			dev->SetTexture(0, spark_texture(dev, rgb));
+			dev->SetTexture(0, spark_texture(dev,
+				static_cast<uint32_t>(shade >> 32), static_cast<uint32_t>(shade)));
 
 			if (SUCCEEDED(dev->DrawPrimitiveUP(D3DPT_TRIANGLELIST,
 				static_cast<UINT>(m_line_vertices.size() / 3), m_line_vertices.data(), sizeof(ffp_vertex))))
@@ -1758,16 +1767,21 @@ namespace comp
 	}
 
 	/*
-	 * Paints a streak: a bright core running down the middle of the quad, falling off to
-	 * nothing at both long edges and tapering along its length.
+	 * Paints a streak: the segment's own colour gradient along its length, over a bright core
+	 * that falls off to nothing at both long edges.
 	 *
-	 * A flat swatch stretched over the quad gives a hard-edged slab, which is what a spark
-	 * least resembles. The falloff lives in alpha so the additive blend does the rest, and
-	 * gives Remix a texture whose hash belongs to sparks alone.
+	 * The gradient is the game's -- one end is written ff0000 and the other ffff00, and it is
+	 * that pair, not either colour alone, that makes a spark look orange. The falloff across
+	 * the width is the proxy's, and exists only because a quad has hard edges where BRender
+	 * had a one-pixel line; it lives in alpha so the additive blend does the rest. Brightness
+	 * along the length is left alone, since dimming one end would bias the very colours this
+	 * is reproducing.
 	 */
-	IDirect3DTexture9* brender_inject::spark_texture(IDirect3DDevice9* dev, const uint32_t rgb)
+	IDirect3DTexture9* brender_inject::spark_texture(IDirect3DDevice9* dev,
+		const uint32_t rgb_a, const uint32_t rgb_b)
 	{
-		if (const auto it = m_spark_textures.find(rgb); it != m_spark_textures.end()) {
+		const uint64_t key = (static_cast<uint64_t>(rgb_a) << 32) | rgb_b;
+		if (const auto it = m_spark_textures.find(key); it != m_spark_textures.end()) {
 			return it->second;
 		}
 
@@ -1787,9 +1801,17 @@ namespace comp
 			{
 				const auto row = reinterpret_cast<uint32_t*>(rows + y * rect.Pitch);
 
-				// v runs along the segment: full strength at the head, faded at the tail.
+				// v runs from end a to end b, which is how the quad lays its corners out.
 				const float v = (static_cast<float>(y) + 0.5f) / SIZE;
-				const float along = 1.0f - v * v;
+
+				uint32_t shade = 0;
+				for (int shift = 16; shift >= 0; shift -= 8)
+				{
+					const float from = static_cast<float>((rgb_a >> shift) & 0xFF);
+					const float to = static_cast<float>((rgb_b >> shift) & 0xFF);
+					const auto channel = static_cast<uint32_t>(from + (to - from) * v + 0.5f);
+					shade |= channel << shift;
+				}
 
 				for (UINT x = 0; x < SIZE; ++x)
 				{
@@ -1798,16 +1820,15 @@ namespace comp
 					const float offset = fabsf(u - 0.5f) * 2.0f;
 					const float across = 1.0f - offset * offset;
 
-					const float alpha = along * across;
-					const auto a = static_cast<uint32_t>(alpha * 255.0f + 0.5f);
-					row[x] = (a << 24) | rgb;
+					const auto a = static_cast<uint32_t>(across * 255.0f + 0.5f);
+					row[x] = (a << 24) | shade;
 				}
 			}
 
 			tex->UnlockRect(0);
 		}
 
-		m_spark_textures[rgb] = tex;
+		m_spark_textures[key] = tex;
 		return tex;
 	}
 
@@ -1826,7 +1847,7 @@ namespace comp
 
 		float shortest = FLT_MAX, longest = 0.0f, total = 0.0f;
 		float nearest = FLT_MAX, furthest = 0.0f;
-		std::set<uint32_t> colours;
+		std::set<uint64_t> colours;
 
 		for (const auto& segment : m_lines)
 		{
@@ -1845,14 +1866,15 @@ namespace comp
 			total += length;
 			nearest = std::min(nearest, distance);
 			furthest = std::max(furthest, distance);
-			colours.insert(segment.rgb);
+			colours.insert((static_cast<uint64_t>(segment.rgb_a) << 32) | segment.rgb_b);
 		}
 
 		std::string swatches;
-		for (const uint32_t rgb : colours)
+		for (const uint64_t shade : colours)
 		{
 			if (swatches.size() > 60) { swatches += " ..."; break; }
-			swatches += std::format(" {:06x}", rgb);
+			swatches += std::format(" {:06x}->{:06x}",
+				static_cast<uint32_t>(shade >> 32), static_cast<uint32_t>(shade));
 		}
 
 		shared::common::log("BRender", std::format(

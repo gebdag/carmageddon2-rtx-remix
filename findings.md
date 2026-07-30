@@ -243,3 +243,25 @@ funk picks a quadrant by UV transform. The proxy ignored `map_transform` and exp
 visible at once. Fixed by folding `map_transform` into `D3DTS_TEXTURE0` with `D3DTTFF_COUNT2`,
 refreshed every time the model is captured. Note D3D9 expands a 2-component texcoord to
 (u, v, 1), so the br_matrix23 translation row maps to the D3D matrix's **third** row.
+
+### 6.5 A spark's orange is a two-colour gradient, not a colour (2026-07-30)
+
+`SetLineColour` @ **0x004F7CB0** takes a flag in `cl` and writes both of `gLine_model`'s
+vertices, then calls `BrModelUpdate(model, 0x7FFF)`:
+
+| | vertex[0] (+0x15) | vertex[1] (+0x3D) |
+|---|---|---|
+| `cl != 0` | `ff` `ff` `ff` | `ff` `ff` `ff` |
+| `cl == 0` | `ff` `00` `00` | `ff` `ff` `00` |
+
+So a spark is **red at one end and yellow at the other** — the orange is the gradient
+between them, and neither endpoint alone is orange. The write offsets also confirm
+`br_vertex` independently: `red` at +0x15 and a stride of 0x28 (`0x3D - 0x15`), matching
+the struct the proxy already uses, and `br_model::vertices` at +0x08.
+
+**Why they looked wrong:** the proxy sampled `colour_of(from)` only and shaded the whole
+streak with it, so every spark came out flat `ff0000`. Both ends are now read and the pair
+selects a streak texture that carries the gradient along its length. Brightness along the
+length is deliberately left flat — an alpha taper would bias the very colours this is
+reproducing. The falloff across the width stays, since a quad has hard edges where BRender
+drew a one-pixel line.
