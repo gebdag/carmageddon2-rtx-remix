@@ -211,6 +211,13 @@ namespace comp
 			return query(rend, game::BRT_MATRIX, 0, &count, &out, sizeof(out), game::BRT_MODEL_TO_VIEW) == 0;
 		}
 
+		int64_t now_ticks()
+		{
+			LARGE_INTEGER t{};
+			QueryPerformanceCounter(&t);
+			return t.QuadPart;
+		}
+
 		// A pointer is only worth dereferencing if the whole span is committed and readable.
 		bool readable(const void* p, const size_t bytes)
 		{
@@ -267,27 +274,15 @@ namespace comp
 			return false;
 		}
 
-		// BrZbActorRender drops any actor this reports as outside, which for path tracing
-		// removes exactly the geometry that should still occlude and bounce light: walls
-		// behind and beside the camera. Anything within the bubble is downgraded to
-		// PARTIAL rather than INSIDE so BRender still clips it correctly for its own
-		// rasterized pass.
-		int __cdecl hk_bounds_test(void* self, uint32_t* out_token, const float* bounds)
+		// bounds is min[3] then max[3] in model space. The camera sits at the origin in view
+		// space, so the transformed centre is already the camera-relative position.
+		bool inside_camera_bubble(const float* bounds, const float radius)
 		{
-			const int result = o_bounds_test(self, out_token, bounds);
-
-			const float radius = shared::common::config::get().culling.bubble_radius;
-			if (radius <= 0.0f || !out_token || *out_token != game::BRT_BOUNDS_OUTSIDE || !bounds) {
-				return result;
-			}
-
 			game::br_matrix34 model_to_view{};
 			if (!query_model_to_view(model_to_view)) {
-				return result;
+				return false;
 			}
 
-			// bounds is min[3] then max[3] in model space. The camera sits at the origin in
-			// view space, so the transformed centre is already the camera-relative position.
 			const float cx = (bounds[0] + bounds[3]) * 0.5f;
 			const float cy = (bounds[1] + bounds[4]) * 0.5f;
 			const float cz = (bounds[2] + bounds[5]) * 0.5f;
@@ -307,7 +302,31 @@ namespace comp
 			const float extent = sqrtf(ex * ex + ey * ey + ez * ez);
 
 			const float distance = sqrtf(view[0] * view[0] + view[1] * view[1] + view[2] * view[2]);
-			if (distance - extent <= radius) {
+			return distance - extent <= radius;
+		}
+
+		// BrZbActorRender drops any actor this reports as outside, which for path tracing
+		// removes exactly the geometry that should still occlude and bounce light: walls
+		// behind and beside the camera. Anything within the bubble is downgraded to
+		// PARTIAL rather than INSIDE so BRender still clips it correctly for its own
+		// rasterized pass.
+		int __cdecl hk_bounds_test(void* self, uint32_t* out_token, const float* bounds)
+		{
+			const int result = o_bounds_test(self, out_token, bounds);
+
+			const float radius = shared::common::config::get().culling.bubble_radius;
+			if (radius <= 0.0f || !out_token || *out_token != game::BRT_BOUNDS_OUTSIDE || !bounds) {
+				return result;
+			}
+
+			const auto inject = brender_inject::get();
+			const int64_t start = now_ticks();
+			const bool keep = inside_camera_bubble(bounds, radius);
+			if (inject) {
+				inject->profile().bounds_ticks += now_ticks() - start;
+			}
+
+			if (keep) {
 				*out_token = game::BRT_BOUNDS_PARTIAL;
 			}
 
@@ -375,20 +394,35 @@ namespace comp
 		void __cdecl hk_model_render(game::br_actor* actor, game::br_model* model, void* material, void* env,
 		                             uint32_t style, uint32_t bounds, uint32_t use_custom)
 		{
-			if (const auto self = brender_inject::get(); self && model) {
+			const auto self = brender_inject::get();
+
+			if (self && model)
+			{
+				const int64_t start = now_ticks();
 				self->capture_model(model, static_cast<game::br_material*>(material), style);
+				self->profile().capture_ticks += now_ticks() - start;
 			}
 
+			const int64_t start = now_ticks();
 			o_model_render(actor, model, material, env, style, bounds, use_custom);
+
+			if (self) {
+				self->profile().game_render_ticks += now_ticks() - start;
+			}
 		}
 
 		void __cdecl hk_model_update(game::br_model* model, uint16_t flags)
 		{
 			if (const auto self = brender_inject::get(); self && model)
 			{
+				const int64_t start = now_ticks();
+
 				// Must run first: the original frees the authored face array on the way out.
 				self->learn_materials(model);
 				self->invalidate_geometry(model);
+
+				self->profile().capture_ticks += now_ticks() - start;
+				++self->profile().model_updates;
 			}
 
 			o_model_update(model, flags);
@@ -586,6 +620,7 @@ namespace comp
 			// Rebuilt into the same node below; erasing would invalidate any pointer the
 			// current scene's queue already holds.
 			release_geometry(it->second);
+			++m_profile.rebuilds;
 		}
 
 		std::vector<ffp_vertex> vertices;
@@ -1007,6 +1042,7 @@ namespace comp
 		m_camera_valid = false;
 		m_capturing = !m_overlay_scene;
 		m_scene_models = 0;
+		m_profile = {};
 		m_queue.clear();
 		m_lines.clear();
 	}
@@ -1376,6 +1412,11 @@ namespace comp
 		stats.vertices = vertices;
 		stats.models = static_cast<uint32_t>(m_queue.size() + m_static_models.size());
 		stats.segments = static_cast<uint32_t>(m_lines.size());
+		stats.model_updates = m_profile.model_updates;
+		stats.rebuilds = m_profile.rebuilds;
+		stats.capture_ms = static_cast<double>(m_profile.capture_ticks) / m_ticks_per_ms;
+		stats.bounds_ms = static_cast<double>(m_profile.bounds_ticks) / m_ticks_per_ms;
+		stats.game_render_ms = static_cast<double>(m_profile.game_render_ticks) / m_ticks_per_ms;
 		stats.submit_ms = static_cast<double>(end.QuadPart - start.QuadPart) / m_ticks_per_ms;
 		stats.frame_ms = m_last_scene_ticks
 			? static_cast<double>(start.QuadPart - m_last_scene_ticks) / m_ticks_per_ms
@@ -1638,11 +1679,20 @@ namespace comp
 		}
 
 		const double fps = stats.frame_ms > 0.0 ? 1000.0 / stats.frame_ms : 0.0;
+
+		// Whatever the four hooks did not spend: game logic, physics, AI, nGlide's own work
+		// and Present. Negative only if the scene straddled a stall, so it is left signed.
+		const double other_ms = stats.frame_ms - (stats.capture_ms + stats.bounds_ms
+			+ stats.game_render_ms + stats.submit_ms);
+
 		shared::common::log("BRender", std::format(
 			"scene {}: {:.1f} fps ({:.1f} ms) | {} models, {} draws, {} verts, {} segments"
-			" | submit {:.2f} ms | geometry cached {}{}",
+			" | game {:.2f} capture {:.2f} bounds {:.2f} submit {:.2f} other {:.2f} ms"
+			" | {} updates, {} rebuilds | geometry cached {}{}",
 			m_scenes_submitted, fps, stats.frame_ms, stats.models, stats.draws,
-			stats.vertices, stats.segments, stats.submit_ms, m_geometry.size(),
+			stats.vertices, stats.segments, stats.game_render_ms, stats.capture_ms,
+			stats.bounds_ms, stats.submit_ms, other_ms, stats.model_updates,
+			stats.rebuilds, m_geometry.size(),
 			worse && !first ? "  <-- new worst" : ""),
 			worse && !first ? shared::common::LOG_TYPE::LOG_TYPE_WARN : shared::common::LOG_TYPE::LOG_TYPE_DEFAULT,
 			false);

@@ -44,6 +44,24 @@ namespace comp
 
 		void set_overlay_scene(const bool active) { m_overlay_scene = active; }
 
+		/*
+		 * Where a scene's time goes, split by who spends it.
+		 *
+		 * submit_ms on its own covered around a twentieth of the frame, so every earlier
+		 * optimization pass was judged against a number that could not have moved. The hooks
+		 * accumulate into this as they run and submit reports it.
+		 */
+		struct scene_profile
+		{
+			int64_t capture_ticks;      // our BrZbModelRender tap
+			int64_t bounds_ticks;       // our addition to the renderer's bounds test
+			int64_t game_render_ticks;  // the original BrZbModelRender: software T&L then Glide
+			uint32_t model_updates;     // BrModelUpdate calls the scene made
+			uint32_t rebuilds;          // models whose geometry was re-extracted and re-uploaded
+		};
+
+		scene_profile& profile() { return m_profile; }
+
 	private:
 		struct ffp_vertex
 		{
@@ -281,6 +299,11 @@ namespace comp
 			uint32_t vertices;
 			uint32_t models;
 			uint32_t segments;
+			uint32_t model_updates;
+			uint32_t rebuilds;
+			double capture_ms;
+			double bounds_ms;
+			double game_render_ms;
 			double submit_ms;
 			double frame_ms;
 		};
@@ -291,5 +314,6 @@ namespace comp
 		int64_t m_last_scene_ticks = 0;
 		double m_ticks_per_ms = 0.0;
 		frame_stats m_worst{};
+		scene_profile m_profile{};
 	};
 }
