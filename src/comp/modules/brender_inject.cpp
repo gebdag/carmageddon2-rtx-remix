@@ -218,11 +218,38 @@ namespace comp
 			return t.QuadPart;
 		}
 
+		/*
+		 * Regions readable() has already confirmed during the current scene.
+		 *
+		 * VirtualQuery is a syscall and readable() sits on paths that run per part, per
+		 * model, per frame -- several thousand times a scene. The regions it reports back
+		 * are few and large, because materials, models and the decal pools all live in a
+		 * handful of heap blocks, so a confirmed region answers most of the calls that
+		 * follow it. Cleared at the start of every scene: a block freed between frames is
+		 * re-queried rather than trusted.
+		 */
+		std::vector<std::pair<const uint8_t*, const uint8_t*>> g_readable_regions;
+
+		void forget_readable_regions()
+		{
+			g_readable_regions.clear();
+		}
+
 		// A pointer is only worth dereferencing if the whole span is committed and readable.
 		bool readable(const void* p, const size_t bytes)
 		{
 			if (!p || reinterpret_cast<uintptr_t>(p) < 0x10000) {
 				return false;
+			}
+
+			const auto first = static_cast<const uint8_t*>(p);
+			const auto last = first + bytes;
+
+			for (const auto& [begin, end] : g_readable_regions)
+			{
+				if (first >= begin && last <= end) {
+					return true;
+				}
 			}
 
 			MEMORY_BASIC_INFORMATION mbi{};
@@ -237,7 +264,12 @@ namespace comp
 			}
 
 			const auto end = static_cast<const uint8_t*>(mbi.BaseAddress) + mbi.RegionSize;
-			return static_cast<const uint8_t*>(p) + bytes <= end;
+			if (last > end) {
+				return false;
+			}
+
+			g_readable_regions.emplace_back(static_cast<const uint8_t*>(mbi.BaseAddress), end);
+			return true;
 		}
 
 		/*
@@ -580,6 +612,8 @@ namespace comp
 		if (geometry.index_buffer) { geometry.index_buffer->Release(); }
 		geometry.vertex_buffer = nullptr;
 		geometry.index_buffer = nullptr;
+		geometry.vertex_bytes = 0;
+		geometry.index_bytes = 0;
 	}
 
 	void brender_inject::evict_stale_geometry()
@@ -610,6 +644,9 @@ namespace comp
 	brender_inject::model_geometry* brender_inject::geometry_for(IDirect3DDevice9* dev,
 		game::br_model* model, game::br_material* fallback_material)
 	{
+		// Rebuilt into the same node below; erasing would invalidate the pointer the current
+		// scene's queue may already hold.
+		model_geometry* cached = nullptr;
 		if (const auto it = m_geometry.find(model); it != m_geometry.end())
 		{
 			it->second.last_used_scene = m_scenes_submitted;
@@ -617,9 +654,7 @@ namespace comp
 				return it->second.vertex_buffer ? &it->second : nullptr;
 			}
 
-			// Rebuilt into the same node below; erasing would invalidate any pointer the
-			// current scene's queue already holds.
-			release_geometry(it->second);
+			cached = &it->second;
 			++m_profile.rebuilds;
 		}
 
@@ -635,6 +670,9 @@ namespace comp
 		if (!extract_geometry(dev, model, fallback_material, vertices, parts, indices)
 			|| vertices.size() > 0xFFFF)
 		{
+			if (cached) {
+				release_geometry(*cached);
+			}
 			m_geometry[model] = geometry;
 			return nullptr;
 		}
@@ -642,15 +680,36 @@ namespace comp
 		const UINT vertex_bytes = static_cast<UINT>(vertices.size() * sizeof(ffp_vertex));
 		const UINT index_bytes = static_cast<UINT>(indices.size() * sizeof(uint16_t));
 
-		if (FAILED(dev->CreateVertexBuffer(vertex_bytes, D3DUSAGE_WRITEONLY, 0, D3DPOOL_MANAGED,
-			&geometry.vertex_buffer, nullptr))
-			|| FAILED(dev->CreateIndexBuffer(index_bytes, D3DUSAGE_WRITEONLY, D3DFMT_INDEX16,
-				D3DPOOL_MANAGED, &geometry.index_buffer, nullptr)))
+		/*
+		 * Damage reshapes a car through BrModelUpdate without changing how big it is, so a
+		 * rebuild nearly always wants the buffers it already has. Trading a managed pair for
+		 * an identical pair every time churns the pool and stalls on the driver; refilling
+		 * one that already fits does neither.
+		 */
+		if (cached && cached->vertex_bytes == vertex_bytes && cached->index_bytes == index_bytes)
 		{
-			release_geometry(geometry);
-			m_geometry[model] = geometry;
-			return nullptr;
+			geometry.vertex_buffer = std::exchange(cached->vertex_buffer, nullptr);
+			geometry.index_buffer = std::exchange(cached->index_buffer, nullptr);
 		}
+		else
+		{
+			if (cached) {
+				release_geometry(*cached);
+			}
+
+			if (FAILED(dev->CreateVertexBuffer(vertex_bytes, D3DUSAGE_WRITEONLY, 0, D3DPOOL_MANAGED,
+				&geometry.vertex_buffer, nullptr))
+				|| FAILED(dev->CreateIndexBuffer(index_bytes, D3DUSAGE_WRITEONLY, D3DFMT_INDEX16,
+					D3DPOOL_MANAGED, &geometry.index_buffer, nullptr)))
+			{
+				release_geometry(geometry);
+				m_geometry[model] = geometry;
+				return nullptr;
+			}
+		}
+
+		geometry.vertex_bytes = vertex_bytes;
+		geometry.index_bytes = index_bytes;
 
 		void* mapped = nullptr;
 		if (SUCCEEDED(geometry.vertex_buffer->Lock(0, vertex_bytes, &mapped, 0)))
@@ -1043,6 +1102,7 @@ namespace comp
 		m_capturing = !m_overlay_scene;
 		m_scene_models = 0;
 		m_profile = {};
+		forget_readable_regions();
 		m_queue.clear();
 		m_lines.clear();
 	}

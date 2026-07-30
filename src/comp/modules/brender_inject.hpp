@@ -104,6 +104,11 @@ namespace comp
 			uint32_t vertex_count;
 			uint32_t last_used_scene;
 
+			// What the buffers were allocated to hold. A rebuild that needs the same sizes
+			// refills them in place instead of trading them for an identical pair.
+			uint32_t vertex_bytes;
+			uint32_t index_bytes;
+
 			// Which submission passes have anything to do for this model, so the blended
 			// pass can skip the overwhelming majority of models outright.
 			bool has_opaque;
