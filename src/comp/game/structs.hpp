@@ -17,6 +17,13 @@ namespace comp::game
 		float v[3];
 	};
 
+	// Row-vector affine UV transform: u' = u*m[0][0] + v*m[1][0] + m[2][0].
+	// br_material::map_transform; the funkotronic system animates it.
+	struct br_matrix23
+	{
+		float m[3][2];
+	};
+
 	// The authored, model-space vertex array (br_model::vertices). Freed after prepare
 	// unless the model carries BR_MODF_KEEP_ORIGINAL, which is why the renderer reads
 	// the prepared block below instead.
@@ -112,7 +119,15 @@ namespace comp::game
 		float ks;               // 0x18
 		float power;            // 0x1C
 		uint32_t flags;         // 0x20
-		uint8_t pad24[0x1C];
+
+		// Selects which part of colour_map the material addresses. The funkotronic
+		// "texturebits" mode writes a cell of a texture atlas here and follows up with
+		// BrMaterialUpdate(mat, BR_MATU_MAP_TRANSFORM) — that is how a car's rear-light
+		// panel picks one of four states out of a single EBACKALL texture.
+		br_matrix23 map_transform;  // 0x24
+		uint8_t index_base;         // 0x3C
+		uint8_t index_range;        // 0x3D
+		uint16_t pad3E;
 		void* colour_map;       // 0x40  br_pixelmap*
 		uint8_t pad44[0x08];
 		void* index_shade;      // 0x4C
@@ -208,6 +223,21 @@ namespace comp::game
 		uint16_t pad4;          // 0x2A
 		br_matrix34 t;          // 0x2C
 		void* type_data;        // 0x5C  br_camera* for camera actors
+	};
+
+	// br_actor::render_style, and the style argument BrZbModelRender dispatches on. The
+	// game hides pooled objects by writing NONE here rather than unlinking the actor, so
+	// anything reading geometry out of the scene walk has to honour it.
+	enum br_render_style : uint32_t
+	{
+		BR_RSTYLE_DEFAULT = 0,   // resolves to FACES
+		BR_RSTYLE_NONE = 1,
+		BR_RSTYLE_POINTS = 2,
+		BR_RSTYLE_EDGES = 3,
+		BR_RSTYLE_FACES = 4,
+		BR_RSTYLE_BOUNDING_POINTS = 5,
+		BR_RSTYLE_BOUNDING_EDGES = 6,
+		BR_RSTYLE_BOUNDING_FACES = 7,
 	};
 
 	// BRender token values used by the renderer dispatch.

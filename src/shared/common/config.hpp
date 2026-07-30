@@ -81,6 +81,20 @@ namespace shared::common
 			float bubble_radius = 0.0f;
 		} culling;
 
+		struct effects_settings
+		{
+			// Distance translucent surfaces are lifted along their normals. BRender kept
+			// tyre tracks, shadows and impact smears out of the road by drawing them in
+			// depth-sorted order; a path tracer has no draw order, so co-planar decals
+			// have to be separated geometrically instead. World units. 0 disables it.
+			float decal_offset = 0.02f;
+
+			// Width of the camera-facing quad a BRender line segment expands into. Sparks
+			// are EDGES-style models, i.e. zero-area triangles, which draw nothing at all
+			// on a real rasterizer. World units.
+			float spark_width = 0.02f;
+		} effects;
+
 	private:
 		std::string ini_path_;
 		bool loaded_ = false;

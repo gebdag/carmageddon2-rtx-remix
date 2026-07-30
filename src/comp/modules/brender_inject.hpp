@@ -32,7 +32,7 @@ namespace comp
 
 		void begin_scene(game::br_actor* camera);
 		void capture_camera();
-		void capture_model(game::br_model* model, game::br_material* fallback_material);
+		void capture_model(game::br_model* model, game::br_material* fallback_material, uint32_t style);
 		void end_scene();
 
 		// Called from the BrModelUpdate detour while the authored face array is still alive.
@@ -58,9 +58,22 @@ namespace comp
 		struct geometry_part
 		{
 			IDirect3DTexture9* texture;
-			bool has_alpha;
 			uint32_t index_start;
 			uint32_t triangle_count;
+
+			// Translucent runs are drawn in a later pass and their vertices carry a lift off
+			// whatever surface they overlay, so this belongs to the geometry as built.
+			bool has_alpha;
+
+			// Identity of the material this run came from. Only ever dereferenced from
+			// refresh_part_state, which runs inside the game's own render call while the
+			// material is still alive; submit works purely off the resolved state below.
+			game::br_material* material;
+
+			// Resolved afresh every time the model is captured -- the funkotronic system
+			// animates br_material::map_transform while a race is running.
+			bool texture_transform_active;
+			D3DMATRIX texture_transform;
 		};
 
 		// A model's prepared geometry, uploaded once and reused. Static contents are what let
@@ -73,10 +86,26 @@ namespace comp
 			uint32_t vertex_count;
 			uint32_t last_used_scene;
 
+			// Which submission passes have anything to do for this model, so the blended
+			// pass can skip the overwhelming majority of models outright.
+			bool has_opaque;
+			bool has_blended;
+
 			// BrModelUpdate can fire mid-scene, after this geometry is already queued for
 			// submission. Marking instead of erasing keeps queued pointers valid; the
 			// rebuild happens the next time the model is captured.
 			bool dirty;
+		};
+
+		// One BRender line segment in world space. BRender draws EDGES-style models by
+		// walking face edges, and Carmageddon 2's spark model is a single face with two
+		// coincident indices — a zero-area triangle, which a real rasterizer discards. The
+		// segments are collected here and expanded into camera-facing quads at submit time.
+		struct line_segment
+		{
+			float a[3];
+			float b[3];
+			uint32_t rgb;
 		};
 
 		struct queued_model
@@ -100,16 +129,23 @@ namespace comp
 			uint32_t triangle_count;
 		};
 
-		struct texture_entry
-		{
-			IDirect3DTexture9* texture;
-			bool has_alpha;
-		};
-
 		void submit(IDirect3DDevice9* dev);
+
+		// Opaque geometry goes down first, then everything translucent with depth writes
+		// off, so a decal's fully transparent texels can no longer occlude the road under
+		// it. Returns the number of draws issued.
+		uint32_t draw_pass(IDirect3DDevice9* dev, bool blended);
+
+		void capture_lines(const game::br_model* model, const game::br_matrix34& model_to_world);
+		uint32_t submit_lines(IDirect3DDevice9* dev);
+
+		// Re-resolves the material state that the game animates: translucency and the UV
+		// transform that picks a cell out of a texture atlas.
+		void refresh_part_state(model_geometry& geometry) const;
+
 		bool build_projection(D3DMATRIX& out) const;
-		const model_geometry* geometry_for(IDirect3DDevice9* dev, game::br_model* model,
-		                                   game::br_material* fallback_material);
+		model_geometry* geometry_for(IDirect3DDevice9* dev, game::br_model* model,
+		                             game::br_material* fallback_material);
 
 		// Walks a model's prepared groups into CPU-side vertices and per-texture index runs.
 		// Shared by the per-model buffers and the merged static batches.
@@ -128,14 +164,17 @@ namespace comp
 		void evict_stale_geometry();
 
 		void note_untextured(const game::br_model* model, const game::br_material* material);
+		void note_unsupported_style(const game::br_model* model, uint32_t style);
 		void install_bounds_test_hook();
 		void ensure_white_texture(IDirect3DDevice9* dev);
-		texture_entry solid_colour_texture(IDirect3DDevice9* dev, uint32_t rgb);
+		IDirect3DTexture9* solid_colour_texture(IDirect3DDevice9* dev, uint32_t rgb);
 		void note_flat_colour(const game::br_model* model, const game::br_material* material);
-		texture_entry texture_for(IDirect3DDevice9* dev, game::br_material* material);
+		IDirect3DTexture9* texture_for(IDirect3DDevice9* dev, const game::br_material* material);
 		IDirect3DTexture9* upload_pixelmap(IDirect3DDevice9* dev, const game::br_pixelmap* pm);
 
 		std::vector<queued_model> m_queue;
+		std::vector<line_segment> m_lines;
+		std::vector<ffp_vertex> m_line_vertices;
 		std::unordered_map<game::br_model*, model_geometry> m_geometry;
 
 		// One placement of a model that has held still long enough to be considered scenery.
@@ -194,8 +233,9 @@ namespace comp
 
 		// Keyed on the colour_map rather than the material, so materials sharing a texture
 		// share one upload and Remix sees one stable hash for them.
-		std::unordered_map<const game::br_pixelmap*, texture_entry> m_textures;
+		std::unordered_map<const game::br_pixelmap*, IDirect3DTexture9*> m_textures;
 		std::set<uint32_t> m_unsupported_types;
+		std::set<uint32_t> m_unsupported_styles;
 
 		// 1x1 swatches for materials BRender colours flat instead of texturing.
 		std::unordered_map<uint32_t, IDirect3DTexture9*> m_colour_textures;
@@ -219,6 +259,7 @@ namespace comp
 			uint32_t draws;
 			uint32_t vertices;
 			uint32_t models;
+			uint32_t segments;
 			double submit_ms;
 			double frame_ms;
 		};

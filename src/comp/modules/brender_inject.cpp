@@ -20,6 +20,14 @@ namespace comp
 		// A br_angle covers a full turn in 16 bits.
 		constexpr float BR_ANGLE_TO_RADIANS = 6.283185307f / 65536.0f;
 
+		constexpr D3DMATRIX IDENTITY_MATRIX =
+		{
+			{ { 1, 0, 0, 0,
+			    0, 1, 0, 0,
+			    0, 0, 1, 0,
+			    0, 0, 0, 1 } }
+		};
+
 		game::BrZbSceneRender_t o_scene_render = nullptr;
 		game::BrZbSceneRender_t o_scene_begin = nullptr;
 		game::BrZbSceneRenderEnd_t o_scene_end = nullptr;
@@ -93,6 +101,56 @@ namespace comp
 				                + m.m[3][1] * out.m[1][col]
 				                + m.m[3][2] * out.m[2][col]);
 			}
+			return true;
+		}
+
+		/*
+		 * Folds br_material::map_transform into a D3D9 texture-stage matrix.
+		 *
+		 * BRender's br_matrix23 is a row-vector 2x3 affine UV transform. D3D9's fixed
+		 * function pipeline expands a two-component texture coordinate to (u, v, 1) before
+		 * multiplying, so the translation row lands in the matrix's third row rather than
+		 * its fourth.
+		 *
+		 * Returns false for a transform that would not change anything, which is the common
+		 * case: leaving the stage's transform disabled then keeps Remix's texcoord handling
+		 * on the path it is known to work on.
+		 */
+		bool build_texture_matrix(const game::br_matrix23& b, D3DMATRIX& out)
+		{
+			out = IDENTITY_MATRIX;
+			out.m[0][0] = b.m[0][0]; out.m[0][1] = b.m[0][1];
+			out.m[1][0] = b.m[1][0]; out.m[1][1] = b.m[1][1];
+			out.m[2][0] = b.m[2][0]; out.m[2][1] = b.m[2][1];
+
+			// A singular linear part means the material was never given a transform. Using
+			// it would collapse every texture coordinate onto a single texel.
+			constexpr float eps = 1e-6f;
+			const float det = b.m[0][0] * b.m[1][1] - b.m[0][1] * b.m[1][0];
+			if (fabsf(det) < eps) {
+				return false;
+			}
+
+			return fabsf(b.m[0][0] - 1.0f) > eps || fabsf(b.m[0][1]) > eps
+			    || fabsf(b.m[1][0]) > eps || fabsf(b.m[1][1] - 1.0f) > eps
+			    || fabsf(b.m[2][0]) > eps || fabsf(b.m[2][1]) > eps;
+		}
+
+		void cross(const float a[3], const float b[3], float out[3])
+		{
+			out[0] = a[1] * b[2] - a[2] * b[1];
+			out[1] = a[2] * b[0] - a[0] * b[2];
+			out[2] = a[0] * b[1] - a[1] * b[0];
+		}
+
+		bool normalize(float v[3])
+		{
+			const float length = sqrtf(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
+			if (length < 1e-12f) {
+				return false;
+			}
+
+			v[0] /= length; v[1] /= length; v[2] /= length;
 			return true;
 		}
 
@@ -284,7 +342,7 @@ namespace comp
 		                             uint32_t style, uint32_t bounds, uint32_t use_custom)
 		{
 			if (const auto self = brender_inject::get(); self && model) {
-				self->capture_model(model, static_cast<game::br_material*>(material));
+				self->capture_model(model, static_cast<game::br_material*>(material), style);
 			}
 
 			o_model_render(actor, model, material, env, style, bounds, use_custom);
@@ -337,10 +395,14 @@ namespace comp
 		ok &= install(game::ADDR_BrModelUpdate, hk_model_update,
 			reinterpret_cast<void**>(&o_model_update), "BrModelUpdate");
 
-		if (ok) {
+		if (ok)
+		{
+			const auto& cfg = shared::common::config::get();
 			shared::common::log("BRender", std::format(
-				"Hooked the BRender scene walk - model-space injection armed. Static merging {}.",
-				shared::common::config::get().optimization.merge_static_geometry ? "ON" : "off"),
+				"Hooked the BRender scene walk - model-space injection armed. Static merging {},"
+				" decal offset {:.3f}, spark width {:.3f}.",
+				cfg.optimization.merge_static_geometry ? "ON" : "off",
+				cfg.effects.decal_offset, cfg.effects.spark_width),
 				shared::common::LOG_TYPE::LOG_TYPE_GREEN, true);
 		}
 	}
@@ -353,8 +415,8 @@ namespace comp
 			release_geometry(geometry);
 		}
 
-		for (auto& [pm, entry] : m_textures) {
-			if (entry.texture) { entry.texture->Release(); }
+		for (auto& [pm, texture] : m_textures) {
+			if (texture) { texture->Release(); }
 		}
 
 		for (auto& [rgb, texture] : m_colour_textures) {
@@ -469,7 +531,7 @@ namespace comp
 	 * hash stable so Remix reuses its acceleration structures, and merging collapses the
 	 * groups into one draw per distinct material.
 	 */
-	const brender_inject::model_geometry* brender_inject::geometry_for(IDirect3DDevice9* dev,
+	brender_inject::model_geometry* brender_inject::geometry_for(IDirect3DDevice9* dev,
 		game::br_model* model, game::br_material* fallback_material)
 	{
 		if (const auto it = m_geometry.find(model); it != m_geometry.end())
@@ -537,6 +599,37 @@ namespace comp
 		return slot.vertex_buffer ? &slot : nullptr;
 	}
 
+	/*
+	 * Re-reads the one piece of material state the game animates per frame.
+	 *
+	 * The funkotronic system rewrites br_material::map_transform to pick one cell out of a
+	 * texture atlas -- that is how a car's rear-light panel switches between off, braking,
+	 * reversing and both -- so it cannot be resolved once when the geometry is built.
+	 * Translucency stays with the geometry, because it decides how far the vertices are
+	 * lifted off the surface they overlay.
+	 *
+	 * Only ever called from capture_model, which runs inside BrZbModelRender: the materials
+	 * this model renders with are necessarily still alive there. Submit works off the values
+	 * left behind and never touches the game's memory.
+	 */
+	void brender_inject::refresh_part_state(model_geometry& geometry) const
+	{
+		geometry.has_opaque = false;
+		geometry.has_blended = false;
+
+		for (auto& part : geometry.parts)
+		{
+			if (part.material && readable(part.material, sizeof(game::br_material)))
+			{
+				part.texture_transform_active =
+					build_texture_matrix(part.material->map_transform, part.texture_transform);
+			}
+
+			if (part.has_alpha) { geometry.has_blended = true; }
+			else { geometry.has_opaque = true; }
+		}
+	}
+
 	bool brender_inject::extract_geometry(IDirect3DDevice9* dev, game::br_model* model,
 		game::br_material* fallback_material, std::vector<ffp_vertex>& vertices,
 		std::vector<geometry_part>& parts, std::vector<uint32_t>& indices)
@@ -547,7 +640,13 @@ namespace comp
 		}
 
 		// Resolve every group's material up front so groups can be ordered by it.
-		struct group_ref { const game::v1_group* group; game::br_material* material; uint32_t vertex_base; };
+		struct group_ref
+		{
+			const game::v1_group* group;
+			game::br_material* material;
+			uint32_t vertex_base;
+			bool needs_alpha;
+		};
 		std::vector<group_ref> groups;
 		groups.reserve(prepared->ngroups);
 
@@ -571,7 +670,10 @@ namespace comp
 				}
 			}
 
-			groups.push_back({ &group, material, vertex_base + total_vertices });
+			const bool needs_alpha = material && readable(material, sizeof(game::br_material))
+				&& game::material_needs_alpha(material);
+
+			groups.push_back({ &group, material, vertex_base + total_vertices, needs_alpha });
 			total_vertices += group.nvertices;
 		}
 
@@ -581,17 +683,27 @@ namespace comp
 
 		vertices.resize(vertex_base + total_vertices);
 
+		// Tyre tracks, shadows and impact smears are quads laid flat on the road surface.
+		// BRender kept them out of it by depth-sorting them into a bucket drawn after the
+		// road; path tracing has no draw order to lean on, so they are lifted clear of the
+		// surface instead. Every translucent material gets the same treatment -- it is the
+		// class that overlays opaque geometry -- and a couple of centimetres is invisible on
+		// anything that was not co-planar to begin with.
+		const float decal_offset = shared::common::config::get().effects.decal_offset;
+
 		for (const auto& ref : groups)
 		{
+			const float lift = ref.needs_alpha ? decal_offset : 0.0f;
+
 			for (uint16_t v = 0; v < ref.group->nvertices; ++v)
 			{
 				const game::v1_online_vertex& src = ref.group->vertices[v];
 				ffp_vertex& dst = vertices[ref.vertex_base + v];
 				// BrModelUpdate subtracts the pivot when it builds the prepared block;
 				// adding it back restores true model space.
-				dst.x = src.px + model->pivot.v[0];
-				dst.y = src.py + model->pivot.v[1];
-				dst.z = src.pz + model->pivot.v[2];
+				dst.x = src.px + model->pivot.v[0] + src.nx * lift;
+				dst.y = src.py + model->pivot.v[1] + src.ny * lift;
+				dst.z = src.pz + model->pivot.v[2] + src.nz * lift;
 				dst.nx = src.nx;
 				dst.ny = src.ny;
 				dst.nz = src.nz;
@@ -601,33 +713,39 @@ namespace comp
 		}
 
 		// Emit indices grouped by material so each material forms one contiguous draw.
-		std::vector<game::br_material*> ordered;
+		std::vector<group_ref> ordered;
 		for (const auto& ref : groups)
 		{
-			if (std::find(ordered.begin(), ordered.end(), ref.material) == ordered.end()) {
-				ordered.push_back(ref.material);
+			const auto seen = std::find_if(ordered.begin(), ordered.end(),
+				[&](const group_ref& o) { return o.material == ref.material; });
+
+			if (seen == ordered.end()) {
+				ordered.push_back(ref);
 			}
 		}
 
-		for (game::br_material* material : ordered)
+		for (const group_ref& entry : ordered)
 		{
-			texture_entry tex = texture_for(dev, material);
+			game::br_material* material = entry.material;
+			IDirect3DTexture9* texture = texture_for(dev, material);
 
 			// An untextured material is not a failure -- it is a flat colour, held in
 			// br_material::colour. Feeding Remix a solid swatch gives it a real albedo and
 			// a distinct hash per colour, so the swatch stays replaceable.
-			if ((!tex.texture || tex.texture == m_white_texture) && material)
+			if ((!texture || texture == m_white_texture) && material)
 			{
-				tex = solid_colour_texture(dev, material->colour & 0x00FFFFFFu);
+				texture = solid_colour_texture(dev, material->colour & 0x00FFFFFFu);
 				note_flat_colour(model, material);
 			}
-			else if (!tex.texture || tex.texture == m_white_texture) {
+			else if (!texture || texture == m_white_texture) {
 				note_untextured(model, nullptr);
 			}
 
 			geometry_part part{};
-			part.texture = tex.texture;
-			part.has_alpha = tex.has_alpha;
+			part.texture = texture;
+			part.material = material;
+			part.has_alpha = entry.needs_alpha;
+			part.texture_transform = IDENTITY_MATRIX;
 			part.index_start = static_cast<uint32_t>(indices.size());
 
 			for (const auto& ref : groups)
@@ -846,6 +964,7 @@ namespace comp
 		m_capturing = !m_overlay_scene;
 		m_scene_models = 0;
 		m_queue.clear();
+		m_lines.clear();
 	}
 
 	void brender_inject::capture_camera()
@@ -860,12 +979,14 @@ namespace comp
 			&& invert34(m_world_to_view, m_view_inverse);
 	}
 
-	void brender_inject::capture_model(game::br_model* model, game::br_material* fallback_material)
+	void brender_inject::capture_model(game::br_model* model, game::br_material* fallback_material,
+		const uint32_t style)
 	{
 		if (!m_capturing || !m_camera_valid) {
 			return;
 		}
 
+		const uint32_t effective_style = style & 0xFFu;
 		const auto prepared = model->prepared;
 		if (!prepared || !prepared->groups || !prepared->ngroups)
 		{
@@ -886,10 +1007,28 @@ namespace comp
 			return;
 		}
 
-		++m_scene_models;
-
 		game::br_matrix34 model_to_world{};
 		mul34(model_to_view, m_view_inverse, model_to_world);
+
+		// Sparks and other streaks. Their faces are not triangles, so they never go through
+		// the vertex buffer path -- and they are rebuilt several times per frame, which that
+		// path's per-model caching cannot represent anyway.
+		if (effective_style == game::BR_RSTYLE_EDGES)
+		{
+			capture_lines(model, model_to_world);
+			return;
+		}
+
+		// DEFAULT resolves to FACES. POINTS and the bounding-volume styles draw something
+		// other than the model's faces, and NONE draws nothing at all; nothing in the shipped
+		// game reaches here with any of them, so the log is there to say so if that changes.
+		if (effective_style != game::BR_RSTYLE_DEFAULT && effective_style != game::BR_RSTYLE_FACES)
+		{
+			note_unsupported_style(model, effective_style);
+			return;
+		}
+
+		++m_scene_models;
 
 		// Scenery holds one placement for the whole race, so it can be baked into the merged
 		// batches whatever its transform. Only things that actually move -- cars, wheels,
@@ -933,12 +1072,107 @@ namespace comp
 
 		// The device is needed to build the buffers, and it exists by the time any scene
 		// runs; storing the model here and resolving in submit would need a second lookup.
-		if (const auto dev = shared::globals::d3d_device; dev) {
-			queued.geometry = geometry_for(dev, model, fallback_material);
+		if (const auto dev = shared::globals::d3d_device; dev)
+		{
+			if (const auto geometry = geometry_for(dev, model, fallback_material))
+			{
+				refresh_part_state(*geometry);
+				queued.geometry = geometry;
+				m_queue.push_back(queued);
+			}
+		}
+	}
+
+	/*
+	 * Turns an EDGES-style model into world-space line segments.
+	 *
+	 * BRender's edge renderer walks each face's three edges, which lets the game encode a
+	 * single line as one face with two coincident indices -- Carmageddon 2 builds its sparks
+	 * that way, rewriting one shared two-vertex model for every streak it draws. As a
+	 * triangle that face has zero area and draws nothing, which is why sparks went missing.
+	 *
+	 * Colour lives in the authored vertices rather than the material: gLine_material is plain
+	 * white and BR_MATF_PRELIT tells BRender to take the vertex colours as final.
+	 */
+	void brender_inject::capture_lines(const game::br_model* model, const game::br_matrix34& model_to_world)
+	{
+		const auto prepared = model->prepared;
+		const game::br_vertex* authored = model->vertices;
+		if (!readable(authored, sizeof(game::br_vertex) * model->nvertices)) {
+			authored = nullptr;
 		}
 
-		if (queued.geometry) {
-			m_queue.push_back(queued);
+		const auto to_world = [&](const game::v1_online_vertex& src, float out[3])
+		{
+			const float x = src.px + model->pivot.v[0];
+			const float y = src.py + model->pivot.v[1];
+			const float z = src.pz + model->pivot.v[2];
+
+			for (int col = 0; col < 3; ++col)
+			{
+				out[col] = x * model_to_world.m[0][col]
+				         + y * model_to_world.m[1][col]
+				         + z * model_to_world.m[2][col]
+				         + model_to_world.m[3][col];
+			}
+		};
+
+		for (uint16_t g = 0; g < prepared->ngroups; ++g)
+		{
+			const game::v1_group& group = prepared->groups[g];
+			if (!group.vertices || !group.faces || !group.nvertices || !group.nfaces) {
+				continue;
+			}
+
+			const auto colour_of = [&](const uint16_t v) -> uint32_t
+			{
+				if (!authored || !group.vertex_src_index) {
+					return 0xFFFFFFu;
+				}
+
+				const uint16_t source = group.vertex_src_index[v];
+				if (source >= model->nvertices) {
+					return 0xFFFFFFu;
+				}
+
+				const game::br_vertex& vertex = authored[source];
+				return (static_cast<uint32_t>(vertex.red) << 16)
+				     | (static_cast<uint32_t>(vertex.green) << 8)
+				     | vertex.blue;
+			};
+
+			for (uint16_t f = 0; f < group.nfaces; ++f)
+			{
+				const game::v1_online_face& face = group.faces[f];
+				uint32_t emitted[3]{};
+				int emitted_count = 0;
+
+				for (int edge = 0; edge < 3; ++edge)
+				{
+					const uint16_t from = face.v[edge];
+					const uint16_t to = face.v[(edge + 1) % 3];
+					if (from == to || from >= group.nvertices || to >= group.nvertices) {
+						continue;
+					}
+
+					// A face encoding a single line repeats one index, so the same pair
+					// comes round twice -- once each way.
+					const uint32_t key = from < to
+						? (static_cast<uint32_t>(from) << 16) | to
+						: (static_cast<uint32_t>(to) << 16) | from;
+
+					if (std::find(emitted, emitted + emitted_count, key) != emitted + emitted_count) {
+						continue;
+					}
+					emitted[emitted_count++] = key;
+
+					line_segment segment{};
+					to_world(group.vertices[from], segment.a);
+					to_world(group.vertices[to], segment.b);
+					segment.rgb = colour_of(from);
+					m_lines.push_back(segment);
+				}
+			}
 		}
 	}
 
@@ -1019,10 +1253,14 @@ namespace comp
 
 		dev->SetRenderState(D3DRS_LIGHTING, FALSE);
 		dev->SetRenderState(D3DRS_ZENABLE, D3DZB_TRUE);
-		dev->SetRenderState(D3DRS_ZWRITEENABLE, TRUE);
 		dev->SetRenderState(D3DRS_CULLMODE, D3DCULL_NONE);
 		dev->SetRenderState(D3DRS_SRCBLEND, D3DBLEND_SRCALPHA);
 		dev->SetRenderState(D3DRS_DESTBLEND, D3DBLEND_INVSRCALPHA);
+
+		// Discards fully transparent texels outright rather than blending them in, which
+		// keeps a decal's cut-out area from contributing anything at all.
+		dev->SetRenderState(D3DRS_ALPHAFUNC, D3DCMP_GREATER);
+		dev->SetRenderState(D3DRS_ALPHAREF, 0);
 
 		ensure_white_texture(dev);
 		dev->SetTextureStageState(0, D3DTSS_COLOROP, D3DTOP_SELECTARG1);
@@ -1058,49 +1296,17 @@ namespace comp
 			rebuild_static_batches(dev);
 		}
 
-		uint32_t draws = 0;
 		uint32_t vertices = 0;
-
-		const D3DMATRIX identity = to_d3d(game::br_matrix34{ { {1,0,0}, {0,1,0}, {0,0,1}, {0,0,0} } });
-		dev->SetTransform(D3DTS_WORLD, &identity);
-
-		for (const auto& batch : m_static_batches)
-		{
-			dev->SetStreamSource(0, batch.vertex_buffer, 0, sizeof(ffp_vertex));
-			dev->SetIndices(batch.index_buffer);
-			dev->SetTexture(0, batch.texture);
-			dev->SetRenderState(D3DRS_ALPHABLENDENABLE, batch.has_alpha ? TRUE : FALSE);
-
-			if (SUCCEEDED(dev->DrawIndexedPrimitive(D3DPT_TRIANGLELIST, 0, 0,
-				batch.vertex_count, 0, batch.triangle_count)))
-			{
-				++draws;
-				vertices += batch.vertex_count;
-			}
+		for (const auto& batch : m_static_batches) {
+			vertices += batch.vertex_count;
+		}
+		for (const auto& queued : m_queue) {
+			vertices += queued.geometry->vertex_count;
 		}
 
-		for (const auto& queued : m_queue)
-		{
-			const model_geometry& geometry = *queued.geometry;
-
-			dev->SetTransform(D3DTS_WORLD, &queued.world);
-			dev->SetStreamSource(0, geometry.vertex_buffer, 0, sizeof(ffp_vertex));
-			dev->SetIndices(geometry.index_buffer);
-
-			for (const auto& part : geometry.parts)
-			{
-				dev->SetTexture(0, part.texture);
-				dev->SetRenderState(D3DRS_ALPHABLENDENABLE, part.has_alpha ? TRUE : FALSE);
-
-				if (SUCCEEDED(dev->DrawIndexedPrimitive(D3DPT_TRIANGLELIST, 0, 0,
-					geometry.vertex_count, part.index_start, part.triangle_count)))
-				{
-					++draws;
-				}
-			}
-
-			vertices += geometry.vertex_count;
-		}
+		const uint32_t draws = draw_pass(dev, false)
+			+ draw_pass(dev, true)
+			+ submit_lines(dev);
 
 		saved->Apply();
 		saved->Release();
@@ -1119,6 +1325,7 @@ namespace comp
 		stats.draws = draws;
 		stats.vertices = vertices;
 		stats.models = static_cast<uint32_t>(m_queue.size() + m_static_models.size());
+		stats.segments = static_cast<uint32_t>(m_lines.size());
 		stats.submit_ms = static_cast<double>(end.QuadPart - start.QuadPart) / m_ticks_per_ms;
 		stats.frame_ms = m_last_scene_ticks
 			? static_cast<double>(start.QuadPart - m_last_scene_ticks) / m_ticks_per_ms
@@ -1131,6 +1338,196 @@ namespace comp
 		if ((m_scenes_submitted % 600) == 0) {
 			evict_stale_geometry();
 		}
+	}
+
+	/*
+	 * Draws either every opaque run or every translucent one.
+	 *
+	 * Splitting the two is what stops a tyre track's cut-out area from punching a hole in the
+	 * road: translucent geometry goes down after everything opaque and with depth writes off,
+	 * so its fully transparent texels can no longer claim depth that the surface underneath
+	 * then fails against. It is also the render state Remix reads to recognise a decal.
+	 */
+	uint32_t brender_inject::draw_pass(IDirect3DDevice9* dev, const bool blended)
+	{
+		dev->SetRenderState(D3DRS_ALPHABLENDENABLE, blended ? TRUE : FALSE);
+		dev->SetRenderState(D3DRS_ALPHATESTENABLE, blended ? TRUE : FALSE);
+		dev->SetRenderState(D3DRS_ZWRITEENABLE, blended ? FALSE : TRUE);
+		dev->SetTextureStageState(0, D3DTSS_TEXTURETRANSFORMFLAGS, D3DTTFF_DISABLE);
+
+		bool transform_active = false;
+		uint32_t draws = 0;
+
+		dev->SetTransform(D3DTS_WORLD, &IDENTITY_MATRIX);
+
+		for (const auto& batch : m_static_batches)
+		{
+			if (batch.has_alpha != blended) {
+				continue;
+			}
+
+			dev->SetStreamSource(0, batch.vertex_buffer, 0, sizeof(ffp_vertex));
+			dev->SetIndices(batch.index_buffer);
+			dev->SetTexture(0, batch.texture);
+
+			if (SUCCEEDED(dev->DrawIndexedPrimitive(D3DPT_TRIANGLELIST, 0, 0,
+				batch.vertex_count, 0, batch.triangle_count)))
+			{
+				++draws;
+			}
+		}
+
+		for (const auto& queued : m_queue)
+		{
+			const model_geometry& geometry = *queued.geometry;
+			if (blended ? !geometry.has_blended : !geometry.has_opaque) {
+				continue;
+			}
+
+			dev->SetTransform(D3DTS_WORLD, &queued.world);
+			dev->SetStreamSource(0, geometry.vertex_buffer, 0, sizeof(ffp_vertex));
+			dev->SetIndices(geometry.index_buffer);
+
+			for (const auto& part : geometry.parts)
+			{
+				if (part.has_alpha != blended) {
+					continue;
+				}
+
+				dev->SetTexture(0, part.texture);
+
+				// Off for all but a handful of runs, so the stage state is only touched when
+				// it actually has to change.
+				if (part.texture_transform_active)
+				{
+					dev->SetTransform(D3DTS_TEXTURE0, &part.texture_transform);
+					dev->SetTextureStageState(0, D3DTSS_TEXTURETRANSFORMFLAGS, D3DTTFF_COUNT2);
+					transform_active = true;
+				}
+				else if (transform_active)
+				{
+					dev->SetTextureStageState(0, D3DTSS_TEXTURETRANSFORMFLAGS, D3DTTFF_DISABLE);
+					transform_active = false;
+				}
+
+				if (SUCCEEDED(dev->DrawIndexedPrimitive(D3DPT_TRIANGLELIST, 0, 0,
+					geometry.vertex_count, part.index_start, part.triangle_count)))
+				{
+					++draws;
+				}
+			}
+		}
+
+		if (transform_active) {
+			dev->SetTextureStageState(0, D3DTSS_TEXTURETRANSFORMFLAGS, D3DTTFF_DISABLE);
+		}
+
+		return draws;
+	}
+
+	/*
+	 * Expands the scene's line segments into camera-facing quads.
+	 *
+	 * The vertices are already in world space and change completely every frame, so there is
+	 * nothing to cache: they go straight down as user-pointer draws, one per distinct colour
+	 * so each spark shade reaches Remix as its own 1x1 swatch and stays taggable as emissive.
+	 */
+	uint32_t brender_inject::submit_lines(IDirect3DDevice9* dev)
+	{
+		if (m_lines.empty()) {
+			return 0;
+		}
+
+		const float half_width = shared::common::config::get().effects.spark_width * 0.5f;
+		if (half_width <= 0.0f) {
+			return 0;
+		}
+
+		// The inverse view's translation row is the camera's position in world space.
+		const float camera[3] = { m_view_inverse.m[3][0], m_view_inverse.m[3][1], m_view_inverse.m[3][2] };
+
+		dev->SetRenderState(D3DRS_ALPHABLENDENABLE, FALSE);
+		dev->SetRenderState(D3DRS_ALPHATESTENABLE, FALSE);
+		dev->SetRenderState(D3DRS_ZWRITEENABLE, TRUE);
+		dev->SetTextureStageState(0, D3DTSS_TEXTURETRANSFORMFLAGS, D3DTTFF_DISABLE);
+		dev->SetTransform(D3DTS_WORLD, &IDENTITY_MATRIX);
+
+		std::sort(m_lines.begin(), m_lines.end(),
+			[](const line_segment& a, const line_segment& b) { return a.rgb < b.rgb; });
+
+		uint32_t draws = 0;
+
+		for (size_t i = 0; i < m_lines.size(); )
+		{
+			const uint32_t rgb = m_lines[i].rgb;
+			m_line_vertices.clear();
+
+			for (; i < m_lines.size() && m_lines[i].rgb == rgb; ++i)
+			{
+				const line_segment& segment = m_lines[i];
+
+				float along[3] = { segment.b[0] - segment.a[0],
+				                   segment.b[1] - segment.a[1],
+				                   segment.b[2] - segment.a[2] };
+
+				const float towards_camera[3] = {
+					camera[0] - (segment.a[0] + segment.b[0]) * 0.5f,
+					camera[1] - (segment.a[1] + segment.b[1]) * 0.5f,
+					camera[2] - (segment.a[2] + segment.b[2]) * 0.5f };
+
+				float side[3];
+				cross(along, towards_camera, side);
+
+				// A segment pointing straight at the camera has no meaningful width. It is a
+				// dot on screen either way, so anything perpendicular will do.
+				if (!normalize(side))
+				{
+					const float up[3] = { 0.0f, 1.0f, 0.0f };
+					cross(along, up, side);
+					if (!normalize(side)) {
+						continue;
+					}
+				}
+
+				float normal[3];
+				cross(side, along, normal);
+				if (!normalize(normal)) {
+					continue;
+				}
+
+				for (int axis = 0; axis < 3; ++axis) {
+					side[axis] *= half_width;
+				}
+
+				const ffp_vertex corners[4] = {
+					{ segment.a[0] - side[0], segment.a[1] - side[1], segment.a[2] - side[2],
+					  normal[0], normal[1], normal[2], 0.0f, 0.0f },
+					{ segment.a[0] + side[0], segment.a[1] + side[1], segment.a[2] + side[2],
+					  normal[0], normal[1], normal[2], 1.0f, 0.0f },
+					{ segment.b[0] + side[0], segment.b[1] + side[1], segment.b[2] + side[2],
+					  normal[0], normal[1], normal[2], 1.0f, 1.0f },
+					{ segment.b[0] - side[0], segment.b[1] - side[1], segment.b[2] - side[2],
+					  normal[0], normal[1], normal[2], 0.0f, 1.0f },
+				};
+
+				m_line_vertices.insert(m_line_vertices.end(), { corners[0], corners[1], corners[2] });
+				m_line_vertices.insert(m_line_vertices.end(), { corners[0], corners[2], corners[3] });
+			}
+
+			if (m_line_vertices.empty()) {
+				continue;
+			}
+
+			dev->SetTexture(0, solid_colour_texture(dev, rgb));
+
+			if (SUCCEEDED(dev->DrawPrimitiveUP(D3DPT_TRIANGLELIST,
+				static_cast<UINT>(m_line_vertices.size() / 3), m_line_vertices.data(), sizeof(ffp_vertex))))
+			{
+				++draws;
+			}
+		}
+
+		return draws;
 	}
 
 	/*
@@ -1155,9 +1552,11 @@ namespace comp
 
 		const double fps = stats.frame_ms > 0.0 ? 1000.0 / stats.frame_ms : 0.0;
 		shared::common::log("BRender", std::format(
-			"scene {}: {:.1f} fps ({:.1f} ms) | {} models, {} draws, {} verts | submit {:.2f} ms | geometry cached {}{}",
-			m_scenes_submitted, fps, stats.frame_ms, stats.models, stats.draws, stats.vertices,
-			stats.submit_ms, m_geometry.size(), worse && !first ? "  <-- new worst" : ""),
+			"scene {}: {:.1f} fps ({:.1f} ms) | {} models, {} draws, {} verts, {} segments"
+			" | submit {:.2f} ms | geometry cached {}{}",
+			m_scenes_submitted, fps, stats.frame_ms, stats.models, stats.draws,
+			stats.vertices, stats.segments, stats.submit_ms, m_geometry.size(),
+			worse && !first ? "  <-- new worst" : ""),
 			worse && !first ? shared::common::LOG_TYPE::LOG_TYPE_WARN : shared::common::LOG_TYPE::LOG_TYPE_DEFAULT,
 			false);
 	}
@@ -1179,25 +1578,35 @@ namespace comp
 		}
 	}
 
-	brender_inject::texture_entry brender_inject::texture_for(IDirect3DDevice9* dev, game::br_material* material)
+	void brender_inject::note_unsupported_style(const game::br_model* model, const uint32_t style)
+	{
+		if (!m_unsupported_styles.insert(style).second) {
+			return;
+		}
+
+		shared::common::log("BRender", std::format("render style {} not injected - first seen on '{}'",
+			style, model->identifier ? model->identifier : "<null>"),
+			shared::common::LOG_TYPE::LOG_TYPE_WARN, true);
+	}
+
+	IDirect3DTexture9* brender_inject::texture_for(IDirect3DDevice9* dev, const game::br_material* material)
 	{
 		if (!material || !material->colour_map) {
-			return { m_white_texture, false };
+			return m_white_texture;
 		}
 
 		const auto pm = static_cast<const game::br_pixelmap*>(material->colour_map);
 		if (const auto it = m_textures.find(pm); it != m_textures.end()) {
-			return it->second.texture ? it->second : texture_entry{ m_white_texture, false };
+			return it->second ? it->second : m_white_texture;
 		}
 
-		const texture_entry entry{ upload_pixelmap(dev, pm), pm->type == game::BR_PMT_RGBA_4444
-			|| pm->type == game::BR_PMT_RGBA_8888 };
-		m_textures[pm] = entry;
+		IDirect3DTexture9* texture = upload_pixelmap(dev, pm);
+		m_textures[pm] = texture;
 
-		if (entry.texture) { ++m_textures_ok; }
+		if (texture) { ++m_textures_ok; }
 		else { ++m_textures_failed; }
 
-		return entry.texture ? entry : texture_entry{ m_white_texture, false };
+		return texture ? texture : m_white_texture;
 	}
 
 	IDirect3DTexture9* brender_inject::upload_pixelmap(IDirect3DDevice9* dev, const game::br_pixelmap* pm)
@@ -1303,15 +1712,15 @@ namespace comp
 		return tex;
 	}
 
-	brender_inject::texture_entry brender_inject::solid_colour_texture(IDirect3DDevice9* dev, const uint32_t rgb)
+	IDirect3DTexture9* brender_inject::solid_colour_texture(IDirect3DDevice9* dev, const uint32_t rgb)
 	{
 		if (const auto it = m_colour_textures.find(rgb); it != m_colour_textures.end()) {
-			return { it->second, false };
+			return it->second;
 		}
 
 		IDirect3DTexture9* tex = nullptr;
 		if (FAILED(dev->CreateTexture(1, 1, 1, 0, D3DFMT_A8R8G8B8, D3DPOOL_MANAGED, &tex, nullptr)) || !tex) {
-			return { m_white_texture, false };
+			return m_white_texture;
 		}
 
 		D3DLOCKED_RECT rect{};
@@ -1322,7 +1731,7 @@ namespace comp
 		}
 
 		m_colour_textures[rgb] = tex;
-		return { tex, false };
+		return tex;
 	}
 
 	void brender_inject::note_flat_colour(const game::br_model* model, const game::br_material* material)

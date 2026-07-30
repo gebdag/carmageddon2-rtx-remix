@@ -12,7 +12,10 @@ namespace comp::game
 	}
 
 	// --------------
-	// game functions (all __cdecl)
+	// game functions. Most are __cdecl, but not all -- BRender's internal helpers are
+	// compiled callee-cleans. Check how the target returns (`ret` vs `ret N`) before
+	// writing a typedef for one: calling a `ret 4` function through a __cdecl pointer
+	// pops the argument twice and walks the stack pointer up through the caller's frame.
 
 	// The race is drawn with the incremental API — BrZbSceneRenderBegin, then repeated
 	// BrZbSceneRenderAdd, then BrZbSceneRenderEnd — driven from 0x004E5680 / 0x004E7650.
@@ -33,6 +36,20 @@ namespace comp::game
 	// it every face's br_material, is only reachable while this is on the stack.
 	constexpr uint32_t ADDR_BrModelUpdate = 0x0051F950u;
 	typedef void(__cdecl* BrModelUpdate_t)(br_model* model, uint16_t flags);
+
+	// BRender's own translucency test, and the one its device drivers act on: colour_map
+	// carries alpha, or the material has an index shade/blend table, or its extra token
+	// list requests blending. BrZbModelRender (0x0052196D) calls it to decide whether a
+	// model goes into the depth-sorted bucket instead of straight to the rasterizer.
+	// Callee-cleans -- both return paths are `ret 4` (0x0051F694, 0x0051F699).
+	constexpr uint32_t ADDR_MaterialNeedsAlpha = 0x0051F630u;
+	typedef int(__stdcall* MaterialNeedsAlpha_t)(const br_material* material);
+
+	inline bool material_needs_alpha(const br_material* material)
+	{
+		const auto fn = reinterpret_cast<MaterialNeedsAlpha_t>(rebase(ADDR_MaterialNeedsAlpha));
+		return fn(material) != 0;
+	}
 
 	typedef void(__cdecl* BrZbSceneRender_t)(br_actor* world, br_actor* camera, void* colour, void* depth);
 	typedef void(__cdecl* BrZbSceneRenderEnd_t)();

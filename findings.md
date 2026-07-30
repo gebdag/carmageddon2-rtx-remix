@@ -133,3 +133,113 @@ The game has no D3D9 device of its own to proxy. Two ways to give Remix one:
   ship locally in the game folder — clean DLL-hijack targets.
 
 Route B is fewer moving parts and does not depend on getting the broken DDraw path working.
+
+---
+
+## 6. Effects: tyre tracks, sparks, car rear lights (2026-07-30)
+
+### 6.1 Render styles decide what BrZbModelRender draws
+
+`g_pfnModelRenderStyleTable` @ **0x00665090**, indexed by `style & 0xFF`:
+
+| style | value | thunk | primitive token |
+|---|---|---|---|
+| `BR_RSTYLE_DEFAULT` | 0 | 0x00525FC0 | 0x10B (triangles) |
+| `BR_RSTYLE_NONE` | 1 | 0x005260E0 | bare `ret 0x18` |
+| `BR_RSTYLE_POINTS` | 2 | 0x00526090 | 0xD1 |
+| `BR_RSTYLE_EDGES` | 3 | 0x00526040 | 0x10A (lines) |
+| `BR_RSTYLE_FACES` | 4 | 0x00525FC0 | 0x10B |
+| bounding variants | 5-7 | 0x005260F0 / 0x00526270 / 0x005262D0 | |
+
+`style` is BrZbModelRender's **5th** parameter, read at 0x00521A51 and masked with 0xFF.
+Both recursive actor walkers (`BrZbActorRender` 0x005221FC and 0x00522510) return early when
+the resolved style is NONE, so a hidden actor never reaches BrZbModelRender — the NONE thunk
+is only a safety net. Scanning `mov byte [reg+0x20], imm` shows the game writes render_style
+4 (45x), 1 (53x), 0 (11x), 3 (2x), 6 and 7 once each, and **never 2**.
+
+### 6.2 Sparks are EDGES-style models — zero-area triangles
+
+`InitLineAndSmokeStuff` @ **0x0047E610** builds one reusable line object:
+
+* `g_line_model` @ 0x0074CAC8 — `BrModelAllocate("gLine_model", 2, 1)`, flags 0x12,
+  `faces[0].vertices = {0, 0, 1}` — a **degenerate** face encoding one segment
+* `g_line_material` @ 0x0074CA4C — flags 0x1007 (LIGHT|PRELIT|SMOOTH|0x1000), no texture
+* `g_line_actor` @ 0x0074CA34 — `render_style = 3` (EDGES)
+
+`DrawLine3D` @ **0x004F6B80** — when `g_lines_as_3d_models` (0x0074CF68) is set it writes the
+two endpoints into `g_line_model->vertices`, calls `BrModelUpdate(model, 1)` and
+`BrZbSceneRenderAdd(g_line_actor)`; otherwise it falls back to a 2D framebuffer blit. The
+console log's `flat colour: 'gLine_model'` line proves the 3D path is the live one.
+
+The spark emitter is at **0x004F7776**: a 33-entry array (base 0x006A9B80, stride 0x40,
+gated by the bitmask at 0x006AA57C) whose per-particle colour is written straight into the
+line model's vertex RGB by **0x004F7CB0**.
+
+**Why they vanished:** BRender's edge renderer walks face edges, so `{0, 0, 1}` is a valid
+line. Fed to D3D9 as a triangle it has zero area and rasterizes nothing. The proxy now routes
+EDGES-style models into a segment list and expands each into a camera-facing quad, colouring
+it from the authored vertex RGB.
+
+### 6.3 Ground decals are co-planar quads, and translucent
+
+`InitSpillsAndSkids` @ **0x004E9C40** creates a **ring of 100 actors** (`g_ground_decal_ring`
+@ 0x006A27F0, stride 0x1C, `[0]` = `br_actor*`), each owning its own
+`BrModelAllocate(NULL, 4, 2)` — a unit quad in the **XZ plane at y = 0**, UVs 0..1, model
+flags |= 2 (KEEP_ORIGINAL). Actors start at `render_style = NONE`; the allocator at
+**0x004EA1A0** sets `render_style = DEFAULT`, assigns the material and advances
+`g_ground_decal_next` (0x006A27E8) modulo 100. This is what lays down tyre tracks, oil spills,
+smears and car shadows. `InitImpactDecals` @ **0x004EA880** is the same idea for 50 XY-plane
+quads with the "BANG!" material.
+
+`MaterialNeedsAlpha` @ **0x0051F630** is BRender's own translucency test — colour_map type in
+{0x0D, 0x0E, 0x12, 0x18, 0x19, 0x1A, 0x1F}, or `index_shade` set, or the `extra` token list
+containing 0xBE/0xBF. `BrZbModelRender` calls it at **0x0052196D** to decide whether a model
+goes into the depth-sorted translucent bucket instead of straight to the rasterizer, so it is
+also the right authority for the proxy.
+
+**Why they looked wrong:** the proxy guessed translucency from the pixelmap type alone, drew
+everything in scene-walk order, and left `D3DRS_ZWRITEENABLE` on. A decal's fully transparent
+texels therefore claimed depth, and the road behind them failed the test — the hole the user
+saw. On top of that the quads are exactly co-planar with the road: BRender got away with it
+through bucket ordering, but a path tracer has no draw order. Fixed by taking translucency
+from `MaterialNeedsAlpha`, drawing opaque geometry first and translucent geometry afterwards
+with depth writes off and alpha test on, and lifting translucent vertices along their normals
+by `[Effects] DecalOffset`.
+
+### 6.4 Car rear lights are a texture atlas selected by map_transform
+
+`br_material::map_transform` is a **br_matrix23 at offset 0x24** (6 floats, row-vector 2x3
+affine UV transform). Confirmed twice:
+
+* **0x00445D76** writes m[0][0]=1, m[0][1]=0, m[1][0]=0, m[1][1]=1, m[2][0]=-scroll, m[2][1]=0
+  then calls `BrMaterialUpdate(mat, 0x7FFF)` — a scrolling texture
+* **0x00478930** compares a frame's br_matrix23 (frame table stride 0x18) against
+  material+0x24/0x30/0x34/0x38, `BrMatrix23Copy`s it in on mismatch, then calls
+  `BrMaterialUpdate(mat, 1)` — so `BR_MATU_MAP_TRANSFORM == 1`
+
+The funkotronic spec proves the intent. From `EAGLE3.TXT` inside `DATA/CARS/eagle3.TWT`:
+
+```
+START OF FUNK
+EARLITL          <- material: left rear light panel
+constant
+piss off
+no fucking lighting bastards
+frames
+accurate
+texturebits      <- frames are sub-rectangles, not separate pixelmaps
+VB
+4
+EBACKALL,2,0,2,0 <- pixelmap, x-divisions, x-index, y-divisions, y-index
+EBACKALL,2,1,2,0
+EBACKALL,2,0,2,1
+EBACKALL,2,1,2,1
+END OF FUNK
+```
+
+`EBACKALL` is a **2x2 atlas holding all four states** (off, braking, reversing, both) and the
+funk picks a quadrant by UV transform. The proxy ignored `map_transform` and explicitly set
+`D3DTTFF_DISABLE`, so the whole atlas was mapped onto the light panel — all four states
+visible at once. Fixed by folding `map_transform` into `D3DTS_TEXTURE0` with `D3DTTFF_COUNT2`,
+refreshed every time the model is captured. Note D3D9 expands a 2-component texcoord to
+(u, v, 1), so the br_matrix23 translation row maps to the D3D matrix's **third** row.
