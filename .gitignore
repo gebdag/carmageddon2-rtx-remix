@@ -18,6 +18,7 @@
 
 # Build script and config
 !build.bat
+!*.ps1
 !*.ini
 !*.conf
 !.gitignore
@@ -45,3 +46,6 @@ build/
 # backups/ holds copies of the game's own files.
 deps/dxsdk/Lib/
 backups/
+
+# save-run.ps1 output: measurement logs plus a copy of the ini each run used.
+runs/
