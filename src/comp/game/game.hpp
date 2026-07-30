@@ -51,6 +51,24 @@ namespace comp::game
 		return fn(material) != 0;
 	}
 
+	// The game owns exactly two pools of decal objects, both built once at startup and
+	// recycled for the rest of the session. Membership of these is what "is a decal" means
+	// here -- nothing else in the game lays a quad flat onto another surface -- so they are
+	// the authority on which geometry needs lifting clear of what it overlays.
+	//
+	// Each pool entry begins with a br_actor*, whose model is the quad.
+	// InitSpillsAndSkids  @ 0x004E9C40 -- tyre tracks, oil spills, smears, car shadows.
+	// InitImpactDecals    @ 0x004EA880 -- the "BANG!" marks.
+	struct decal_pool
+	{
+		uint32_t address;
+		uint32_t stride;
+		uint32_t count;
+	};
+
+	constexpr decal_pool GROUND_DECAL_POOL{ 0x006A27F0u, 0x1Cu, 100u };
+	constexpr decal_pool IMPACT_DECAL_POOL{ 0x006A55D8u, 0x78u, 50u };
+
 	typedef void(__cdecl* BrZbSceneRender_t)(br_actor* world, br_actor* camera, void* colour, void* depth);
 	typedef void(__cdecl* BrZbSceneRenderEnd_t)();
 	typedef void(__cdecl* SceneSetupCameraMatrices_t)(br_actor* world, br_actor* camera);

@@ -265,3 +265,27 @@ selects a streak texture that carries the gradient along its length. Brightness 
 length is deliberately left flat — an alpha taper would bias the very colours this is
 reproducing. The falloff across the width stays, since a quad has hard edges where BRender
 drew a one-pixel line.
+
+### 6.6 Decal lifting has to be scoped to the decal pools (2026-07-30)
+
+The lift added in 6.3 keyed off `MaterialNeedsAlpha`, i.e. every translucent material. Glass
+is translucent, so a car's windows were displaced along their own vertex normals too. On a
+flat ground quad that is a pure translation; on a closed shell like a windscreen it is a
+deformation, and where the normals face inward it contracts the shell — the glass pulls away
+from the frame and gaps open all round it. Visible with RT on or off, since it is the
+injected geometry that changes.
+
+The game has exactly two decal pools, both built once at startup and recycled thereafter,
+each entry beginning with a `br_actor*` whose `model` (+0x18) is the quad:
+
+| pool | base | stride | count | built by |
+|---|---|---|---|---|
+| ground — tracks, spills, smears, shadows | `0x006A27F0` | `0x1C` | 100 | `InitSpillsAndSkids` @ 0x004E9C40 |
+| impact — "BANG!" marks | `0x006A55D8` | `0x78` | 50 | `InitImpactDecals` @ 0x004EA880 |
+
+Ranges confirmed from the loop bounds: the ground walker runs to `0x006A32E0`
+(`0xAF0 / 0x1C` = 100) and the impact walker counts down from `0x32`.
+
+Membership of these pools is what "is a decal" means in this game — nothing else lays a quad
+flat onto another surface — so `is_decal_model` walks them directly and only those models are
+lifted. Translucency still selects the blended pass; it just no longer moves anything.

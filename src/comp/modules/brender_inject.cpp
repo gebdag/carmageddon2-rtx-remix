@@ -233,6 +233,40 @@ namespace comp
 			return static_cast<const uint8_t*>(p) + bytes <= end;
 		}
 
+		/*
+		 * Whether a model is one of the game's pooled decal quads.
+		 *
+		 * Translucency is not the test. Glass, smoke and water are translucent too, and none
+		 * of them overlays a surface it could fight with -- lifting those off their own
+		 * normals is what pulls a windscreen out of its frame. The two pools are small,
+		 * fixed, and built once at startup, so they are walked directly rather than cached:
+		 * this only runs when a model is first seen, and nothing can then go stale.
+		 */
+		bool is_decal_model(const game::br_model* model)
+		{
+			if (!model) {
+				return false;
+			}
+
+			for (const game::decal_pool& pool : { game::GROUND_DECAL_POOL, game::IMPACT_DECAL_POOL })
+			{
+				const auto entries = reinterpret_cast<const uint8_t*>(game::rebase(pool.address));
+				if (!readable(entries, static_cast<size_t>(pool.stride) * pool.count)) {
+					continue;
+				}
+
+				for (uint32_t i = 0; i < pool.count; ++i)
+				{
+					const auto actor = *reinterpret_cast<game::br_actor* const*>(entries + i * pool.stride);
+					if (readable(actor, sizeof(game::br_actor)) && actor->model == model) {
+						return true;
+					}
+				}
+			}
+
+			return false;
+		}
+
 		// BrZbActorRender drops any actor this reports as outside, which for path tracing
 		// removes exactly the geometry that should still occlude and bounce light: walls
 		// behind and beside the camera. Anything within the bubble is downgraded to
@@ -687,18 +721,18 @@ namespace comp
 
 		vertices.resize(vertex_base + total_vertices);
 
-		// Tyre tracks, shadows and impact smears are quads laid flat on the road surface.
+		// Tyre tracks, shadows and impact smears are quads laid flat on the surface they mark.
 		// BRender kept them out of it by depth-sorting them into a bucket drawn after the
 		// road; path tracing has no draw order to lean on, so they are lifted clear of the
-		// surface instead. Every translucent material gets the same treatment -- it is the
-		// class that overlays opaque geometry -- and a couple of centimetres is invisible on
-		// anything that was not co-planar to begin with.
-		const float decal_offset = shared::common::config::get().effects.decal_offset;
+		// surface instead. Only the game's own decal quads are moved: displacing a mesh along
+		// its own normals deforms it, which on a closed shell like a windscreen shrinks the
+		// glass out of the frame it is supposed to fill.
+		const float lift = is_decal_model(model)
+			? shared::common::config::get().effects.decal_offset
+			: 0.0f;
 
 		for (const auto& ref : groups)
 		{
-			const float lift = ref.needs_alpha ? decal_offset : 0.0f;
-
 			for (uint16_t v = 0; v < ref.group->nvertices; ++v)
 			{
 				const game::v1_online_vertex& src = ref.group->vertices[v];
