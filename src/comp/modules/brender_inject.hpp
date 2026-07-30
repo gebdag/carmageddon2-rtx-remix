@@ -138,6 +138,12 @@ namespace comp
 
 		void capture_lines(const game::br_model* model, const game::br_matrix34& model_to_world);
 		uint32_t submit_lines(IDirect3DDevice9* dev);
+		void log_spark_geometry(const float camera[3]);
+
+		// A soft streak in the given colour, one texture per colour the emitter uses. Kept
+		// apart from the flat-colour swatches so sparks carry their own Remix hashes and can
+		// be tagged emissive without dragging every red-painted chunk of debris along.
+		IDirect3DTexture9* spark_texture(IDirect3DDevice9* dev, uint32_t rgb);
 
 		// Re-resolves the material state that the game animates: translucency and the UV
 		// transform that picks a cell out of a texture atlas.
@@ -240,6 +246,10 @@ namespace comp
 		// 1x1 swatches for materials BRender colours flat instead of texturing.
 		std::unordered_map<uint32_t, IDirect3DTexture9*> m_colour_textures;
 		uint32_t m_flat_probes = 0;
+
+		// Streak swatches, keyed the same way but never shared with the flat colours above.
+		std::unordered_map<uint32_t, IDirect3DTexture9*> m_spark_textures;
+		bool m_logged_spark_geometry = false;
 
 		// A prepared group only records br_material::stored, so this maps that token -- and
 		// the material pointer itself, in case the group holds one -- back to the material.

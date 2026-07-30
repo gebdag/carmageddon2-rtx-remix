@@ -419,6 +419,10 @@ namespace comp
 			if (texture) { texture->Release(); }
 		}
 
+		for (auto& [rgb, texture] : m_spark_textures) {
+			if (texture) { texture->Release(); }
+		}
+
 		for (auto& [rgb, texture] : m_colour_textures) {
 			if (texture) { texture->Release(); }
 		}
@@ -1428,9 +1432,15 @@ namespace comp
 	/*
 	 * Expands the scene's line segments into camera-facing quads.
 	 *
+	 * BRender drew these as one-pixel screen-space lines, so their apparent thickness never
+	 * depended on how far away they were. A fixed world-space width cannot reproduce that:
+	 * sparks are struck against the player's own bodywork, a few units from the camera, where
+	 * any width wide enough to survive at a distance reads as a solid slab. The half-width is
+	 * therefore a fraction of the distance to the segment, which holds the on-screen thickness
+	 * roughly constant the way the original did.
+	 *
 	 * The vertices are already in world space and change completely every frame, so there is
-	 * nothing to cache: they go straight down as user-pointer draws, one per distinct colour
-	 * so each spark shade reaches Remix as its own 1x1 swatch and stays taggable as emissive.
+	 * nothing to cache: they go straight down as user-pointer draws, one per distinct colour.
 	 */
 	uint32_t brender_inject::submit_lines(IDirect3DDevice9* dev)
 	{
@@ -1438,17 +1448,24 @@ namespace comp
 			return 0;
 		}
 
-		const float half_width = shared::common::config::get().effects.spark_width * 0.5f;
-		if (half_width <= 0.0f) {
+		const float width_per_unit = shared::common::config::get().effects.spark_width;
+		if (width_per_unit <= 0.0f) {
 			return 0;
 		}
 
 		// The inverse view's translation row is the camera's position in world space.
 		const float camera[3] = { m_view_inverse.m[3][0], m_view_inverse.m[3][1], m_view_inverse.m[3][2] };
 
-		dev->SetRenderState(D3DRS_ALPHABLENDENABLE, FALSE);
+		log_spark_geometry(camera);
+
+		// Sparks are light, not surface: they add to whatever is behind them and occlude
+		// nothing. Additive blending also makes them read as emissive under path tracing
+		// before any material tagging, and is what marks them out as particles to Remix.
+		dev->SetRenderState(D3DRS_ALPHABLENDENABLE, TRUE);
 		dev->SetRenderState(D3DRS_ALPHATESTENABLE, FALSE);
-		dev->SetRenderState(D3DRS_ZWRITEENABLE, TRUE);
+		dev->SetRenderState(D3DRS_SRCBLEND, D3DBLEND_SRCALPHA);
+		dev->SetRenderState(D3DRS_DESTBLEND, D3DBLEND_ONE);
+		dev->SetRenderState(D3DRS_ZWRITEENABLE, FALSE);
 		dev->SetTextureStageState(0, D3DTSS_TEXTURETRANSFORMFLAGS, D3DTTFF_DISABLE);
 		dev->SetTransform(D3DTS_WORLD, &IDENTITY_MATRIX);
 
@@ -1495,6 +1512,12 @@ namespace comp
 					continue;
 				}
 
+				const float distance = sqrtf(towards_camera[0] * towards_camera[0]
+					+ towards_camera[1] * towards_camera[1]
+					+ towards_camera[2] * towards_camera[2]);
+
+				const float half_width = width_per_unit * distance * 0.5f;
+
 				for (int axis = 0; axis < 3; ++axis) {
 					side[axis] *= half_width;
 				}
@@ -1518,7 +1541,7 @@ namespace comp
 				continue;
 			}
 
-			dev->SetTexture(0, solid_colour_texture(dev, rgb));
+			dev->SetTexture(0, spark_texture(dev, rgb));
 
 			if (SUCCEEDED(dev->DrawPrimitiveUP(D3DPT_TRIANGLELIST,
 				static_cast<UINT>(m_line_vertices.size() / 3), m_line_vertices.data(), sizeof(ffp_vertex))))
@@ -1732,6 +1755,112 @@ namespace comp
 
 		m_colour_textures[rgb] = tex;
 		return tex;
+	}
+
+	/*
+	 * Paints a streak: a bright core running down the middle of the quad, falling off to
+	 * nothing at both long edges and tapering along its length.
+	 *
+	 * A flat swatch stretched over the quad gives a hard-edged slab, which is what a spark
+	 * least resembles. The falloff lives in alpha so the additive blend does the rest, and
+	 * gives Remix a texture whose hash belongs to sparks alone.
+	 */
+	IDirect3DTexture9* brender_inject::spark_texture(IDirect3DDevice9* dev, const uint32_t rgb)
+	{
+		if (const auto it = m_spark_textures.find(rgb); it != m_spark_textures.end()) {
+			return it->second;
+		}
+
+		constexpr UINT SIZE = 32;
+
+		IDirect3DTexture9* tex = nullptr;
+		if (FAILED(dev->CreateTexture(SIZE, SIZE, 1, 0, D3DFMT_A8R8G8B8, D3DPOOL_MANAGED, &tex, nullptr)) || !tex) {
+			return m_white_texture;
+		}
+
+		D3DLOCKED_RECT rect{};
+		if (SUCCEEDED(tex->LockRect(0, &rect, nullptr, 0)))
+		{
+			const auto rows = static_cast<uint8_t*>(rect.pBits);
+
+			for (UINT y = 0; y < SIZE; ++y)
+			{
+				const auto row = reinterpret_cast<uint32_t*>(rows + y * rect.Pitch);
+
+				// v runs along the segment: full strength at the head, faded at the tail.
+				const float v = (static_cast<float>(y) + 0.5f) / SIZE;
+				const float along = 1.0f - v * v;
+
+				for (UINT x = 0; x < SIZE; ++x)
+				{
+					// u runs across the width, so this is the core falling off to the edges.
+					const float u = (static_cast<float>(x) + 0.5f) / SIZE;
+					const float offset = fabsf(u - 0.5f) * 2.0f;
+					const float across = 1.0f - offset * offset;
+
+					const float alpha = along * across;
+					const auto a = static_cast<uint32_t>(alpha * 255.0f + 0.5f);
+					row[x] = (a << 24) | rgb;
+				}
+			}
+
+			tex->UnlockRect(0);
+		}
+
+		m_spark_textures[rgb] = tex;
+		return tex;
+	}
+
+	/*
+	 * Reports the shape of one scene's worth of sparks, once per session.
+	 *
+	 * Segment length and camera distance are what the width setting has to be judged against,
+	 * and neither is knowable from outside the process.
+	 */
+	void brender_inject::log_spark_geometry(const float camera[3])
+	{
+		if (m_logged_spark_geometry || m_lines.empty()) {
+			return;
+		}
+		m_logged_spark_geometry = true;
+
+		float shortest = FLT_MAX, longest = 0.0f, total = 0.0f;
+		float nearest = FLT_MAX, furthest = 0.0f;
+		std::set<uint32_t> colours;
+
+		for (const auto& segment : m_lines)
+		{
+			const float length = sqrtf(
+				powf(segment.b[0] - segment.a[0], 2.0f) +
+				powf(segment.b[1] - segment.a[1], 2.0f) +
+				powf(segment.b[2] - segment.a[2], 2.0f));
+
+			const float distance = sqrtf(
+				powf(camera[0] - segment.a[0], 2.0f) +
+				powf(camera[1] - segment.a[1], 2.0f) +
+				powf(camera[2] - segment.a[2], 2.0f));
+
+			shortest = std::min(shortest, length);
+			longest = std::max(longest, length);
+			total += length;
+			nearest = std::min(nearest, distance);
+			furthest = std::max(furthest, distance);
+			colours.insert(segment.rgb);
+		}
+
+		std::string swatches;
+		for (const uint32_t rgb : colours)
+		{
+			if (swatches.size() > 60) { swatches += " ..."; break; }
+			swatches += std::format(" {:06x}", rgb);
+		}
+
+		shared::common::log("BRender", std::format(
+			"sparks: {} segments, length {:.3f}/{:.3f}/{:.3f} min/avg/max,"
+			" camera distance {:.2f}-{:.2f}, {} colours:{}",
+			m_lines.size(), shortest, total / m_lines.size(), longest,
+			nearest, furthest, colours.size(), swatches),
+			shared::common::LOG_TYPE::LOG_TYPE_GREEN, true);
 	}
 
 	void brender_inject::note_flat_colour(const game::br_model* model, const game::br_material* material)

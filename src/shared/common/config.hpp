@@ -89,10 +89,13 @@ namespace shared::common
 			// have to be separated geometrically instead. World units. 0 disables it.
 			float decal_offset = 0.02f;
 
-			// Width of the camera-facing quad a BRender line segment expands into. Sparks
-			// are EDGES-style models, i.e. zero-area triangles, which draw nothing at all
-			// on a real rasterizer. World units.
-			float spark_width = 0.02f;
+			// Width of the camera-facing quad a BRender line segment expands into, as a
+			// fraction of the distance from the camera to that segment. BRender drew these
+			// as one-pixel screen-space lines, so scaling with distance is what keeps their
+			// apparent thickness constant; a fixed world width turns sparks struck against
+			// the player's own bodywork into slabs. Roughly 0.001 per pixel at a 60 degree
+			// vertical field of view.
+			float spark_width = 0.004f;
 		} effects;
 
 	private:

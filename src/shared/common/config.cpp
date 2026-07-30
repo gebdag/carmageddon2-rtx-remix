@@ -98,7 +98,7 @@ namespace shared::common
 
 		// [Effects]
 		effects.decal_offset = get_float("Effects", "DecalOffset", 0.02f);
-		effects.spark_width = get_float("Effects", "SparkWidth", 0.02f);
+		effects.spark_width = get_float("Effects", "SparkWidth", 0.004f);
 
 		log("Config", std::format("Loaded from: {}", ini_path_));
 		log("Config", std::format("FFP={} AlbedoStage={}", ffp.enabled ? 1 : 0, ffp.albedo_stage));
