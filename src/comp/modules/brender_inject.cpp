@@ -416,11 +416,14 @@ namespace comp
 				self->set_overlay_scene(true);
 			}
 
+			const int64_t start = now_ticks();
 			o_scene_render(world, camera, colour, depth);
+			const int64_t elapsed = now_ticks() - start;
 
 			if (self) {
 				self->end_scene();
 				self->set_overlay_scene(false);
+				self->add_overlay_ticks(elapsed);
 			}
 		}
 
@@ -1508,9 +1511,13 @@ namespace comp
 		stats.game_render_ms = static_cast<double>(m_profile.game_render_ticks) / m_ticks_per_ms;
 		stats.submit_ms = static_cast<double>(end.QuadPart - start.QuadPart) / m_ticks_per_ms;
 
-		// Present runs after this scene closes, so this is the previous frame's. Over a steady
-		// stretch that is the same thing, and it is the only way to see it from here.
+		// Present, the overlay passes and the frame's full draw count all belong to the stretch
+		// between the previous submit and this one, so they describe the frame just gone. Over
+		// a steady stretch that is the same thing as this frame.
 		stats.present_ms = shared::common::ffp_state::get().last_present_ms();
+		stats.frame_draws = shared::common::ffp_state::get().last_frame_draw_count();
+		stats.overlay_ms = static_cast<double>(m_overlay_ticks) / m_ticks_per_ms;
+		m_overlay_ticks = 0;
 		stats.frame_ms = m_last_scene_ticks
 			? static_cast<double>(start.QuadPart - m_last_scene_ticks) / m_ticks_per_ms
 			: 0.0;
@@ -1802,15 +1809,17 @@ namespace comp
 		// Whatever nothing above accounts for: game logic, physics, AI and nGlide's own work.
 		// Negative only if the scene straddled a stall, so it is left signed.
 		const double other_ms = stats.frame_ms - (stats.capture_ms + stats.bounds_ms
-			+ stats.game_render_ms + stats.submit_ms + stats.present_ms);
+			+ stats.game_render_ms + stats.submit_ms + stats.present_ms + stats.overlay_ms);
 
 		shared::common::log("BRender", std::format(
-			"scene {}: {:.1f} fps ({:.1f} ms) | {} models, {} draws (+{} glide), {} verts,"
-			" {} segments | game {:.2f} capture {:.2f} bounds {:.2f} submit {:.2f}"
-			" present {:.2f} other {:.2f} ms | {} updates, {} rebuilds | geometry cached {}{}",
+			"scene {}: {:.1f} fps ({:.1f} ms) | {} models, {} draws (+{} glide, {} frame),"
+			" {} verts, {} segments | game {:.2f} overlay {:.2f} capture {:.2f} bounds {:.2f}"
+			" submit {:.2f} present {:.2f} other {:.2f} ms | {} updates, {} rebuilds"
+			" | geometry cached {}{}",
 			m_scenes_submitted, fps, stats.frame_ms, stats.models, stats.draws,
-			stats.glide_draws, stats.vertices, stats.segments, stats.game_render_ms,
-			stats.capture_ms, stats.bounds_ms, stats.submit_ms, stats.present_ms, other_ms,
+			stats.glide_draws, stats.frame_draws, stats.vertices, stats.segments,
+			stats.game_render_ms, stats.overlay_ms, stats.capture_ms, stats.bounds_ms,
+			stats.submit_ms, stats.present_ms, other_ms,
 			stats.model_updates, stats.rebuilds, m_geometry.size(),
 			worse && !first ? "  <-- new worst" : ""),
 			worse && !first ? shared::common::LOG_TYPE::LOG_TYPE_WARN : shared::common::LOG_TYPE::LOG_TYPE_DEFAULT,

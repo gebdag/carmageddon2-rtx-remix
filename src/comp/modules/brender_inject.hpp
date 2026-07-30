@@ -65,6 +65,16 @@ namespace comp
 
 		scene_profile& profile() { return m_profile; }
 
+		/*
+		 * Time spent between one race scene closing and the next one opening.
+		 *
+		 * scene_profile is reset per scene, which is the wrong granularity for anything that
+		 * happens outside the race scene -- the HUD and menu passes go through the all-in-one
+		 * BrZbSceneRender, run BRender's software renderer in full and push their own draws
+		 * across the bridge. This accumulates across scenes and is consumed by submit.
+		 */
+		void add_overlay_ticks(const int64_t ticks) { m_overlay_ticks += ticks; }
+
 	private:
 		struct ffp_vertex
 		{
@@ -318,7 +328,9 @@ namespace comp
 			double game_render_ms;
 			double submit_ms;
 			double present_ms;
+			double overlay_ms;
 			double frame_ms;
+			uint32_t frame_draws;
 		};
 
 		void log_performance(const frame_stats& stats);
@@ -328,5 +340,6 @@ namespace comp
 		double m_ticks_per_ms = 0.0;
 		frame_stats m_worst{};
 		scene_profile m_profile{};
+		int64_t m_overlay_ticks = 0;
 	};
 }

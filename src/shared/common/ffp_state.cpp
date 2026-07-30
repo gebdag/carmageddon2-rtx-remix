@@ -215,6 +215,7 @@ namespace shared::common
 	{
 		frame_count_++;
 		ffp_setup_ = false;
+		last_frame_draw_count_ = draw_call_count_;
 		draw_call_count_ = 0;
 		scene_count_ = 0;
 		// Safety net: restore shaders if a draw path exited without calling disengage.
