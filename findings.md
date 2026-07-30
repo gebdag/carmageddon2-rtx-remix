@@ -289,3 +289,42 @@ Ranges confirmed from the loop bounds: the ground walker runs to `0x006A32E0`
 Membership of these pools is what "is a decal" means in this game — nothing else lays a quad
 flat onto another surface — so `is_decal_model` walks them directly and only those models are
 lifted. Translucency still selects the blended pass; it just no longer moves anything.
+
+---
+
+## 7. Performance: what has been ruled out (2026-07-30)
+
+Frame rate is ~20fps in a race. **The three effect fixes in section 6 are not the cause.**
+Measured with `TranslucentPass=0 TextureTransform=0 Sparks=0`, which restores the proxy's
+pre-fix behaviour on all three paths, and the frame rate did not recover. The startup line
+records the switch states, so any log says what it was measuring.
+
+Also already ruled out, from the earlier optimization pass: static batching, per-model
+buffer caching and the culling bubble were all tried and shelved as ineffective or worse.
+`MergeStaticGeometry` is off by default as a result.
+
+### What the numbers say
+
+A race scene reports roughly:
+
+```
+861 models, 2821 draws, 39206 verts, 0 segments | submit 2.56 ms | geometry cached 285
+```
+
+`submit_ms` is the proxy's own D3D9 submission and sits at 2.5-7 ms, which does not account
+for a 50 ms frame on its own. The gap between that and `frame_ms` is where the time is going,
+and nothing currently measures it.
+
+### Leads worth taking first
+
+* **2821 draws per scene, and every D3D9 call crosses the Remix bridge by IPC.** That is the
+  one number far outside what the geometry justifies -- 861 models producing 2821 draws means
+  the per-material split is fragmenting nearly every model into three or more runs. Draw count,
+  not vertex count, is what an IPC boundary charges for.
+* **`submit_ms` excludes `capture_model`**, which runs inside the game's scene walk for every
+  model, every frame, and is not timed. Timing the capture side separately from the submit
+  side would say which half the cost is in, and no current log distinguishes them.
+* **`readable()` is a `VirtualQuery`, and it is called from hot paths.** `refresh_part_state`
+  does one per part per model per frame when `TextureTransform=1`, and `is_decal_model` does
+  up to 150 per model first seen. Neither explains the floor on its own -- the frame rate did
+  not recover with the first switched off -- but both are real and worth removing regardless.
