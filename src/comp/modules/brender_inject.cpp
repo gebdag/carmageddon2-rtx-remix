@@ -195,9 +195,14 @@ namespace comp
 			return id;
 		}
 
-		uint64_t chunk_key(const IDirect3DTexture9* texture, const bool has_alpha)
+		// Noncars get chunks of their own: a hit noncar is punched out of its chunk, and
+		// keeping that write away from the pristine world chunks is what keeps *their*
+		// geometry hashes immutable for Remix modding.
+		uint64_t chunk_key(const IDirect3DTexture9* texture, const bool has_alpha, const bool noncar)
 		{
-			return reinterpret_cast<uintptr_t>(texture) | (has_alpha ? 1ull << 63 : 0ull);
+			return reinterpret_cast<uintptr_t>(texture)
+				| (has_alpha ? 1ull << 63 : 0ull)
+				| (noncar ? 1ull << 62 : 0ull);
 		}
 
 		// Asks the live renderer for its current model_to_view. Mirrors the call
@@ -1066,7 +1071,7 @@ namespace comp
 			return;
 		}
 
-		const uint64_t key = chunk_key(part.texture, part.has_alpha);
+		const uint64_t key = chunk_key(part.texture, part.has_alpha, record.noncar);
 		size_t chunk_index = SIZE_MAX;
 		if (const auto it = m_open_chunks.find(key); it != m_open_chunks.end())
 		{
@@ -1446,18 +1451,18 @@ namespace comp
 
 			if (fresh)
 			{
-				// Anything that can vanish or move mid-race must stay dynamic: it reacts
-				// instantly and keeps a stable per-model geometry hash for Remix mods.
-				// Decal quads are pooled and recycled at new placements; noncars -- the
-				// game's movable props, their models named with a leading '&' -- get
-				// knocked around; powerup pickups vanish the moment they are taken. A
-				// pickup is any actor whose identifier carries 0xA3 ('£') as its second
-				// character -- the same test SpecialActorEnumCallback (0x0040D1F0) uses.
+				// Anything that can vanish outright must stay dynamic: powerup pickups
+				// disappear the moment they are taken -- a pickup is any actor whose
+				// identifier carries 0xA3 ('£') as its second character, the same test
+				// SpecialActorEnumCallback (0x0040D1F0) uses -- and decal quads are
+				// pooled and recycled at new placements. Noncars (models with a leading
+				// '&') are most of a city's scenery, so they do get baked, but into
+				// chunks of their own: the rare one that gets hit is punched out by the
+				// placement check and lives dynamically from then on.
 				const char* actor_name = actor->identifier;
 				const bool pickup = readable(actor_name, 2)
 					&& actor_name[0] && static_cast<uint8_t>(actor_name[1]) == 0xA3;
-				const bool noncar = model->identifier && model->identifier[0] == '&';
-				if (pickup || noncar || is_decal_model(model))
+				if (pickup || is_decal_model(model))
 				{
 					m_actors.erase(it);
 					m_moving_actors.insert(actor);
@@ -1468,6 +1473,7 @@ namespace comp
 					record.placement = placement.full;
 					record.placement_chain = placement.chain;
 					record.sightings = 1;
+					record.noncar = model->identifier && model->identifier[0] == '&';
 					++m_fresh_this_scene;
 				}
 			}

@@ -208,6 +208,7 @@ namespace comp
 			uint64_t placement;         // fingerprint of the actor's transform chain
 			uint64_t placement_chain;   // node-address part alone, for drift diagnosis
 			uint32_t sightings;
+			bool noncar;  // bakes into the noncar chunks, apart from the pristine world
 			bool baked;   // copied into a chunk, possibly one still accumulating
 			bool live;    // its chunks are sealed and drawing; the game render is redundant
 			std::vector<baked_range> ranges;
