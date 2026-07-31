@@ -296,3 +296,44 @@ $ 0x006a0ad0 int    g_powerup_count        /* entries in g_powerup_defs */
 $ 0x006a0a50 void*  g_powerup_enabled_tbl  /* byte[g_powerup_count]; 0 = never respawns */
 $ 0x007447d8 int    g_pickup_respawn_base  /* ms */
 $ 0x007447e8 int    g_pickup_respawn_range /* ms; deadline = now + base + range/2 */
+
+/* --- Tinted/pulse poly overlay pool (see findings.md section 11) ---
+ * Fixed array of 10 slots, base 0x00705C80, stride 0x6450 (25680), limit 0x007447D0.
+ * Zeroed wholesale by TintPolyInit. TintPolyShow/Hide take the slot index in ecx and
+ * check only slot->in_use -- there is NO index bounds check, so a negative index reads
+ * the track pool below the table and can yield a garbage br_actor* (ESC-menu crash). */
+struct tint_poly_slot {          /* 0x6450 */
+    struct br_actor *actor;      /* 0x00  render_style at actor+0x20 */
+    unsigned char pad04[0x08];
+    unsigned int cleared0C;      /* 0x0C  zeroed by TintPolyHide */
+    unsigned int cleared10;      /* 0x10 */
+    unsigned int cleared14;      /* 0x14 */
+    unsigned char pad18[0x18];
+    unsigned int in_use;         /* 0x30  0 = free slot (TintPolyCreate's scan key) */
+    unsigned int visible;        /* 0x34 */
+    unsigned int subclass;       /* 0x38  2..6, "Invalid Pulse Poly subclass" */
+    unsigned char pad3C[0x04];
+    struct br_material *material;/* 0x40  "Tint Poly Mat" */
+};
+
+@ 0x004d7040 void TintPolyInit(void);                  /* rep stosd 0xFAC8 dwords @0x705C80 */
+@ 0x004d70c0 int  __fastcall TintPolyCreate(int a /*ecx*/, int b /*edx*/, int w, int h, int subclass, ...); /* -> slot index, -1 if pool full */
+@ 0x004d8220 void __fastcall TintPolyShow(int slot /*ecx*/);   /* render_style = FACES; NO bounds check */
+@ 0x004d8250 void __fastcall TintPolyHide(int slot /*ecx*/);   /* render_style = NONE;  NO bounds check -- crashes at 0x004D826E for slot < 0 */
+@ 0x004d8cf0 int  __fastcall TintPolyIsVisible(int slot /*ecx*/);
+@ 0x004d8630 void __fastcall TintPolyTick(int slot /*ecx*/);   /* derefs slot->actor unguarded */
+@ 0x004d8290 void TintPolySceneRender(void);           /* BrZbSceneRender with the tinted_poly_camera */
+
+$ 0x00705c80 void*  g_tint_poly_pool        /* tint_poly_slot[10], stride 0x6450 */
+$ 0x00655e48 int    g_tint_poly_fullscreen  /* slot handle, set at 0x0047E00A; 0 at runtime */
+$ 0x00655e4c int    g_tint_poly_pulse       /* slot handle, set at 0x0047E01B; 1 at runtime */
+$ 0x00655e50 int    g_tint_poly_dead        /* NEVER WRITTEN -- stays -1; read only at 0x0046D91C */
+
+/* --- Race loop / frontend entry (see findings.md section 11.5) --- */
+@ 0x00503c50 void RaceMainLoop(void);
+@ 0x004939ea void RaceFrameTick(void);                 /* brackets the pause menu with 0x00504230 / 0x005042A0 */
+@ 0x00494570 int  PauseMenuHandler(void);              /* calls FrontendEnterFromRace(1) */
+@ 0x0046d8e0 int  __thiscall FrontendEnterFromRace(void *this /*ecx*/); /* hides the 3 tint polys, then Frontend_Setup */
+@ 0x0046d1c0 void __thiscall Frontend_Setup(void *this /*ecx*/);        /* "START OF FRONTEND_Setup" */
+@ 0x00504230 void RaceLoopPauseHideTintPolys(void);    /* hides only slots 0x655E48 / 0x655E4C -- safe */
+@ 0x005042a0 void RaceLoopPauseRestoreTintPolys(void);

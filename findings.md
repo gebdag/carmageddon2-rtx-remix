@@ -797,3 +797,148 @@ ALPOWERUP.TXT chosen at 0x004E0C02..0x004E0C32).
 models all match `*powerup*.act` (case-insensitively). **But** the models actually bound to a
 pickup actor at render time are the *clones*, whose identifiers are `"PowArm"`, `"PowPow"`,
 `"PowOff"` -- match the `"Pow"` prefix, or compare against the three globals in 10.2.
+
+## 11. ESC-menu crash: `TintPolyHide(-1)` (2026-07-31)
+
+Crash dump: `%LOCALAPPDATA%\CrashDumps\CARMA2_HW.EXE.27856.dmp`
+`0xC0000005` writing `0x3E95C08F`, faulting PC **0x004D826E**.
+**Root cause is a stock-game bug, not the proxy.** It is latent on small maps and
+deterministic on the city.
+
+### 11.1 The faulting function: `TintPolyHide` @ 0x004D8250
+
+```
+0x004D8250  lea  eax, [ecx+ecx*4]        ; __fastcall, ecx = slot index
+0x004D8253  shl  eax, 6
+0x004D8256  add  eax, ecx
+0x004D8258  xor  ecx, ecx                ;   eax = index * 0x6450   (25680)
+0x004D825A  lea  eax, [eax+eax*4]
+0x004D825D  shl  eax, 4
+0x004D8260  cmp  dword [eax+0x705CB0], ecx   ; slot->in_use == 0 ?  <-- ONLY guard
+0x004D8266  je   0x004D828A                  ; ...returns if 0
+0x004D8268  mov  edx, dword [eax+0x705C80]   ; slot->actor
+0x004D826E  mov  byte [edx+0x20], 1          ; actor->render_style = BR_RSTYLE_NONE  <-- FAULT
+0x004D8272  mov  dword [eax+0x705C8C], ecx
+0x004D8278  mov  dword [eax+0x705C90], ecx
+0x004D827E  mov  dword [eax+0x705C94], ecx
+0x004D8284  mov  dword [eax+0x705CB4], ecx   ; slot->visible = 0
+0x004D828A  ret
+```
+
+There is **no index bounds check at all**. The only guard is the `in_use` flag read at
+`base + index*0x6450 + 0x30`, which for a negative index reads memory *below* the table.
+
+### 11.2 The table: the "tinted poly" pool
+
+* **Base `0x00705C80`**, **stride `0x6450` (25680)**, **capacity 10**, limit `0x007447D0`.
+* Zero-initialised wholesale by `TintPolyInit` @ **0x004D7040**:
+  `mov ecx,0xFAC8 / mov edi,0x705C80 / rep stosd` -> 0xFAC8*4 = 0x3EB20 = 10 * 0x6450.
+* Slot fields confirmed: `+0x00` `br_actor*` (render_style at actor+0x20), `+0x0C`,
+  `+0x10`, `+0x14` (cleared on hide), `+0x30` `in_use`, `+0x34` `visible`,
+  `+0x38` subclass/type, `+0x40` `br_material*`.
+* Identity from the strings the pool's constructor uses: `"Tint Poly Mat"` (0x0065E8D8),
+  `"tinted_poly_camera"` (0x0065E87C), `"Invalid Pulse Poly subclass"` (0x0065E894).
+  This is the full-screen tint / pulse-overlay system (screen flashes, damage/powerup tints).
+* **Allocator** `TintPolyCreate` @ **0x004D70C0**: linear scan
+  `for (eax = 0x705CB0; eax < 0x7447D0; eax += 0x6450)` for the first slot with
+  `in_use == 0`; **returns -1 when the pool is full** (`or eax, ebp` at 0x004D70FF).
+  Bounded correctly -- it can never write past slot 9.
+* All 22 code references to `0x705C80` live in `0x004D7000..0x004D8700`. Nothing in the
+  render path (`BrZbActorRender` 0x005221E0, `BrZbModelRender` 0x00521890, the style
+  thunks at `g_pfnModelRenderStyleTable` 0x00665090) touches this table. **The table is
+  not corrupted and its count cannot be corrupted by frustum-culling or render changes.**
+
+### 11.3 Where the -1 comes from
+
+Three globals hold tint-poly slot handles; **all three are statically initialised to -1**:
+
+| global | written by | dump value |
+|---|---|---|
+| `0x00655E48` | `0x0047E00A` (result of `TintPolyCreate` @0x0047DFF1) | `0` |
+| `0x00655E4C` | `0x0047E01B` (result of `TintPolyCreate` @0x0047E00F) | `1` |
+| `0x00655E50` | **never written -- 1 reference in the whole image, a read at 0x0046D91C** | `0xFFFFFFFF` |
+
+Byte-pattern search for the displacement `50 5E 65 00` returns exactly one hit
+(`0x0046D91E`, the disp32 of `mov ecx,[0x655E50]`). `0x00655E50` is a dead third handle
+that stays -1 for the entire process lifetime.
+
+`FrontendEnterFromRace` @ **0x0046D8E0** hides all three:
+
+```
+0x0046D900  mov ecx,[0x655E48] ; 0x0046D90C call 0x004D8250
+0x0046D911  mov ecx,[0x655E4C] ; 0x0046D917 call 0x004D8250
+0x0046D91C  mov ecx,[0x655E50] ; 0x0046D922 call 0x004D8250   <-- ecx = -1
+0x0046D927  mov ecx, esi       ; 0x0046D929 call 0x0046D1C0   (Frontend_Setup)
+```
+
+Register check: `eax = 0xFFFF9BB0 = -0x6450 = -1 * 25680`. Exact match, index = -1.
+
+Note the *other* pause path, `RaceLoopPauseHideTintPolys` @ **0x00504230**, hides only
+`0x655E48` and `0x655E4C` and is safe. Only the frontend-entry path hits the dead handle.
+
+### 11.4 Why it only crashes on the city map
+
+`TintPolyHide(-1)` reads `slot[-1].in_use` at `0x00705C80 - 0x6450 + 0x30 = 0x006FF860`
+and `slot[-1].actor` at `0x006FF830`. Both lie in the zero-initialised tail of `.data`
+(`.data` = 0x0058F000..0x007A18A4, raw size 0xE7A00 so file-initialised only to
+0x00676A00). Dump values:
+
+```
+0x006FF830: 6F C0 95 3E ...   -> edx = 0x3E95C06F  (a float, ~0.2925)
+0x006FF860: 70 A8 B0 42       -> in_use != 0  -> guard passes -> AV
+```
+
+That memory belongs to a large track-geometry / bounds-tree pool of 0x40-byte records
+(bounding floats plus three child pointers, `0x4FFF0000` used as an infinite-bound
+sentinel) that occupies `~0x006B8000..0x00704000`, ending only ~0x1C80 short of the tint
+table. In this dump it is populated well past 0x006FF860. On smaller tracks the pool never
+grows that far, `slot[-1].in_use` stays 0, and `TintPolyHide(-1)` returns harmlessly.
+**The city is simply the first map big enough to fill that far.**
+
+### 11.5 Call stack
+
+| return addr | function | role |
+|---|---|---|
+| 0x004D826E | `TintPolyHide` 0x004D8250 | faulting write |
+| 0x0046D927 | `FrontendEnterFromRace` **0x0046D8E0** | hides the 3 tint polys, then `Frontend_Setup` 0x0046D1C0 (`"START OF FRONTEND_Setup"` @0x006559B4) |
+| 0x004945AB | **0x00494570** | pause/ESC handler; `mov ecx,1 / call 0x0046D8E0`, on 0 result sets `[0x0075BC24] = 6` |
+| 0x00493BF2 | **0x004939EA** | per-frame race tick; brackets the menu with `call 0x00504230` (hide) / `call 0x005042A0` (restore) around `call 0x00494570` |
+| 0x00503FD6 | **0x00503C50** | race main loop |
+| 0x00492534 | 0x00503C50's caller (main/`WinMain` path, ret to 0x00492534 from `call 0x00503C50` @0x0049252F) | |
+| 0x0051AF0E | CRT/WinMain | |
+
+### 11.6 Answer to "does the proxy cause this?"
+
+No. Neither the boundsTest override, the skipped `BrZbModelRender` body, nor the yon_z
+rewrite writes anywhere near `0x006FF830` or into the tint-poly table. They change *how
+much* of the track pool is touched per frame but not *where* it lives. The proxy makes the
+crash easier to hit only insofar as it keeps the user on the biggest map; the same call
+happens on stock.
+
+### 11.7 Minimal fix
+
+Preferred: add the missing bounds check in place. `TintPolyHide` is 0x004D8250..0x004D828B
+with 5 padding NOPs after; replacing the 16-byte index-scaling prologue with
+`imul` frees exactly the 5 bytes needed:
+
+```
+; 0x004D8250, 16 bytes, ends exactly at 0x004D8260 (unchanged tail)
+83 F9 0A              cmp  ecx, 10               ; capacity
+73 35                 jae  short 0x004D828A      ; -> the existing ret
+69 C0 50 64 00 00     imul eax, ecx, 0x6450
+33 C9                 xor  ecx, ecx
+90 90 90              nop
+```
+
+Apply the identical guard to `TintPolyShow` @ **0x004D8220** (same shape, 14 bytes
+0x004D8220..0x004D822E, `jae short 0x004D824C` = `73 27` from 0x004D8225, then
+`imul eax, ecx, 0x6450` + 3 NOPs). `TintPolyIsVisible` @ 0x004D8CF0 also lacks a check but
+only reads, so it is harmless.
+
+Alternative one-liner if the proxy prefers not to touch shared code: NOP the dead third
+call in `FrontendEnterFromRace` -- 11 bytes at **0x0046D91C** (`8B 0D 50 5E 65 00` +
+`E8 <rel32>`) -> `90 x11`. Removes the bogus `TintPolyHide(-1)` outright. It is safe
+because `0x00655E50` is provably never assigned.
+
+Do **not** "fix" this by writing a value into `0x00655E50` -- any non-negative value there
+would make the frontend hide a live tint poly slot.
