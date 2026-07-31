@@ -172,20 +172,9 @@ namespace comp
 			return true;
 		}
 
-		uint64_t placement_key(const game::br_model* model, const game::br_matrix34& world)
+		uint64_t chunk_key(const IDirect3DTexture9* texture, const bool has_alpha)
 		{
-			uint64_t hash = 1469598103934665603ull;
-			const auto mix = [&hash](const void* data, const size_t bytes)
-			{
-				const auto p = static_cast<const uint8_t*>(data);
-				for (size_t i = 0; i < bytes; ++i) {
-					hash = (hash ^ p[i]) * 1099511628211ull;
-				}
-			};
-
-			mix(&model, sizeof(model));
-			mix(&world, sizeof(world));
-			return hash;
+			return reinterpret_cast<uintptr_t>(texture) | (has_alpha ? 1ull << 63 : 0ull);
 		}
 
 		// Asks the live renderer for its current model_to_view. Mirrors the call
@@ -340,21 +329,31 @@ namespace comp
 
 		// BrZbActorRender drops any actor this reports as outside, which for path tracing
 		// removes exactly the geometry that should still occlude and bounce light: walls
-		// behind and beside the camera. Anything within the bubble is downgraded to
-		// PARTIAL rather than INSIDE so BRender still clips it correctly for its own
-		// rasterized pass.
+		// behind and beside the camera. Rejected actors are downgraded to PARTIAL rather
+		// than INSIDE so BRender still clips whatever it ends up rasterizing itself.
+		// DisableFrustum keeps everything; the bubble keeps a radius around the camera.
 		int __cdecl hk_bounds_test(void* self, uint32_t* out_token, const float* bounds)
 		{
 			const int result = o_bounds_test(self, out_token, bounds);
 
-			const float radius = shared::common::config::get().culling.bubble_radius;
-			if (radius <= 0.0f || !out_token || *out_token != game::BRT_BOUNDS_OUTSIDE || !bounds) {
+			if (!out_token || *out_token != game::BRT_BOUNDS_OUTSIDE || !bounds) {
+				return result;
+			}
+
+			const auto& culling = shared::common::config::get().culling;
+			if (culling.disable_frustum)
+			{
+				*out_token = game::BRT_BOUNDS_PARTIAL;
+				return result;
+			}
+
+			if (culling.bubble_radius <= 0.0f) {
 				return result;
 			}
 
 			const auto inject = brender_inject::get();
 			const int64_t start = now_ticks();
-			const bool keep = inside_camera_bubble(bounds, radius);
+			const bool keep = inside_camera_bubble(bounds, culling.bubble_radius);
 			if (inject) {
 				inject->profile().bounds_ticks += now_ticks() - start;
 			}
@@ -382,7 +381,7 @@ namespace comp
 			}
 
 			if (const auto self = brender_inject::get(); self) {
-				self->begin_scene(camera);
+				self->begin_scene(world, camera);
 			}
 
 			o_scene_begin(world, camera, colour, depth);
@@ -447,7 +446,7 @@ namespace comp
 			if (self && model)
 			{
 				const int64_t start = now_ticks();
-				injected = self->capture_model(model, static_cast<game::br_material*>(material), style);
+				injected = self->capture_model(actor, model, static_cast<game::br_material*>(material), style);
 				self->profile().capture_ticks += now_ticks() - start;
 			}
 
@@ -481,6 +480,17 @@ namespace comp
 			}
 
 			o_model_update(model, flags);
+		}
+
+		game::BrMaterialUpdate_t o_material_update = nullptr;
+
+		void __cdecl hk_material_update(game::br_material* material, uint16_t flags)
+		{
+			if (const auto self = brender_inject::get(); self && material) {
+				self->on_material_update(material, flags);
+			}
+
+			o_material_update(material, flags);
 		}
 
 		bool install(const uint32_t addr, void* stub, void** original, const char* name)
@@ -517,16 +527,19 @@ namespace comp
 			reinterpret_cast<void**>(&o_model_render), "BrZbModelRender");
 		ok &= install(game::ADDR_BrModelUpdate, hk_model_update,
 			reinterpret_cast<void**>(&o_model_update), "BrModelUpdate");
+		ok &= install(game::ADDR_BrMaterialUpdate, hk_material_update,
+			reinterpret_cast<void**>(&o_material_update), "BrMaterialUpdate");
 
 		if (ok)
 		{
 			const auto& cfg = shared::common::config::get();
 			shared::common::log("BRender", std::format(
-				"Hooked the BRender scene walk - model-space injection armed. Static merging {},"
-				" game render {}, translucent pass {}, texture transform {}, sparks {},"
-				" decal offset {:.3f}, spark width {:.3f}.",
-				cfg.optimization.merge_static_geometry ? "ON" : "off",
-				cfg.optimization.suppress_game_render ? "SUPPRESSED" : "on",
+				"Hooked the BRender scene walk - model-space injection armed. Static world {},"
+				" frustum culling {}, game render {}, translucent pass {}, texture transform {},"
+				" sparks {}, decal offset {:.3f}, spark width {:.3f}.",
+				cfg.optimization.static_world ? "on" : "OFF",
+				cfg.culling.disable_frustum ? "DISABLED" : "on",
+				cfg.optimization.suppress_game_render ? "suppressed" : "ON",
 				cfg.effects.translucent_pass ? "on" : "OFF",
 				cfg.effects.texture_transform ? "on" : "OFF",
 				cfg.effects.sparks ? "on" : "OFF",
@@ -537,7 +550,7 @@ namespace comp
 
 	brender_inject::~brender_inject()
 	{
-		release_static_batches();
+		release_chunks();
 
 		for (auto& [model, geometry] : m_geometry) {
 			release_geometry(geometry);
@@ -582,12 +595,15 @@ namespace comp
 			reinterpret_cast<void**>(&o_bounds_test)))
 		{
 			MH_EnableHook(target);
-			shared::common::log("BRender", std::format("bounds test hooked at {:#010x} - bubble radius {:.1f}",
-				reinterpret_cast<uint32_t>(target), shared::common::config::get().culling.bubble_radius),
+			const auto& culling = shared::common::config::get().culling;
+			shared::common::log("BRender", std::format("bounds test hooked at {:#010x} - {}",
+				reinterpret_cast<uint32_t>(target),
+				culling.disable_frustum ? "frustum culling disabled"
+					: std::format("bubble radius {:.1f}", culling.bubble_radius)),
 				shared::common::LOG_TYPE::LOG_TYPE_GREEN, true);
 		}
 		else {
-			shared::common::log("BRender", "failed to hook the renderer bounds test - bubble disabled",
+			shared::common::log("BRender", "failed to hook the renderer bounds test - game culling stays on",
 				shared::common::LOG_TYPE::LOG_TYPE_ERROR, true);
 		}
 	}
@@ -624,11 +640,19 @@ namespace comp
 			it->second.dirty = true;
 		}
 
-		// Deliberately does not touch the static batches. BrModelUpdate fires on level
-		// models routinely without their geometry changing, and rebuilding costs a full
-		// re-upload of every static vertex plus a Remix acceleration structure rebuild.
-		// A model that sits at the world origin with an identity transform is scenery; the
-		// things that actually deform are cars, and they have real transforms.
+		// An actor baked with the old shape must not keep showing it. Cars never land here
+		// -- they are never baked -- but a crushed noncar does.
+		std::vector<game::br_actor*> demote;
+		for (const auto& [actor, record] : m_actors)
+		{
+			if (record.baked && record.model == model) {
+				demote.push_back(actor);
+			}
+		}
+
+		for (game::br_actor* actor : demote) {
+			demote_actor(actor, true);
+		}
 	}
 
 	void brender_inject::release_geometry(model_geometry& geometry)
@@ -936,29 +960,40 @@ namespace comp
 	}
 
 	/*
-	 * Extracts a model once, bakes its placement into the vertices and keeps the result.
+	 * Extracts an actor's model once, bakes its placement into the vertices and appends
+	 * the result to the accumulating chunks.
 	 *
-	 * Everything the merged batches need is captured here, so a rebuild never touches the
-	 * game's memory again -- models are freed between races and re-reading them would be a
-	 * use-after-free.
+	 * Everything the chunks need is copied here, so the game's memory is never read again
+	 * for this actor -- models are freed between races, and a sealed chunk must not depend
+	 * on them still being alive.
 	 */
-	bool brender_inject::bake_static_model(game::br_model* model, game::br_material* fallback_material,
-		const game::br_matrix34& world)
+	bool brender_inject::bake_actor(actor_record& record, game::br_model* model,
+		game::br_material* fallback_material, const game::br_matrix34& world)
 	{
 		const auto dev = shared::globals::d3d_device;
 		if (!dev) {
 			return false;
 		}
 
-		static_instance instance{};
-		instance.model = model;
+		std::vector<ffp_vertex> vertices;
+		std::vector<geometry_part> parts;
+		std::vector<uint32_t> indices;
 
-		if (!extract_geometry(dev, model, fallback_material, instance.vertices, instance.parts, instance.indices)) {
+		if (!extract_geometry(dev, model, fallback_material, vertices, parts, indices)) {
 			return false;
 		}
 
-		// The merged batches draw with WORLD = identity, so the placement lives in the data.
-		for (auto& v : instance.vertices)
+		// A funk-animated material needs its UV transform re-read every frame, which only
+		// the dynamic path does.
+		for (const auto& part : parts)
+		{
+			if (m_animated_materials.contains(part.material)) {
+				return false;
+			}
+		}
+
+		// The chunks draw with WORLD = identity, so the placement lives in the data.
+		for (auto& v : vertices)
 		{
 			const float x = v.x, y = v.y, z = v.z;
 			v.x = x * world.m[0][0] + y * world.m[1][0] + z * world.m[2][0] + world.m[3][0];
@@ -971,157 +1006,340 @@ namespace comp
 			v.nz = nx * world.m[0][2] + ny * world.m[1][2] + nz * world.m[2][2];
 		}
 
-		m_static_models.insert_or_assign(placement_key(model, world), std::move(instance));
-		m_static_dirty = true;
-		return true;
+		record.ranges.clear();
+		record.materials.clear();
+		for (const auto& part : parts)
+		{
+			append_part_to_chunk(part, vertices, indices, record);
+			record.materials.push_back(part.material);
+		}
+
+		return !record.ranges.empty();
 	}
 
-	// A model that turns up somewhere new was never scenery. Its baked copies have to go
-	// immediately, hitch or not: leaving them would show the object in two places at once.
-	void brender_inject::forget_static_model(game::br_model* model)
+	// Copies one material run into the open chunk for its (texture, blend) pair, remapping
+	// the vertices it references into the chunk and recording where the indices landed so
+	// the actor can be punched back out if it ever moves.
+	void brender_inject::append_part_to_chunk(const geometry_part& part,
+		const std::vector<ffp_vertex>& vertices, const std::vector<uint32_t>& indices,
+		actor_record& record)
 	{
-		m_moving_models.insert(model);
-		m_placements.erase(model);
+		const uint32_t index_end = part.index_start + part.triangle_count * 3u;
 
-		for (auto it = m_static_models.begin(); it != m_static_models.end(); )
+		std::vector<int32_t> remap(vertices.size(), -1);
+		uint32_t unique = 0;
+		for (uint32_t i = part.index_start; i < index_end; ++i)
 		{
-			if (it->second.model == model)
-			{
-				it = m_static_models.erase(it);
-				m_static_dirty = true;
-				m_static_urgent = true;
-			}
-			else {
-				++it;
+			if (remap[indices[i]] < 0) {
+				remap[indices[i]] = static_cast<int32_t>(unique++);
 			}
 		}
-	}
 
-	void brender_inject::release_static_batches()
-	{
-		for (auto& batch : m_static_batches)
-		{
-			if (batch.vertex_buffer) { batch.vertex_buffer->Release(); }
-			if (batch.index_buffer) { batch.index_buffer->Release(); }
+		if (unique == 0 || unique > CHUNK_VERTEX_LIMIT) {
+			return;
 		}
-		m_static_batches.clear();
+
+		const uint64_t key = chunk_key(part.texture, part.has_alpha);
+		size_t chunk_index = SIZE_MAX;
+		if (const auto it = m_open_chunks.find(key); it != m_open_chunks.end())
+		{
+			const static_chunk& open = m_chunks[it->second];
+			if (!open.sealed && open.vertices.size() + unique <= CHUNK_VERTEX_LIMIT) {
+				chunk_index = it->second;
+			}
+		}
+
+		if (chunk_index == SIZE_MAX)
+		{
+			static_chunk fresh{};
+			fresh.texture = part.texture;
+			fresh.has_alpha = part.has_alpha;
+			m_chunks.push_back(std::move(fresh));
+			chunk_index = m_chunks.size() - 1;
+			m_open_chunks[key] = chunk_index;
+		}
+
+		static_chunk& chunk = m_chunks[chunk_index];
+		const auto base = static_cast<uint32_t>(chunk.vertices.size());
+
+		chunk.vertices.resize(base + unique);
+		for (uint32_t i = part.index_start; i < index_end; ++i) {
+			chunk.vertices[base + remap[indices[i]]] = vertices[indices[i]];
+		}
+
+		baked_range range{};
+		range.chunk = static_cast<uint32_t>(chunk_index);
+		range.index_start = static_cast<uint32_t>(chunk.indices.size());
+		range.index_count = index_end - part.index_start;
+
+		for (uint32_t i = part.index_start; i < index_end; ++i) {
+			chunk.indices.push_back(static_cast<uint16_t>(base + remap[indices[i]]));
+		}
+
+		record.ranges.push_back(range);
 	}
 
 	/*
-	 * Merges every static model into one buffer per texture.
+	 * Overwrites an actor's baked indices with degenerate triangles.
 	 *
-	 * Frame time measured almost perfectly linear in draw count -- roughly 3.5 ms plus 8 us
-	 * per draw -- and vertex count barely registered, so the level's ~800 world models at
-	 * ~4 materials each were the entire cost. They all sit at the world origin with an
-	 * identity transform, which means they can share draws. Merging them turns thousands of
-	 * per-model draws into one per distinct texture, and since the merged buffers never
-	 * change, Remix keeps the acceleration structure it builds for them.
-	 *
-	 * Everything static is submitted every frame regardless of visibility. That is cheaper
-	 * than culling it and removes the light leak the bubble was working around.
+	 * A triangle that names vertex zero three times has no area, so neither the rasterizer
+	 * nor a ray can hit it. For a sealed chunk this is the one narrow write the
+	 * immutability rule allows: the alternative is rebuilding the chunk, which is exactly
+	 * the hitch this design exists to avoid.
 	 */
-	void brender_inject::rebuild_static_batches(IDirect3DDevice9* dev)
+	void brender_inject::punch_out(const actor_record& record)
 	{
-		release_static_batches();
-
-		struct accumulator
+		for (const baked_range& range : record.ranges)
 		{
-			IDirect3DTexture9* texture;
-			bool has_alpha;
-			std::vector<ffp_vertex> vertices;
-			std::vector<uint32_t> indices;
-		};
-		std::vector<accumulator> batches;
+			static_chunk& chunk = m_chunks[range.chunk];
 
-		for (const auto& [key, instance] : m_static_models)
-		{
-			const std::vector<ffp_vertex>& vertices = instance.vertices;
-			const std::vector<uint32_t>& indices = instance.indices;
-
-			for (const auto& part : instance.parts)
+			if (!chunk.sealed)
 			{
-				auto it = std::find_if(batches.begin(), batches.end(),
-					[&](const accumulator& a) { return a.texture == part.texture && a.has_alpha == part.has_alpha; });
-
-				if (it == batches.end())
-				{
-					batches.push_back({ part.texture, part.has_alpha, {}, {} });
-					it = batches.end() - 1;
-				}
-
-				// Indices are model-local; rebase them onto this batch's vertex block.
-				const uint32_t base = static_cast<uint32_t>(it->vertices.size());
-				it->vertices.insert(it->vertices.end(), vertices.begin(), vertices.end());
-
-				const uint32_t end = part.index_start + part.triangle_count * 3u;
-				for (uint32_t i = part.index_start; i < end; ++i) {
-					it->indices.push_back(base + indices[i]);
-				}
-			}
-		}
-
-		for (auto& acc : batches)
-		{
-			if (acc.vertices.empty() || acc.indices.empty()) {
+				std::fill_n(chunk.indices.begin() + range.index_start, range.index_count,
+					static_cast<uint16_t>(0));
 				continue;
 			}
 
-			static_batch batch{};
-			batch.texture = acc.texture;
-			batch.has_alpha = acc.has_alpha;
-			batch.vertex_count = static_cast<uint32_t>(acc.vertices.size());
-			batch.triangle_count = static_cast<uint32_t>(acc.indices.size()) / 3u;
-
-			const UINT vertex_bytes = batch.vertex_count * sizeof(ffp_vertex);
-			const UINT index_bytes = static_cast<UINT>(acc.indices.size()) * sizeof(uint32_t);
-
-			// A merged batch spans far more than 65535 vertices, so these are 32-bit.
-			if (FAILED(dev->CreateVertexBuffer(vertex_bytes, D3DUSAGE_WRITEONLY, 0, D3DPOOL_MANAGED,
-				&batch.vertex_buffer, nullptr))
-				|| FAILED(dev->CreateIndexBuffer(index_bytes, D3DUSAGE_WRITEONLY, D3DFMT_INDEX32,
-					D3DPOOL_MANAGED, &batch.index_buffer, nullptr)))
-			{
-				if (batch.vertex_buffer) { batch.vertex_buffer->Release(); }
-				if (batch.index_buffer) { batch.index_buffer->Release(); }
+			if (!chunk.index_buffer) {
 				continue;
 			}
 
 			void* mapped = nullptr;
-			if (SUCCEEDED(batch.vertex_buffer->Lock(0, vertex_bytes, &mapped, 0)))
+			if (SUCCEEDED(chunk.index_buffer->Lock(range.index_start * sizeof(uint16_t),
+				range.index_count * sizeof(uint16_t), &mapped, 0)))
 			{
-				memcpy(mapped, acc.vertices.data(), vertex_bytes);
-				batch.vertex_buffer->Unlock();
+				std::memset(mapped, 0, range.index_count * sizeof(uint16_t));
+				chunk.index_buffer->Unlock();
 			}
+		}
+	}
 
-			if (SUCCEEDED(batch.index_buffer->Lock(0, index_bytes, &mapped, 0)))
-			{
-				memcpy(mapped, acc.indices.data(), index_bytes);
-				batch.index_buffer->Unlock();
-			}
-
-			m_static_batches.push_back(batch);
+	// An actor that moved, deformed or picked up an animated material stops being scenery.
+	// Permanent demotion also blocks it from ever being tracked again; a vanished actor is
+	// left unmarked, since its pointer may be recycled for a brand-new one.
+	void brender_inject::demote_actor(game::br_actor* actor, const bool permanent)
+	{
+		const auto it = m_actors.find(actor);
+		if (it == m_actors.end()) {
+			return;
 		}
 
-		m_static_dirty = false;
-		m_static_urgent = false;
-		m_static_rebuilt_scene = m_scenes_submitted;
-
-		uint32_t total_vertices = 0;
-		for (const auto& batch : m_static_batches) {
-			total_vertices += batch.vertex_count;
+		punch_out(it->second);
+		if (it->second.baked) {
+			++m_demotions;
+		}
+		if (it->second.live && m_live_actors) {
+			--m_live_actors;
 		}
 
-		shared::common::log("BRender", std::format("static geometry merged: {} models -> {} draws, {} verts",
-			m_static_models.size(), m_static_batches.size(), total_vertices),
+		m_actors.erase(it);
+		if (permanent) {
+			m_moving_actors.insert(actor);
+		}
+	}
+
+	void brender_inject::release_chunks()
+	{
+		for (auto& chunk : m_chunks)
+		{
+			if (chunk.vertex_buffer) { chunk.vertex_buffer->Release(); }
+			if (chunk.index_buffer) { chunk.index_buffer->Release(); }
+		}
+		m_chunks.clear();
+		m_open_chunks.clear();
+	}
+
+	/*
+	 * Demotes actors that have stopped being walked.
+	 *
+	 * With frustum culling disabled every static actor is visited every scene, so a baked
+	 * actor that has gone unseen for a couple of seconds is genuinely gone. One or two at
+	 * a time is the game retiring pooled objects; nearly all of them at once means the
+	 * race changed under a reused world actor, and the tracked pointers with it.
+	 */
+	void brender_inject::sweep_stale_actors()
+	{
+		std::vector<game::br_actor*> stale;
+		for (const auto& [actor, record] : m_actors)
+		{
+			if (m_scenes_submitted - record.last_seen_scene > ACTOR_UNSEEN_DEMOTE_SCENES) {
+				stale.push_back(actor);
+			}
+		}
+
+		if (stale.empty()) {
+			return;
+		}
+
+		if (stale.size() * 2 > m_actors.size())
+		{
+			reset_static_world("most tracked actors vanished");
+			return;
+		}
+
+		for (game::br_actor* actor : stale) {
+			demote_actor(actor, false);
+		}
+	}
+
+	void brender_inject::reset_static_world(const char* reason)
+	{
+		if (m_chunks.empty() && m_actors.empty() && m_moving_actors.empty()) {
+			return;
+		}
+
+		release_chunks();
+		m_actors.clear();
+		m_moving_actors.clear();
+		m_animated_materials.clear();
+		m_have_unsealed = false;
+		m_live_actors = 0;
+
+		shared::common::log("BRender", std::format("static world reset - {}", reason),
+			shared::common::LOG_TYPE::LOG_TYPE_WARN, true);
+	}
+
+	/*
+	 * A map_transform update on a material we have already learned marks it animated.
+	 *
+	 * The gate matters: BrMaterialUpdate fires for every material while a level loads, but
+	 * learn_materials only runs afterwards (from BrModelUpdate), so load-time setup never
+	 * lands here. What does is the funkotronic animation -- scrolling water, flashing
+	 * signs, a car's rear-light atlas -- which a sealed chunk would freeze mid-frame.
+	 */
+	void brender_inject::on_material_update(game::br_material* material, const uint16_t flags)
+	{
+		if (!(flags & game::BR_MATU_MAP_TRANSFORM)
+			|| !m_materials.contains(reinterpret_cast<uint32_t>(material))
+			|| !m_animated_materials.insert(material).second)
+		{
+			return;
+		}
+
+		// Anything already baked with it is showing a frozen frame of the animation.
+		std::vector<game::br_actor*> demote;
+		for (const auto& [actor, record] : m_actors)
+		{
+			if (record.baked
+				&& std::find(record.materials.begin(), record.materials.end(), material)
+					!= record.materials.end())
+			{
+				demote.push_back(actor);
+			}
+		}
+
+		for (game::br_actor* actor : demote) {
+			demote_actor(actor, true);
+		}
+	}
+
+	/*
+	 * Uploads every accumulating chunk into buffers that will never change again.
+	 *
+	 * Sealing waits for promotions to go quiet so the whole discovery burst -- with
+	 * frustum culling disabled that is essentially the entire level, a few scenes in --
+	 * lands in one set of buffers. Remix hashes each buffer once and keeps the
+	 * acceleration structure it builds, so a sealed chunk costs nothing per frame.
+	 */
+	void brender_inject::seal_chunks(IDirect3DDevice9* dev)
+	{
+		uint32_t sealed = 0, vertices = 0, triangles = 0;
+		bool all_ok = true;
+
+		for (auto& chunk : m_chunks)
+		{
+			if (chunk.sealed) {
+				continue;
+			}
+
+			if (chunk.vertices.empty() || chunk.indices.empty())
+			{
+				chunk.sealed = true;
+				continue;
+			}
+
+			const UINT vertex_bytes = static_cast<UINT>(chunk.vertices.size() * sizeof(ffp_vertex));
+			const UINT index_bytes = static_cast<UINT>(chunk.indices.size() * sizeof(uint16_t));
+
+			if (FAILED(dev->CreateVertexBuffer(vertex_bytes, D3DUSAGE_WRITEONLY, 0, D3DPOOL_MANAGED,
+				&chunk.vertex_buffer, nullptr))
+				|| FAILED(dev->CreateIndexBuffer(index_bytes, D3DUSAGE_WRITEONLY, D3DFMT_INDEX16,
+					D3DPOOL_MANAGED, &chunk.index_buffer, nullptr)))
+			{
+				if (chunk.vertex_buffer) { chunk.vertex_buffer->Release(); chunk.vertex_buffer = nullptr; }
+				all_ok = false;
+				continue;
+			}
+
+			void* mapped = nullptr;
+			if (SUCCEEDED(chunk.vertex_buffer->Lock(0, vertex_bytes, &mapped, 0)))
+			{
+				memcpy(mapped, chunk.vertices.data(), vertex_bytes);
+				chunk.vertex_buffer->Unlock();
+			}
+			if (SUCCEEDED(chunk.index_buffer->Lock(0, index_bytes, &mapped, 0)))
+			{
+				memcpy(mapped, chunk.indices.data(), index_bytes);
+				chunk.index_buffer->Unlock();
+			}
+
+			chunk.vertex_count = static_cast<uint32_t>(chunk.vertices.size());
+			chunk.triangle_count = static_cast<uint32_t>(chunk.indices.size()) / 3u;
+			chunk.sealed = true;
+			chunk.vertices = {};
+			chunk.indices = {};
+
+			++sealed;
+			vertices += chunk.vertex_count;
+			triangles += chunk.triangle_count;
+		}
+
+		// Actors go live only once every chunk they live in is sealed.
+		for (auto& [actor, record] : m_actors)
+		{
+			if (!record.baked || record.live) {
+				continue;
+			}
+
+			const bool ready = std::all_of(record.ranges.begin(), record.ranges.end(),
+				[&](const baked_range& range) { return m_chunks[range.chunk].sealed; });
+
+			if (ready)
+			{
+				record.live = true;
+				++m_live_actors;
+			}
+		}
+
+		if (all_ok) {
+			m_have_unsealed = false;
+		}
+		else
+		{
+			// Retry after another quiet window instead of every scene.
+			m_last_promotion_scene = m_scenes_submitted;
+			shared::common::log("BRender", "chunk buffer creation failed - will retry",
+				shared::common::LOG_TYPE::LOG_TYPE_ERROR, true);
+		}
+
+		// Later promotions open fresh chunks; the sealed ones are closed for good.
+		m_open_chunks.clear();
+
+		shared::common::log("BRender", std::format(
+			"static world sealed: {} chunks (+{} this pass), {} verts, {} tris, {} live actors",
+			m_chunks.size(), sealed, vertices, triangles, m_live_actors),
 			shared::common::LOG_TYPE::LOG_TYPE_GREEN, true);
 	}
 
-	void brender_inject::begin_scene(game::br_actor* camera)
+	void brender_inject::begin_scene(game::br_actor* world, game::br_actor* camera)
 	{
-		if (shared::common::config::get().culling.bubble_radius > 0.0f) {
+		if (const auto& culling = shared::common::config::get().culling;
+			culling.disable_frustum || culling.bubble_radius > 0.0f)
+		{
 			install_bounds_test_hook();
 		}
 
+		m_world = world;
 		m_camera = camera;
 		m_camera_valid = false;
 		m_capturing = !m_overlay_scene;
@@ -1144,12 +1362,18 @@ namespace comp
 			&& invert34(m_world_to_view, m_view_inverse);
 	}
 
-	bool brender_inject::capture_model(game::br_model* model, game::br_material* fallback_material,
-		const uint32_t style)
+	bool brender_inject::capture_model(game::br_actor* actor, game::br_model* model,
+		game::br_material* fallback_material, const uint32_t style)
 	{
 		if (!m_capturing || !m_camera_valid) {
 			return false;
 		}
+
+		// Only the race scene is ever submitted to Remix, so only its models may be
+		// suppressed or tracked as scenery. The 3D HUD widgets run their models through
+		// the same incremental API under their own cameras; the game's own render is all
+		// those have.
+		const bool race_scene = m_race_camera && m_camera == m_race_camera;
 
 		const uint32_t effective_style = style & 0xFFu;
 		const auto prepared = model->prepared;
@@ -1182,7 +1406,7 @@ namespace comp
 		// path's per-model caching cannot represent anyway.
 		if (effective_style == game::BR_RSTYLE_EDGES)
 		{
-			if (!shared::common::config::get().effects.sparks) {
+			if (!race_scene || !shared::common::config::get().effects.sparks) {
 				return false;
 			}
 
@@ -1201,37 +1425,63 @@ namespace comp
 
 		++m_scene_models;
 
-		// Scenery holds one placement for the whole race, so it can be baked into the merged
-		// batches whatever its transform. Only things that actually move -- cars, wheels,
-		// spinning powerups -- need an instance of their own. A model has to hold still for
-		// several frames first: baking on sight would bake every car at its starting
-		// position and leave a ghost there the moment it drove off.
-		if (shared::common::config::get().optimization.merge_static_geometry
-			&& !m_moving_models.contains(model))
+		/*
+		 * Scenery holds one placement for the whole race, so it can be baked into the
+		 * chunks whatever its transform. Only things that actually move -- cars, wheels,
+		 * spinning powerups -- need a draw of their own. An actor has to hold still for
+		 * several frames first: baking on sight would bake every car at its starting
+		 * position and leave a ghost there the moment it drove off.
+		 */
+		if (race_scene && shared::common::config::get().optimization.static_world
+			&& actor && !m_moving_actors.contains(actor))
 		{
-			auto [placement, first_sighting] = m_placements.try_emplace(
-				model, placement_record{ model_to_world, 1, false });
+			const auto [it, fresh] = m_actors.try_emplace(actor);
+			actor_record& record = it->second;
 
-			if (first_sighting) {
-				// Falls through and draws dynamically until it has proved it is stationary.
-			}
-			else if (!same_placement(placement->second.world, model_to_world))
+			if (fresh)
 			{
-				forget_static_model(model);
+				// Decal quads are pooled and recycled at new placements all race long;
+				// tracking them would only churn the chunks.
+				if (is_decal_model(model))
+				{
+					m_actors.erase(it);
+					m_moving_actors.insert(actor);
+				}
+				else
+				{
+					record.model = model;
+					record.world = model_to_world;
+					record.sightings = 1;
+					record.last_seen_scene = m_scenes_submitted;
+				}
+			}
+			else if (record.model != model || !same_placement(record.world, model_to_world))
+			{
+				demote_actor(actor, true);
 			}
 			else
 			{
-				++placement->second.sightings;
+				record.last_seen_scene = m_scenes_submitted;
 
-				if (placement->second.sightings >= STATIC_PROMOTE_SIGHTINGS)
+				bool tracked = true;
+				if (!record.baked && ++record.sightings >= STATIC_PROMOTE_SIGHTINGS)
 				{
-					if (!placement->second.baked) {
-						placement->second.baked = bake_static_model(model, fallback_material, model_to_world);
+					if (bake_actor(record, model, fallback_material, model_to_world))
+					{
+						record.baked = true;
+						m_have_unsealed = true;
+						m_last_promotion_scene = m_scenes_submitted;
 					}
+					else
+					{
+						// The record is gone after this; the actor stays dynamic for good.
+						demote_actor(actor, true);
+						tracked = false;
+					}
+				}
 
-					if (placement->second.baked) {
-						return true;
-					}
+				if (tracked && record.live) {
+					return true;
 				}
 			}
 		}
@@ -1261,7 +1511,7 @@ namespace comp
 		refresh_part_state(*geometry);
 		queued.geometry = geometry;
 		m_queue.push_back(queued);
-		return true;
+		return race_scene;
 	}
 
 	/*
@@ -1412,6 +1662,19 @@ namespace comp
 			return;
 		}
 
+		// This scene proved itself the race view, so its camera is the one models are
+		// measured against from now on.
+		m_race_camera = m_camera;
+
+		// A new world actor means a new race; every tracked pointer belongs to the old one.
+		if (m_world != m_submitted_world)
+		{
+			if (m_submitted_world) {
+				reset_static_world("the world actor changed");
+			}
+			m_submitted_world = m_world;
+		}
+
 		LARGE_INTEGER start{};
 		QueryPerformanceCounter(&start);
 
@@ -1483,17 +1746,25 @@ namespace comp
 			dev->SetTexture(stage, nullptr);
 		}
 
-		// Additions can wait for the next window, but a removal means something is currently
-		// drawn in two places and has to be corrected now.
-		if (m_static_dirty
-			&& (m_static_urgent || m_scenes_submitted - m_static_rebuilt_scene >= STATIC_REBUILD_INTERVAL_SCENES))
+		if (m_have_unsealed
+			&& m_scenes_submitted - m_last_promotion_scene >= STATIC_SEAL_QUIET_SCENES)
 		{
-			rebuild_static_batches(dev);
+			seal_chunks(dev);
+		}
+
+		if (m_scenes_submitted && (m_scenes_submitted % ACTOR_SWEEP_INTERVAL_SCENES) == 0) {
+			sweep_stale_actors();
 		}
 
 		uint32_t vertices = 0;
-		for (const auto& batch : m_static_batches) {
-			vertices += batch.vertex_count;
+		uint32_t sealed_chunks = 0;
+		for (const auto& chunk : m_chunks)
+		{
+			if (chunk.sealed && chunk.vertex_buffer)
+			{
+				vertices += chunk.vertex_count;
+				++sealed_chunks;
+			}
 		}
 		for (const auto& queued : m_queue) {
 			vertices += queued.geometry->vertex_count;
@@ -1519,7 +1790,10 @@ namespace comp
 		frame_stats stats{};
 		stats.draws = draws;
 		stats.vertices = vertices;
-		stats.models = static_cast<uint32_t>(m_queue.size() + m_static_models.size());
+		stats.models = static_cast<uint32_t>(m_queue.size()) + m_live_actors;
+		stats.baked = m_live_actors;
+		stats.chunks = sealed_chunks;
+		stats.demotions = m_demotions;
 		stats.segments = static_cast<uint32_t>(m_lines.size());
 		stats.model_updates = m_profile.model_updates;
 		stats.rebuilds = m_profile.rebuilds;
@@ -1602,21 +1876,24 @@ namespace comp
 
 		dev->SetTransform(D3DTS_WORLD, &IDENTITY_MATRIX);
 
-		for (const auto& batch : m_static_batches)
+		for (const auto& chunk : m_chunks)
 		{
-			if (!combined && batch.has_alpha != blended) {
+			if (!chunk.sealed || !chunk.vertex_buffer || !chunk.triangle_count) {
+				continue;
+			}
+			if (!combined && chunk.has_alpha != blended) {
 				continue;
 			}
 
-			dev->SetStreamSource(0, batch.vertex_buffer, 0, sizeof(ffp_vertex));
-			dev->SetIndices(batch.index_buffer);
-			bind_texture(batch.texture);
+			dev->SetStreamSource(0, chunk.vertex_buffer, 0, sizeof(ffp_vertex));
+			dev->SetIndices(chunk.index_buffer);
+			bind_texture(chunk.texture);
 			if (combined) {
-				bind_blend(batch.has_alpha);
+				bind_blend(chunk.has_alpha);
 			}
 
 			if (SUCCEEDED(dev->DrawIndexedPrimitive(D3DPT_TRIANGLELIST, 0, 0,
-				batch.vertex_count, 0, batch.triangle_count)))
+				chunk.vertex_count, 0, chunk.triangle_count)))
 			{
 				++draws;
 			}
@@ -1832,14 +2109,14 @@ namespace comp
 			+ stats.present_ms + stats.overlay_ms);
 
 		shared::common::log("BRender", std::format(
-			"scene {}: {:.1f} fps ({:.1f} ms) | {} models, {} draws (+{} glide, {} frame),"
-			" {} verts, {} segments | game {:.2f} sceneend {:.2f} overlay {:.2f} capture {:.2f}"
-			" bounds {:.2f} submit {:.2f} present {:.2f} other {:.2f} ms | {} updates,"
-			" {} rebuilds | geometry cached {}{}",
-			m_scenes_submitted, fps, stats.frame_ms, stats.models, stats.draws,
-			stats.glide_draws, stats.frame_draws, stats.vertices, stats.segments,
-			stats.game_render_ms, stats.scene_end_ms, stats.overlay_ms, stats.capture_ms,
-			stats.bounds_ms, stats.submit_ms, stats.present_ms, other_ms,
+			"scene {}: {:.1f} fps ({:.1f} ms) | {} models ({} baked in {} chunks, {} demoted),"
+			" {} draws (+{} glide, {} frame), {} verts, {} segments | game {:.2f} sceneend {:.2f}"
+			" overlay {:.2f} capture {:.2f} bounds {:.2f} submit {:.2f} present {:.2f}"
+			" other {:.2f} ms | {} updates, {} rebuilds | geometry cached {}{}",
+			m_scenes_submitted, fps, stats.frame_ms, stats.models, stats.baked, stats.chunks,
+			stats.demotions, stats.draws, stats.glide_draws, stats.frame_draws, stats.vertices,
+			stats.segments, stats.game_render_ms, stats.scene_end_ms, stats.overlay_ms,
+			stats.capture_ms, stats.bounds_ms, stats.submit_ms, stats.present_ms, other_ms,
 			stats.model_updates, stats.rebuilds, m_geometry.size(),
 			worse && !first ? "  <-- new worst" : ""),
 			worse && !first ? shared::common::LOG_TYPE::LOG_TYPE_WARN : shared::common::LOG_TYPE::LOG_TYPE_DEFAULT,

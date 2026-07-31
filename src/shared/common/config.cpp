@@ -91,11 +91,12 @@ namespace shared::common
 
 		// [Culling]
 		culling.far_plane = get_float("Culling", "FarPlane", 0.0f);
+		culling.disable_frustum = get_bool("Culling", "DisableFrustum", true);
 		culling.bubble_radius = get_float("Culling", "BubbleRadius", 0.0f);
 
 		// [Optimization]
-		optimization.merge_static_geometry = get_bool("Optimization", "MergeStaticGeometry", false);
-		optimization.suppress_game_render = get_bool("Optimization", "SuppressGameRender", false);
+		optimization.static_world = get_bool("Optimization", "StaticWorld", true);
+		optimization.suppress_game_render = get_bool("Optimization", "SuppressGameRender", true);
 
 		// [Effects]
 		effects.translucent_pass = get_bool("Effects", "TranslucentPass", true);

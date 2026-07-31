@@ -62,18 +62,17 @@ namespace shared::common
 
 		struct optimization_settings
 		{
-			// Merges stationary scenery into one buffer per texture, cutting draw calls
-			// several-fold in dense areas. Shelved by default: rebuilding the merged
-			// buffers when new scenery is discovered causes an occasional hitch, and the
-			// gain did not justify it.
-			bool merge_static_geometry = false;
+			// Bakes scenery that holds one placement into per-texture chunks that are
+			// uploaded once and never modified, so the whole level stays resident for
+			// Remix at a few dozen draws instead of thousands.
+			bool static_world = true;
 
 			// Drops the game's own render of every model the proxy has already injected.
 			// BRender transforms and lights on the CPU and nGlide rasterizes the result, and
 			// Remix discards all of it as pre-transformed, so with the injection running that
-			// work reaches nothing. Off by default: without Remix the injected geometry is
-			// the only thing left drawing the world.
-			bool suppress_game_render = false;
+			// work reaches nothing. Turn off when running without Remix: the injected
+			// geometry is then the only thing left drawing the world.
+			bool suppress_game_render = true;
 		} optimization;
 
 		struct culling_settings
@@ -82,9 +81,15 @@ namespace shared::common
 			// which is far too short for path tracing. 0 leaves the game's value alone.
 			float far_plane = 0.0f;
 
+			// Downgrades every frustum-rejected actor to a clipped pass instead, so the
+			// entire level reaches the scene walk each frame. Path tracing needs the
+			// geometry behind and beside the camera to occlude and bounce light; with the
+			// game render suppressed, walking it costs almost nothing.
+			bool disable_frustum = true;
+
 			// Radius around the camera within which geometry is submitted even when the
-			// frustum test rejects it, so walls behind the camera keep occluding and
-			// bouncing light. 0 disables it.
+			// frustum test rejects it. Superseded by disable_frustum; kept for runs that
+			// want the game's culling mostly intact. 0 disables it.
 			float bubble_radius = 0.0f;
 		} culling;
 

@@ -30,19 +30,27 @@ namespace comp
 		static inline brender_inject* p_this = nullptr;
 		static brender_inject* get() { return p_this; }
 
-		void begin_scene(game::br_actor* camera);
+		void begin_scene(game::br_actor* world, game::br_actor* camera);
 		void capture_camera();
-		// True when the model reached Remix, either as a queued draw, a merged static batch or
-		// a line segment. The caller uses it to decide whether the game still needs to draw it.
-		bool capture_model(game::br_model* model, game::br_material* fallback_material, uint32_t style);
+		// True when the model reached Remix and the game's own render of it is redundant:
+		// a race-scene draw, a live baked chunk or a line segment. Models in HUD widget
+		// scenes always return false -- those scenes are never submitted to Remix, so the
+		// game's render is all they have.
+		bool capture_model(game::br_actor* actor, game::br_model* model,
+		                   game::br_material* fallback_material, uint32_t style);
 		void end_scene();
 
 		// Called from the BrModelUpdate detour while the authored face array is still alive.
 		void learn_materials(game::br_model* model);
 
 		// BrModelUpdate rebuilds the prepared block -- car damage deformation does this every
-		// few frames -- so any geometry cached from the old contents must be dropped.
+		// few frames -- so any geometry cached from the old contents must be dropped, and any
+		// actor baked with the old shape demoted back to the dynamic path.
 		void invalidate_geometry(game::br_model* model);
+
+		// Called from the BrMaterialUpdate detour. A material whose UV transform is animated
+		// mid-race can never live in a sealed chunk; anything already baked with it demotes.
+		void on_material_update(game::br_material* material, uint16_t flags);
 
 		void set_overlay_scene(const bool active) { m_overlay_scene = active; }
 
@@ -155,18 +163,54 @@ namespace comp
 			const char* model_name;
 		};
 
-		// The level's static geometry, merged across models into one buffer per texture.
-		// Track pieces are world-space children with an identity transform, so they can all
-		// share a draw; that collapses thousands of per-model draws into a few dozen and
-		// gives Remix an acceleration structure that never has to be rebuilt.
-		struct static_batch
+		/*
+		 * One run of the level's static geometry sharing a texture and blend mode.
+		 *
+		 * A chunk accumulates CPU-side while the level is being discovered, then seals:
+		 * the data is uploaded once into buffers that are never modified again. Remix
+		 * hashes a buffer when it first sees it and keeps the acceleration structure it
+		 * builds for as long as the contents hold still, so sealed chunks cost it nothing
+		 * per frame -- which is exactly what the old rebuild-everything batches broke every
+		 * time a new corner of the track forced a rebuild.
+		 */
+		struct static_chunk
 		{
 			IDirect3DTexture9* texture;
 			bool has_alpha;
+			bool sealed;
+			std::vector<ffp_vertex> vertices;   // emptied on seal
+			std::vector<uint16_t> indices;      // emptied on seal
 			IDirect3DVertexBuffer9* vertex_buffer;
 			IDirect3DIndexBuffer9* index_buffer;
 			uint32_t vertex_count;
 			uint32_t triangle_count;
+		};
+
+		// Where one baked actor's indices ended up, so it can be punched back out (the
+		// range overwritten with degenerate triangles) if the actor turns out to move.
+		struct baked_range
+		{
+			uint32_t chunk;
+			uint32_t index_start;
+			uint32_t index_count;
+		};
+
+		/*
+		 * One actor's placement history. Keyed by actor rather than model because scenery
+		 * is instanced -- one lamppost model, dozens of actors -- and a model-keyed record
+		 * reads the second instance as the first one moving, which is why the previous
+		 * merge never captured instanced scenery at all.
+		 */
+		struct actor_record
+		{
+			game::br_model* model;
+			game::br_matrix34 world;
+			uint32_t sightings;
+			uint32_t last_seen_scene;
+			bool baked;   // copied into a chunk, possibly one still accumulating
+			bool live;    // its chunks are sealed and drawing; the game render is redundant
+			std::vector<baked_range> ranges;
+			std::vector<game::br_material*> materials;  // compared only, never dereferenced
 		};
 
 		void submit(IDirect3DDevice9* dev);
@@ -209,11 +253,17 @@ namespace comp
 		                      std::vector<geometry_part>& parts,
 		                      std::vector<uint32_t>& indices);
 
-		bool bake_static_model(game::br_model* model, game::br_material* fallback_material,
-		                       const game::br_matrix34& world);
-		void forget_static_model(game::br_model* model);
-		void rebuild_static_batches(IDirect3DDevice9* dev);
-		void release_static_batches();
+		bool bake_actor(actor_record& record, game::br_model* model,
+		                game::br_material* fallback_material, const game::br_matrix34& world);
+		void append_part_to_chunk(const geometry_part& part,
+		                          const std::vector<ffp_vertex>& vertices,
+		                          const std::vector<uint32_t>& indices, actor_record& record);
+		void punch_out(const actor_record& record);
+		void demote_actor(game::br_actor* actor, bool permanent);
+		void seal_chunks(IDirect3DDevice9* dev);
+		void sweep_stale_actors();
+		void reset_static_world(const char* reason);
+		void release_chunks();
 		void release_geometry(model_geometry& geometry);
 		void evict_stale_geometry();
 
@@ -235,44 +285,54 @@ namespace comp
 		std::vector<ffp_vertex> m_line_vertices;
 		std::unordered_map<game::br_model*, model_geometry> m_geometry;
 
-		// One placement of a model that has held still long enough to be considered scenery.
-		// The geometry is extracted and the transform baked in once, at promotion time, and
-		// the game's own memory is never read again: models get freed between races, and a
-		// rebuild must not depend on them still being alive.
-		struct static_instance
-		{
-			game::br_model* model;   // identity only, never dereferenced
-			std::vector<ffp_vertex> vertices;
-			std::vector<geometry_part> parts;
-			std::vector<uint32_t> indices;
-		};
+std::vector<static_chunk> m_chunks;
 
-		struct placement_record
-		{
-			game::br_matrix34 world;
-			uint32_t sightings;
-			bool baked;
-		};
+		// Index of the chunk currently accepting geometry for a (texture, blend) pair.
+		// Keyed on the texture pointer with the blend bit folded in.
+		std::unordered_map<uint64_t, size_t> m_open_chunks;
 
-		std::vector<static_batch> m_static_batches;
-		std::unordered_map<uint64_t, static_instance> m_static_models;
+		// Every actor the race scene has walked, and the ones that have proved they move.
+		// Anything that moves must never be baked -- it would leave a ghost behind.
+		std::unordered_map<game::br_actor*, actor_record> m_actors;
+		std::unordered_set<game::br_actor*> m_moving_actors;
 
-		// Where each model was last seen, and the models that have since turned up somewhere
-		// else. Anything that moves must never be baked -- it would leave a ghost behind.
-		std::unordered_map<game::br_model*, placement_record> m_placements;
-		std::unordered_set<game::br_model*> m_moving_models;
-		bool m_static_dirty = false;
-		bool m_static_urgent = false;
+		// Materials the funkotronic system has animated mid-race. Pointers are compared,
+		// never dereferenced; a stale entry after a level change only costs one model its
+		// bake, and the set is cleared with the rest of the static world.
+		std::unordered_set<game::br_material*> m_animated_materials;
 
-		// Frames a model must hold one placement before it counts as scenery. Cars fail on
+		// Frames an actor must hold one placement before it counts as scenery. Cars fail on
 		// their second frame and are never baked.
 		static constexpr uint32_t STATIC_PROMOTE_SIGHTINGS = 3;
-		uint32_t m_static_rebuilt_scene = 0;
+
+		// Scenes without a new promotion before the accumulated chunks seal. Sealing early
+		// means sealing often, and every seal hands Remix new buffers to hash.
+		static constexpr uint32_t STATIC_SEAL_QUIET_SCENES = 30;
+
+		// A baked actor unseen this long is gone -- knocked out of the world or the race
+		// ended -- and its geometry is punched out. With frustum culling disabled every
+		// static actor is walked every frame, so absence really does mean gone.
+		static constexpr uint32_t ACTOR_UNSEEN_DEMOTE_SCENES = 120;
+		static constexpr uint32_t ACTOR_SWEEP_INTERVAL_SCENES = 60;
+
+		// Chunk indices are 16-bit.
+		static constexpr uint32_t CHUNK_VERTEX_LIMIT = 0xFFFFu;
+
+		uint32_t m_last_promotion_scene = 0;
+		bool m_have_unsealed = false;
+		uint32_t m_live_actors = 0;
+		uint32_t m_demotions = 0;
 		uint32_t m_scene_models = 0;
 
-		// Rebuilding walks every static model, so discoveries are batched up rather than
-		// triggering a rebuild each time a new corner of the track comes into view.
-		static constexpr uint32_t STATIC_REBUILD_INTERVAL_SCENES = 120;
+		// The camera whose scene last submitted, i.e. the race view. Models seen under any
+		// other camera belong to 3D HUD widgets: they are never suppressed and never enter
+		// the placement history.
+		game::br_actor* m_race_camera = nullptr;
+
+		// The world actor of the submitting scene. A different world means a different
+		// race, and every baked pointer from the old one is garbage.
+		game::br_actor* m_world = nullptr;
+		game::br_actor* m_submitted_world = nullptr;
 
 		game::br_actor* m_camera = nullptr;
 		game::br_matrix34 m_world_to_view{};
@@ -324,6 +384,9 @@ namespace comp
 			uint32_t draws;
 			uint32_t vertices;
 			uint32_t models;
+			uint32_t baked;
+			uint32_t chunks;
+			uint32_t demotions;
 			uint32_t segments;
 			uint32_t model_updates;
 			uint32_t rebuilds;

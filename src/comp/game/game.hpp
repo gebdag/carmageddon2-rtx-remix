@@ -37,6 +37,14 @@ namespace comp::game
 	constexpr uint32_t ADDR_BrModelUpdate = 0x0051F950u;
 	typedef void(__cdecl* BrModelUpdate_t)(br_model* model, uint16_t flags);
 
+	// BrMaterialUpdate(material, flags) — bit 0 is BR_MATU_MAP_TRANSFORM. The funkotronic
+	// system calls it every time it animates a material's UV transform, which is what marks
+	// a material as unbakeable: scrolling water and flashing signs must stay dynamic.
+	constexpr uint32_t ADDR_BrMaterialUpdate = 0x00520E70u;
+	typedef void(__cdecl* BrMaterialUpdate_t)(br_material* material, uint16_t flags);
+
+	constexpr uint16_t BR_MATU_MAP_TRANSFORM = 0x0001;
+
 	// BRender's own translucency test, and the one its device drivers act on: colour_map
 	// carries alpha, or the material has an index shade/blend table, or its extra token
 	// list requests blending. BrZbModelRender (0x0052196D) calls it to decide whether a
