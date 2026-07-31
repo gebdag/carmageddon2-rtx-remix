@@ -135,7 +135,7 @@ struct br_pixelmap {
     short origin_x;         /* 0x38 */
     short origin_y;         /* 0x3A */
     unsigned int pad3C;
-    void *pixels;           /* 0x40 */
+    void *stored;           /* 0x40  driver-side pixelmap object */
 };
 
 struct br_camera {              /* actor->type_data, actor + 0x5C */
@@ -155,6 +155,7 @@ struct br_actor {
     struct br_actor *parent;    /* 0x0C */
     unsigned char type;         /* 0x12  1 = MODEL, 5 = CAMERA, 6 = ?  */
     unsigned short depth;       /* 0x10 */
+    char *identifier;           /* 0x14  '&' + '\xA3' + 2 digits = powerup pickup */
     void *model;                /* 0x18 */
     void *material;             /* 0x1C */
     unsigned char render_style; /* 0x20 */
@@ -262,3 +263,36 @@ $ 0x0074cf68 int    g_lines_as_3d_models   /* non-zero: lines go through gLine_m
 $ 0x006a27f0 void*  g_ground_decal_ring    /* 100 entries, stride 0x1C, [0] = br_actor*; unit XZ quad at y=0 */
 $ 0x006a27e8 short  g_ground_decal_next    /* ring index, wraps at 100 */
 $ 0x006a55d8 void*  g_impact_decal_pool    /* 50 entries, stride 0x78, [0] = br_actor*; unit XY quad, "BANG!" material */
+
+/* --- Powerup pickups (see findings.md section 10) ---
+ * Pickups are track-hierarchy br_actors named "&\xA3NN..."; NN = index into the POWERUP.TXT
+ * definition table. There is NO array of live pickups. Index 86/87 pickups get one of three
+ * shared icon models below, cycled by PowerupModelCustomCB — that pointer triple is the
+ * cheapest "is this a powerup?" test from a render hook. Collection sets
+ * actor->render_style = BR_RSTYLE_NONE (0x004F4FEF); respawn sets it back to FACES
+ * (0x004DB8A8). The actor is reused, never removed. */
+@ 0x0040d1f0 void SpecialActorEnumCallback(br_actor *actor, void *ctx);   /* dispatches on "&\xA3NN" name */
+@ 0x004df570 void __thiscall PowerupActorSetupSpin(br_actor *actor /*ecx*/, int colour /*edx*/); /* index 66..85 */
+@ 0x004df6c0 void __thiscall PowerupActorSetupIcon(br_actor *actor /*ecx*/);                     /* index 86..87 */
+@ 0x004dfe10 unsigned int PowerupModelCustomCB(br_actor *actor, ...);  /* model->custom: cycles the 3 icon models + spins */
+@ 0x004df650 unsigned int SpecialActorModelCustomCB(br_actor *actor, ...); /* model->custom for index 66..85 */
+@ 0x004f1030 void __thiscall QueueSpecialActorHit(void *car /*ecx*/, int powerup_index /*edx*/, br_actor *actor);
+@ 0x004f4e20 void __thiscall SpecialActorReact(void *desc /*ecx*/, ...); /* hides the pickup at 0x004F4FEF */
+@ 0x004e0750 void __thiscall RegisterCollectedPickup(int powerup_index /*ecx*/, br_actor *actor /*edx*/);
+@ 0x004db880 void RespawnDuePickups(void);        /* per-frame; shows + frees due slots */
+@ 0x004e07d0 void __thiscall ShowActor(br_actor *actor);  /* render_style = FACES */
+@ 0x004e07e0 void __thiscall HideActor(br_actor *actor);  /* render_style = NONE  */
+@ 0x004d96c0 void LoadPowerups(void);             /* POWERUP.TXT / ZOMPOWERUP.TXT / ALPOWERUP.TXT */
+@ 0x004d8d30 void __thiscall ApplyPowerupToCar(void *car /*ecx*/, int powerup_index /*edx*/);
+
+$ 0x006a0ae0 void*  g_powerup_model_arm    /* br_model* "PowArm", cloned from &68powerup1.ACT */
+$ 0x006a0ae4 void*  g_powerup_model_pow    /* br_model* "PowPow", cloned from &70powerup1.ACT */
+$ 0x006a0ae8 void*  g_powerup_model_off    /* br_model* "PowOff", cloned from &69powerup1.ACT */
+$ 0x006a0458 void*  g_pickup_respawn_slots /* 100 entries, stride 0x0C: [0]=br_actor* (NULL=free), [4]=powerup index, [8]=deadline ms */
+$ 0x006a4430 void*  g_pickup_hit_queue     /* 50 entries, stride 0x0C: [0]=owner car, [4]=powerup index, [8]=br_actor* */
+$ 0x006a55bc int    g_pickup_hit_count     /* drained + zeroed each physics step at 0x004ED268 */
+$ 0x006a0a54 void*  g_powerup_defs         /* POWERUP.TXT type table, stride 0xAC, kMem tag 0xC5 */
+$ 0x006a0ad0 int    g_powerup_count        /* entries in g_powerup_defs */
+$ 0x006a0a50 void*  g_powerup_enabled_tbl  /* byte[g_powerup_count]; 0 = never respawns */
+$ 0x007447d8 int    g_pickup_respawn_base  /* ms */
+$ 0x007447e8 int    g_pickup_respawn_range /* ms; deadline = now + base + range/2 */

@@ -208,7 +208,6 @@ namespace comp
 			uint64_t placement;         // fingerprint of the actor's transform chain
 			uint64_t placement_chain;   // node-address part alone, for drift diagnosis
 			uint32_t sightings;
-			uint32_t last_seen_scene;
 			bool baked;   // copied into a chunk, possibly one still accumulating
 			bool live;    // its chunks are sealed and drawing; the game render is redundant
 			std::vector<baked_range> ranges;
@@ -263,7 +262,6 @@ namespace comp
 		void punch_out(const actor_record& record);
 		void demote_actor(game::br_actor* actor, bool permanent);
 		void seal_chunks(IDirect3DDevice9* dev);
-		void sweep_stale_actors();
 		void reset_static_world(const char* reason);
 		void release_chunks();
 		void release_geometry(model_geometry& geometry);
@@ -318,18 +316,19 @@ std::vector<static_chunk> m_chunks;
 		// means sealing often, and every seal hands Remix new buffers to hash.
 		static constexpr uint32_t STATIC_SEAL_QUIET_SCENES = 30;
 
-		// A baked actor unseen this long is gone -- a collected powerup, a retired pooled
-		// object -- and its geometry is punched out. With frustum culling disabled every
-		// static actor is walked every frame, so absence really does mean gone. Half a
-		// second: long enough to ride out a skipped walk, short enough that a collected
-		// powerup does not linger.
-		static constexpr uint32_t ACTOR_UNSEEN_DEMOTE_SCENES = 30;
-		static constexpr uint32_t ACTOR_SWEEP_INTERVAL_SCENES = 15;
+		// Baked actors are kept for the whole race even while unseen: the city streams
+		// scenery by zone, so absence means hidden, not gone -- and keeping hidden zones
+		// resident is the point of the chunks. Everything that can genuinely vanish or
+		// move mid-race (powerups, noncars, decals, peds, cars) is excluded from baking
+		// instead. Race changes are detected by population takeover below.
 
-		// Fresh actor records created this scene. A whole new population appearing at once
-		// while a full baked set exists means the race changed -- the world actor is
-		// reused across races, so the pointer comparison alone never catches it.
+		// Fresh actor records created this scene, and live ones walked this scene. A race
+		// change reuses the world actor, so the pointer comparison alone never catches
+		// it; what it cannot hide is a whole scene of never-seen actors landing while
+		// none of the previously live ones are walked. A zone flood re-walks the current
+		// zone's live actors, so it never matches.
 		uint32_t m_fresh_this_scene = 0;
+		uint32_t m_live_seen_this_scene = 0;
 
 		// Chunk indices are 16-bit.
 		static constexpr uint32_t CHUNK_VERTEX_LIMIT = 0xFFFFu;

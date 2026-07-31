@@ -1176,46 +1176,6 @@ namespace comp
 		m_open_chunks.clear();
 	}
 
-	/*
-	 * Demotes actors that have stopped being walked.
-	 *
-	 * With frustum culling disabled every live static actor is visited every scene --
-	 * the canyon runs show the full baked set walked continuously -- so absence means
-	 * gone: a collected powerup's actor is hidden, never moved, and its chunk copy would
-	 * otherwise sit in the world forever. A large stale fraction at once means the race
-	 * changed under reused pointers, and everything resets; the per-scene takeover check
-	 * in submit usually catches that first.
-	 */
-	void brender_inject::sweep_stale_actors()
-	{
-		if (m_actors.empty()) {
-			return;
-		}
-
-		std::vector<game::br_actor*> stale;
-		for (const auto& [actor, record] : m_actors)
-		{
-			if (m_scenes_submitted - record.last_seen_scene > ACTOR_UNSEEN_DEMOTE_SCENES) {
-				stale.push_back(actor);
-			}
-		}
-
-		if (stale.empty()) {
-			return;
-		}
-
-		if (stale.size() * 10 >= m_actors.size() * 3)
-		{
-			reset_static_world("a large share of tracked actors vanished");
-			return;
-		}
-
-		// Not marked as moving: a respawned or recycled actor deserves a fresh chance.
-		for (game::br_actor* actor : stale) {
-			demote_actor(actor, false);
-		}
-	}
-
 	void brender_inject::reset_static_world(const char* reason)
 	{
 		if (m_chunks.empty() && m_actors.empty() && m_moving_actors.empty()) {
@@ -1388,6 +1348,7 @@ namespace comp
 		m_capturing = !m_overlay_scene;
 		m_scene_models = 0;
 		m_fresh_this_scene = 0;
+		m_live_seen_this_scene = 0;
 		m_profile = {};
 		forget_readable_regions();
 		m_queue.clear();
@@ -1485,9 +1446,18 @@ namespace comp
 
 			if (fresh)
 			{
-				// Decal quads are pooled and recycled at new placements all race long;
-				// tracking them would only churn the chunks.
-				if (is_decal_model(model))
+				// Anything that can vanish or move mid-race must stay dynamic: it reacts
+				// instantly and keeps a stable per-model geometry hash for Remix mods.
+				// Decal quads are pooled and recycled at new placements; noncars -- the
+				// game's movable props, their models named with a leading '&' -- get
+				// knocked around; powerup pickups vanish the moment they are taken. A
+				// pickup is any actor whose identifier carries 0xA3 ('£') as its second
+				// character -- the same test SpecialActorEnumCallback (0x0040D1F0) uses.
+				const char* actor_name = actor->identifier;
+				const bool pickup = readable(actor_name, 2)
+					&& actor_name[0] && static_cast<uint8_t>(actor_name[1]) == 0xA3;
+				const bool noncar = model->identifier && model->identifier[0] == '&';
+				if (pickup || noncar || is_decal_model(model))
 				{
 					m_actors.erase(it);
 					m_moving_actors.insert(actor);
@@ -1498,7 +1468,6 @@ namespace comp
 					record.placement = placement.full;
 					record.placement_chain = placement.chain;
 					record.sightings = 1;
-					record.last_seen_scene = m_scenes_submitted;
 					++m_fresh_this_scene;
 				}
 			}
@@ -1512,7 +1481,9 @@ namespace comp
 			}
 			else
 			{
-				record.last_seen_scene = m_scenes_submitted;
+				if (record.live) {
+					++m_live_seen_this_scene;
+				}
 
 				bool tracked = true;
 				if (!record.baked && ++record.sightings >= STATIC_PROMOTE_SIGHTINGS)
@@ -1737,10 +1708,12 @@ namespace comp
 
 		// The world actor is reused across races, so the pointer check above misses most
 		// changes. What a race change cannot hide is its population: an entire scene's
-		// worth of never-seen actors landing at once while a full baked set exists. The
-		// old track's chunks would otherwise overlay the new one until the stale sweep
-		// catches up.
-		if (m_live_actors >= 100 && m_fresh_this_scene >= m_live_actors) {
+		// worth of never-seen actors landing while none of the previously live ones are
+		// walked. The city's zone streaming floods fresh actors too, but a zone flood
+		// always re-walks the live actors of the zone the camera is in.
+		if (m_live_actors >= 100 && m_fresh_this_scene >= m_live_actors
+			&& m_live_seen_this_scene * 10 <= m_live_actors)
+		{
 			reset_static_world("a new actor population appeared");
 		}
 
@@ -1819,10 +1792,6 @@ namespace comp
 			&& m_scenes_submitted - m_last_promotion_scene >= STATIC_SEAL_QUIET_SCENES)
 		{
 			seal_chunks(dev);
-		}
-
-		if (m_scenes_submitted && (m_scenes_submitted % ACTOR_SWEEP_INTERVAL_SCENES) == 0) {
-			sweep_stale_actors();
 		}
 
 		uint32_t vertices = 0;

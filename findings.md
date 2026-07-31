@@ -587,3 +587,213 @@ static const BrMaterialUpdate_t      BrMaterialUpdate      = (BrMaterialUpdate_t
 static const BrTransformToMatrix34_t BrTransformToMatrix34 = (BrTransformToMatrix34_t)0x00531870;
 static const BrMatrix34Mul_t         BrMatrix34Mul         = (BrMatrix34Mul_t)0x00532620;
 ```
+
+---
+
+## 10. Powerup instance pool (2026-07-31)
+
+Goal: let a d3d9 proxy answer "is this `br_actor` / `br_model` one of the in-race powerup
+pickups?". Answer: **there is no array of live pickups.** Pickups are ordinary actors that
+already exist inside the track's actor hierarchy; the loader only re-skins them. The only
+fixed global array is the *collected-and-waiting-to-respawn* list, which by definition holds
+the pickups you can **not** see. The usable classifier is the shared powerup `br_model`
+triple (10.2) or the actor name prefix (10.1).
+
+### 10.1 Pickups are `&£NN` actors in the track hierarchy
+
+`SpecialActorEnumCallback` @ **0x0040D1F0** (recursive via `BrActorEnum` 0x0051DED0, callback
+re-registered at 0x0040D513) walks every actor of the loaded track and switches on the actor
+name (`br_actor + 0x14`, i.e. `identifier`):
+
+```
+0x0040D232  cmp byte [ecx], 0x26        ; '&'
+0x0040D23E  cmp al, '0' / '9'           ; name[1] digit  -> indexed "&NNNNNN" object
+0x0040D4C5  cmp byte [ecx+1], 0xA3      ; name[1] == '£' -> POWERUP PICKUP
+0x0040D4D5  movsx ecx, byte [eax+2]
+0x0040D4D9  movsx edx, byte [eax+3]
+0x0040D4DD  lea   ecx, [ecx+ecx*4]
+0x0040D4E0  lea   edi, [edx+ecx*2-0x210]   ; edi = (name[2]-'0')*10 + (name[3]-'0')
+```
+
+`edi` is the **powerup index** into the POWERUP.TXT table (10.5). Visual treatment is then
+dispatched purely on that index:
+
+| index  | handler | effect |
+|--------|---------|--------|
+| 66..85 | `PowerupActorSetupSpin` @ **0x004DF570** | keeps the track's own model, adds Y-spin, `model->custom = 0x004DF650` |
+| 86..87 | `PowerupActorSetupIcon` @ **0x004DF6C0** | replaces `actor->model` with the shared icon model, `model->custom = 0x004DFE10` |
+
+Both are `__thiscall`, `ecx = br_actor*`. `0x004DF6C0` ends at 0x004DFDD0:
+
+```
+0x004DFDDD  call 0x00533DC0            ; BrMatrix34RotateY(&actor->t, 0.1f)
+0x004DFDEA  mov  [ebp+0x18], eax       ; actor->model = g_powerup_model_arm
+0x004DFDF6  mov  [ecx+0x24], 0x4DFE10  ; model->custom = PowerupModelCustomCB
+```
+
+Note `br_actor + 0x14 = identifier` (missing from kb.h before this section); confirmed by the
+`'&'` compares above and by 0x004F11EC / 0x004F5003.
+
+### 10.2 The three shared powerup icon models -- the practical classifier
+
+`PowerupActorSetupIcon` @ 0x004DF6C0 clones three `.ACT` models once (lazily, guarded by the
+globals being NULL) and caches them:
+
+| global | built from | `BrModelAllocate` name | first write |
+|--------|-----------|------------------------|-------------|
+| **0x006A0AE0** | `&68powerup1.ACT` | `"PowArm"` (0x0065ECF8) | 0x004DF7A4 / 0x004DFAB2 |
+| **0x006A0AE4** | `&70powerup1.ACT` | `"PowPow"` (0x0065ECE0) | 0x004DFC25 |
+| **0x006A0AE8** | `&69powerup1.ACT` | `"PowOff"` (0x0065ECC8) | 0x004DF946 / 0x004DFD99 |
+
+(fallback path reads them out of `POWRSHIT.TXT` / `&77powerup.ACT`, 0x004DF977.)
+
+`PowerupModelCustomCB` @ **0x004DFE10** (`br_model_custom_cbfn`, arg0 = `br_actor*`) is the
+only consumer: every 16 timer ticks it rotates the icon through the three models and spins the
+actor.
+
+```
+0x004DFE46  mov edi, [0x6A0AE0]
+0x004DFE4C  cmp edx, edi          ; actor->model == PowArm ?
+0x004DFE56  mov [esi+0x18], edx   ;   -> PowPow
+0x004DFE5B  cmp edx, [0x6A0AE4]   ; == PowPow ?
+0x004DFE69  mov [esi+0x18], edx   ;   -> PowOff
+0x004DFE6E  mov [esi+0x18], edi   ; else -> PowArm
+0x004DFE88  call 0x00533960       ; BrMatrix34PostRotateY(&actor->t, angle)
+```
+
+**Proxy test (recommended):**
+
+```c
+br_model *m = actor->model;
+bool is_powerup_icon = m && (m == *(br_model**)0x006A0AE0 ||
+                             m == *(br_model**)0x006A0AE4 ||
+                             m == *(br_model**)0x006A0AE8);
+```
+
+or, model-only and pointer-free: `m->custom == (void*)0x004DFE10`, or
+`m->identifier` in {`"PowArm"`, `"PowPow"`, `"PowOff"`}.
+
+This covers index 86/87 pickups (the ubiquitous floating icons). Index 66..85 pickups keep
+their track-authored model; for those the only test is
+`actor->identifier[1] == '\xA3'` -- which is exactly the test the game itself uses at runtime
+(0x004F11EC).
+
+### 10.3 Collection: pending-hit queue, then `render_style = BR_RSTYLE_NONE`
+
+Car-vs-actor collision response (0x004F11C6 onward) filters candidates the same way:
+
+```
+0x004F11E1  mov eax, [edx+0x14]         ; actor->identifier
+0x004F11EC  cmp byte [eax+1], 0xA3      ; '£' -> it is a pickup
+0x004F11F6  cmp byte [edx+0x20], 1      ; render_style == BR_RSTYLE_NONE ?
+0x004F11FA  je  0x004F1306              ;   already collected -> ignore
+0x004F1217  call 0x004F1030             ; QueueSpecialActorHit(ecx=car, edx=index, actor)
+```
+
+`QueueSpecialActorHit` @ **0x004F1030** appends to a fixed queue:
+
+```
+$ 0x006A4430  g_pickup_hit_queue   ; stride 0x0C, 50 entries (limit checked at 0x004F1067/0x004F10DB)
+              [0x00] owner  (car spec* / 0x0075BC2C)
+              [0x04] powerup index (the £NN code; 0x0E for the ped-special case)
+              [0x08] br_actor*
+$ 0x006A55BC  g_pickup_hit_count   ; reset to 0 at 0x004F578A and 0x004ED299
+```
+
+Queue drain, once per physics step, `0x004ED268 .. 0x004ED299`:
+
+```
+0x004ED273  mov esi, 0x6A4434
+0x004ED27D  call 0x004D8D30      ; ApplyPowerupToCar(ecx=owner, edx=index)
+0x004ED287  call 0x004E0750      ; RegisterCollectedPickup(ecx=index, edx=actor)
+0x004ED292  add esi, 0xC
+0x004ED299  mov [0x006A55BC], 0
+```
+
+The **hide** itself is done by the shared "special actor reaction" handler
+`SpecialActorReact` @ **0x004F4E20** (called at 0x004F1268 / 0x004F12C9 with the hit actor):
+
+```
+0x004F4FDB  cmp  byte [ebx+0x20], 1     ; already hidden?
+0x004F4FDF  je   0x004F5037
+0x004F4FEF  mov  byte [ebx+0x20], 1     ; <<< actor->render_style = BR_RSTYLE_NONE
+0x004F4FF3  call 0x004C8960             ; net broadcast msg 0x21 (hide actor)
+```
+
+There is a second hide at **0x004F4FA2** for the actor's children (`actor->children` chain,
+0x004F4F97..0x004F4FAA). The actor is **never** unlinked -- `BrActorRemove` is not involved.
+Both recursive renderers bail on `BR_RSTYLE_NONE` (see kb.h), so the pickup simply stops
+drawing.
+
+### 10.4 Respawn: the one fixed global array
+
+`RegisterCollectedPickup` @ **0x004E0750** (`ecx` = powerup index, `edx` = `br_actor*`):
+
+```
+0x004E0755  mov eax, [0x006A0A50]       ; per-skill "powerup enabled" byte table
+0x004E075A  cmp byte [ecx+eax], 0       ; index not enabled -> no respawn at all
+0x004E0777  mov eax, 0x006A0458         ; linear scan for a free slot
+0x004E077C  cmp dword [eax], 0
+0x004E0781  add eax, 0x0C
+0x004E0785  cmp eax, 0x006A0908
+0x004E0794  mov [esi+0x006A0458], edx   ; slot[0x00] = br_actor*
+0x004E079A  mov [esi+0x006A045C], ecx   ; slot[0x04] = powerup index
+0x004E07BB  mov [esi+0x006A0460], eax   ; slot[0x08] = respawn deadline (ms)
+```
+
+**`g_pickup_respawn_slots` @ 0x006A0458 -- stride 0x0C, (0x6A0908-0x6A0458)/0xC = 100 entries.**
+Slot free iff `[0x00] == NULL`. Deadline = `now + g_pickup_respawn_base + g_pickup_respawn_range/2`
+(0x004E07A0..0x004E07BB), with `g_pickup_respawn_base` @ **0x007447D8** and
+`g_pickup_respawn_range` @ **0x007447E8**, both parsed from a settings TXT at 0x00487BF1 /
+0x00487C07 (`value * 1000`).
+
+Tick, `RespawnDuePickups` @ **0x004DB880** (called from 0x00493A24 and 0x004E69A3):
+
+```
+0x004DB883  call 0x00514C30            ; now = timer ms
+0x004DB891  mov  esi, 0x006A0458
+0x004DB898  mov  eax, [esi]            ; actor
+0x004DB89E  cmp  edi, [esi+8]          ; now < deadline -> skip
+0x004DB8A8  mov  byte [eax+0x20], 4    ; <<< actor->render_style = BR_RSTYLE_FACES
+0x004DB8B0  call 0x004C8F90            ; net broadcast msg 0x41 (show actor)
+0x004DB8B7  call 0x004ECEA0            ; sparkle FX at actor->t.translate (actor+0x50)
+0x004DB8BC  mov  dword [esi], 0        ; free the slot
+0x004DB8C2  add  esi, 0x0C
+0x004DB8C5  cmp  esi, 0x006A0908
+```
+
+So: **the same `br_actor` is reused**; only `render_style` toggles 1 <-> 4. Race start clears
+the whole array at 0x004DA67D..0x004DA68C.
+
+Network mirrors of the same two writes (message-table thunks at 0x0065D6EC / 0x0065D6F4):
+
+```
+0x004C9D40  ...  jmp 0x004E07D0   ; ShowActor:  mov byte [ecx+0x20], 4 ; ret
+0x004CA3B0  ...  jmp 0x004E07E0   ; HideActor:  mov byte [ecx+0x20], 1 ; ret
+```
+
+### 10.5 The powerup *definition* table (not instances)
+
+For completeness, the array that `kMem_powerup_array` (tag 0xC5) names is the POWERUP.TXT
+type table, not an instance pool:
+
+```
+0x004D987C  mov [0x006A0AD0], eax          ; g_powerup_count  (entries in POWERUP.TXT)
+0x004D9895  call 0x005275C0                ; BrMemAllocate(count * 0xAC, 0xC5)
+0x004D98A5  mov [0x006A0A54], eax          ; g_powerup_defs   (stride 0xAC)
+```
+
+Indexing is `g_powerup_defs + index * 0xAC` (0x004DED0A..0x004DED1E). Entry fields seen:
+`+0x14` name, `+0x38` flags, `+0x3C` / `+0x40` apply / remove `__thiscall` handlers,
+`+0x50`/`+0x54` timers. Per-car active state lives at `car + 0x1710 + index*4`
+(0x004DED61, 0x004DEDC4). `LoadPowerups` @ **0x004D96C0** (POWERUP.TXT / ZOMPOWERUP.TXT /
+ALPOWERUP.TXT chosen at 0x004E0C02..0x004E0C32).
+
+### 10.6 Naming prefix fallback
+
+`DATA/ACTORS/&Gpowerup.act`, `&Lpowerup2.act`, `&Lpowerup3.act` carry internal identifiers
+`&73powerup.act`, `&68powerup2.act`, `&68powerup3.act`; the EXE additionally names
+`&68powerup1.ACT`, `&69powerup1.ACT`, `&70powerup1.ACT`, `&77powerup.ACT`. So the source
+models all match `*powerup*.act` (case-insensitively). **But** the models actually bound to a
+pickup actor at render time are the *clones*, whose identifiers are `"PowArm"`, `"PowPow"`,
+`"PowOff"` -- match the `"Pow"` prefix, or compare against the three globals in 10.2.

@@ -213,7 +213,7 @@ namespace comp::game
 		uint16_t depth;         // 0x10
 		uint8_t type;           // 0x12  1 = MODEL, 5 = CAMERA
 		uint8_t pad1;           // 0x13
-		uint32_t pad2;          // 0x14
+		char* identifier;       // 0x14  pickup actors carry 0xA3 ('£') as the second char
 		br_model* model;        // 0x18
 		void* material;         // 0x1C
 		uint8_t render_style;   // 0x20
