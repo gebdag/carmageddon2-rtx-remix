@@ -204,7 +204,7 @@ namespace comp
 		struct actor_record
 		{
 			game::br_model* model;
-			game::br_matrix34 world;
+			uint64_t placement;   // fingerprint of the actor's transform chain
 			uint32_t sightings;
 			uint32_t last_seen_scene;
 			bool baked;   // copied into a chunk, possibly one still accumulating

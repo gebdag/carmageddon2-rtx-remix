@@ -155,21 +155,37 @@ namespace comp
 			return true;
 		}
 
-		bool same_placement(const game::br_matrix34& a, const game::br_matrix34& b)
+		/*
+		 * Identity of an actor's placement, taken from the transform chain itself.
+		 *
+		 * Comparing reconstructed world matrices does not work: model_to_world comes back
+		 * through the camera (model_to_view times the view inverse), and at city-scale
+		 * translations the float error of that round trip exceeds any workable epsilon --
+		 * every static actor read as jittering and nothing ever promoted. Nothing writes a
+		 * static actor's transform, so hashing the raw bytes up the parent chain is exact:
+		 * same nodes, same bytes, same placement. Physics rewrites the bytes and
+		 * reparenting changes the node addresses, so both read as movement.
+		 */
+		uint64_t placement_fingerprint(const game::br_actor* actor)
 		{
-			// Loose on translation because the game's own maths jitters in the low bits;
-			// anything that actually moves shifts far more than this.
-			constexpr float eps = 1e-3f;
-			for (int row = 0; row < 4; ++row)
+			uint64_t hash = 1469598103934665603ull;
+			const auto mix = [&hash](const void* data, const size_t bytes)
 			{
-				for (int col = 0; col < 3; ++col)
-				{
-					if (fabsf(a.m[row][col] - b.m[row][col]) > eps) {
-						return false;
-					}
+				const auto p = static_cast<const uint8_t*>(data);
+				for (size_t i = 0; i < bytes; ++i) {
+					hash = (hash ^ p[i]) * 1099511628211ull;
 				}
+			};
+
+			int depth = 0;
+			for (const game::br_actor* node = actor; node && depth < 32; node = node->parent, ++depth)
+			{
+				mix(&node, sizeof(node));
+				mix(&node->t_type, sizeof(node->t_type));
+				mix(&node->t, sizeof(node->t));
 			}
-			return true;
+
+			return hash;
 		}
 
 		uint64_t chunk_key(const IDirect3DTexture9* texture, const bool has_alpha)
@@ -1435,6 +1451,7 @@ namespace comp
 		if (race_scene && shared::common::config::get().optimization.static_world
 			&& actor && !m_moving_actors.contains(actor))
 		{
+			const uint64_t placement = placement_fingerprint(actor);
 			const auto [it, fresh] = m_actors.try_emplace(actor);
 			actor_record& record = it->second;
 
@@ -1450,12 +1467,12 @@ namespace comp
 				else
 				{
 					record.model = model;
-					record.world = model_to_world;
+					record.placement = placement;
 					record.sightings = 1;
 					record.last_seen_scene = m_scenes_submitted;
 				}
 			}
-			else if (record.model != model || !same_placement(record.world, model_to_world))
+			else if (record.model != model || record.placement != placement)
 			{
 				demote_actor(actor, true);
 			}

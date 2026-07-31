@@ -331,6 +331,53 @@ and nothing currently measures it.
 
 ---
 
+## 9. Performance rework: sealed static chunks (2026-07-31)
+
+The per-phase timers (section 7's follow-up logging) split a heavy scene's 32.6 ms as:
+`game 9.45` (BRender software T&L + nGlide raster of models Remix discards),
+`submit 9.03` (4085 proxy draws across the bridge), `other ~12.8` (game logic, roughly
+constant), with the Remix server visibly per-instance-bound on top (GPU 29% at 4849
+instances vs 52% at 1106). Every scaling term is per-model-draw count, so the fix is to
+stop paying per model:
+
+* **Per-actor placement tracking.** The old merge keyed placements by `br_model`; instanced
+  scenery (one lamppost model, dozens of actors) read as "the model moved" every frame and
+  never merged. Records are now keyed by `br_actor`.
+* **Placement identity is the transform chain, not a reconstructed matrix.** model_to_world
+  is recovered as model_to_view x view^-1, and at city-scale translations the float error
+  of that round trip exceeds any workable epsilon -- with a moving camera *nothing* passed
+  a 1e-3 matrix compare, which also silently crippled the old merge. The record now stores
+  an FNV hash over the actor's parent chain (node address + t_type + t bytes per node).
+  Nothing writes a static actor's transform, so equality is exact; physics rewrites bytes
+  and reparenting changes addresses, so both read as movement.
+* **Sealed chunks instead of rebuilds.** Promoted scenery accumulates CPU-side into
+  per-(texture, blend) chunks; when promotions go quiet for 30 scenes the chunks seal:
+  uploaded once into managed buffers that are never modified again, so Remix hashes them
+  once and keeps their BLAS. Demotion (actor moved / deformed / material became animated)
+  punches the actor's index ranges out with degenerate triangles -- a narrow partial IB
+  lock, not a rebuild. No hitches by construction.
+* **Frustum culling disabled** (`DisableFrustum=1`): the bounds-test hook downgrades every
+  OUTSIDE to PARTIAL, so the whole level is walked, tracked and baked from the first frames
+  of a race -- no shadow pop-in and no light leak at any camera angle. The far plane and
+  bubble stop mattering for geometry coverage; FarPlane only shapes the projection handed
+  to Remix.
+* **`SuppressGameRender=1` by default, scoped to the race scene.** capture_model returns
+  "injected" only for race-scene models now: the 3D HUD widget scenes (opponent icon etc.)
+  run through the same incremental API under their own cameras but are never submitted to
+  Remix, so suppressing them -- which the old flag did -- blanked them. That scoping bug is
+  why the flag was shelved; with it fixed, `game` drops from ~9.5 ms to ~0 and the ~1700
+  per-frame nGlide world draws vanish off the bridge.
+* **Animated materials stay dynamic.** BrMaterialUpdate (0x00520E70, __cdecl, confirmed in
+  section 8) is hooked; a map_transform update (bit 0) on a material learn_materials already
+  knows marks it animated -- scrolling water, flashing signs -- and demotes anything baked
+  with it. Load-time BrMaterialUpdate calls never trigger this because learn_materials only
+  runs later, from BrModelUpdate.
+* **Race changes reset the static world**: a different world actor at submit, or most
+  tracked actors going unseen (with culling disabled, absence means gone), clears chunks
+  and records.
+
+---
+
 ## 8. Calling conventions for hookable BRender functions (2026-07-31)
 
 All three are **`__cdecl` (caller cleans)**. Every `ret` in each function is a bare `C3` — there
