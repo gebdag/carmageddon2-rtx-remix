@@ -318,11 +318,18 @@ std::vector<static_chunk> m_chunks;
 		// means sealing often, and every seal hands Remix new buffers to hash.
 		static constexpr uint32_t STATIC_SEAL_QUIET_SCENES = 30;
 
-		// A baked actor unseen this long is gone -- knocked out of the world or the race
-		// ended -- and its geometry is punched out. With frustum culling disabled every
-		// static actor is walked every frame, so absence really does mean gone.
-		static constexpr uint32_t ACTOR_UNSEEN_DEMOTE_SCENES = 120;
-		static constexpr uint32_t ACTOR_SWEEP_INTERVAL_SCENES = 60;
+		// A baked actor unseen this long is gone -- a collected powerup, a retired pooled
+		// object -- and its geometry is punched out. With frustum culling disabled every
+		// static actor is walked every frame, so absence really does mean gone. Half a
+		// second: long enough to ride out a skipped walk, short enough that a collected
+		// powerup does not linger.
+		static constexpr uint32_t ACTOR_UNSEEN_DEMOTE_SCENES = 30;
+		static constexpr uint32_t ACTOR_SWEEP_INTERVAL_SCENES = 15;
+
+		// Fresh actor records created this scene. A whole new population appearing at once
+		// while a full baked set exists means the race changed -- the world actor is
+		// reused across races, so the pointer comparison alone never catches it.
+		uint32_t m_fresh_this_scene = 0;
 
 		// Chunk indices are 16-bit.
 		static constexpr uint32_t CHUNK_VERTEX_LIMIT = 0xFFFFu;

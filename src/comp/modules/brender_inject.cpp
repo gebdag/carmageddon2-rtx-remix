@@ -1177,13 +1177,14 @@ namespace comp
 	}
 
 	/*
-	 * Detects a dead actor population.
+	 * Demotes actors that have stopped being walked.
 	 *
-	 * A baked actor going unseen is normal, not stale: the game's own scenery cut-off
-	 * hides distant sections from the walk, and keeping them resident anyway is the whole
-	 * point of the chunks. Individual demotion keys off placement changes instead. Only a
-	 * wholesale disappearance -- the race changed under a reused world actor -- means the
-	 * tracked pointers are dead, and then everything resets.
+	 * With frustum culling disabled every live static actor is visited every scene --
+	 * the canyon runs show the full baked set walked continuously -- so absence means
+	 * gone: a collected powerup's actor is hidden, never moved, and its chunk copy would
+	 * otherwise sit in the world forever. A large stale fraction at once means the race
+	 * changed under reused pointers, and everything resets; the per-scene takeover check
+	 * in submit usually catches that first.
 	 */
 	void brender_inject::sweep_stale_actors()
 	{
@@ -1191,16 +1192,27 @@ namespace comp
 			return;
 		}
 
-		size_t stale = 0;
+		std::vector<game::br_actor*> stale;
 		for (const auto& [actor, record] : m_actors)
 		{
 			if (m_scenes_submitted - record.last_seen_scene > ACTOR_UNSEEN_DEMOTE_SCENES) {
-				++stale;
+				stale.push_back(actor);
 			}
 		}
 
-		if (stale * 10 >= m_actors.size() * 9) {
-			reset_static_world("nearly all tracked actors vanished");
+		if (stale.empty()) {
+			return;
+		}
+
+		if (stale.size() * 10 >= m_actors.size() * 3)
+		{
+			reset_static_world("a large share of tracked actors vanished");
+			return;
+		}
+
+		// Not marked as moving: a respawned or recycled actor deserves a fresh chance.
+		for (game::br_actor* actor : stale) {
+			demote_actor(actor, false);
 		}
 	}
 
@@ -1375,6 +1387,7 @@ namespace comp
 		m_camera_valid = false;
 		m_capturing = !m_overlay_scene;
 		m_scene_models = 0;
+		m_fresh_this_scene = 0;
 		m_profile = {};
 		forget_readable_regions();
 		m_queue.clear();
@@ -1486,6 +1499,7 @@ namespace comp
 					record.placement_chain = placement.chain;
 					record.sightings = 1;
 					record.last_seen_scene = m_scenes_submitted;
+					++m_fresh_this_scene;
 				}
 			}
 			else if (record.model != model || record.placement != placement.full)
@@ -1719,6 +1733,15 @@ namespace comp
 				reset_static_world("the world actor changed");
 			}
 			m_submitted_world = m_world;
+		}
+
+		// The world actor is reused across races, so the pointer check above misses most
+		// changes. What a race change cannot hide is its population: an entire scene's
+		// worth of never-seen actors landing at once while a full baked set exists. The
+		// old track's chunks would otherwise overlay the new one until the stale sweep
+		// catches up.
+		if (m_live_actors >= 100 && m_fresh_this_scene >= m_live_actors) {
+			reset_static_world("a new actor population appeared");
 		}
 
 		LARGE_INTEGER start{};
