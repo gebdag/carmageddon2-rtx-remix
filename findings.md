@@ -361,12 +361,17 @@ stop paying per model:
   of a race -- no shadow pop-in and no light leak at any camera angle. The far plane and
   bubble stop mattering for geometry coverage; FarPlane only shapes the projection handed
   to Remix.
-* **`SuppressGameRender=1` by default, scoped to the race scene.** capture_model returns
-  "injected" only for race-scene models now: the 3D HUD widget scenes (opponent icon etc.)
-  run through the same incremental API under their own cameras but are never submitted to
-  Remix, so suppressing them -- which the old flag did -- blanked them. That scoping bug is
-  why the flag was shelved; with it fixed, `game` drops from ~9.5 ms to ~0 and the ~1700
-  per-frame nGlide world draws vanish off the bridge.
+* **`SuppressGameRender=1` by default, scoped to chunk-covered geometry.** Two scoping
+  bugs shaped this. First, the old flag suppressed models in the 3D HUD widget scenes,
+  which are never submitted to Remix -- blanking them is why the flag was shelved. Second,
+  suppressing every injected model blanked pedestrian limbs: not everything a model draws
+  passes through the BrZbModelRender hook (ped limbs are drawn inside the ped's own render
+  call), and Remix *composites* the game's rasterized stream, so that stream was the only
+  thing carrying such geometry. Suppression therefore applies exactly to models drawn from
+  a live sealed chunk; dynamics keep their game render (~1 ms for the handful of movers).
+  `game` still drops from ~9.5 ms to ~1 and the nGlide draws for the static world vanish
+  off the bridge. Models with a custom render callback (flags & 0x20) are additionally
+  barred from baking, so callback-drawn extras can never be silenced.
 * **Animated materials stay dynamic.** BrMaterialUpdate (0x00520E70, __cdecl, confirmed in
   section 8) is hooked; a map_transform update (bit 0) on a material learn_materials already
   knows marks it animated -- scrolling water, flashing signs -- and demotes anything baked
