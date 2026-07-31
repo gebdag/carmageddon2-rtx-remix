@@ -32,10 +32,11 @@ namespace comp
 
 		void begin_scene(game::br_actor* world, game::br_actor* camera);
 		void capture_camera();
-		// True when the model reached Remix and the game's own render of it is redundant:
-		// a race-scene draw, a live baked chunk or a line segment. Models in HUD widget
-		// scenes always return false -- those scenes are never submitted to Remix, so the
-		// game's render is all they have.
+		// True when the game's own render of this model is provably redundant: it is drawn
+		// from a live sealed chunk, or it is a spark line the billboards replace. Dynamic
+		// models return false even when injected -- not everything a model draws passes
+		// through this hook (pedestrian limbs are drawn inside the ped's render call), so
+		// their rasterized stream must keep running.
 		bool capture_model(game::br_actor* actor, game::br_model* model,
 		                   game::br_material* fallback_material, uint32_t style);
 		void end_scene();
@@ -204,7 +205,8 @@ namespace comp
 		struct actor_record
 		{
 			game::br_model* model;
-			uint64_t placement;   // fingerprint of the actor's transform chain
+			uint64_t placement;         // fingerprint of the actor's transform chain
+			uint64_t placement_chain;   // node-address part alone, for drift diagnosis
 			uint32_t sightings;
 			uint32_t last_seen_scene;
 			bool baked;   // copied into a chunk, possibly one still accumulating
@@ -273,6 +275,9 @@ namespace comp
 		// Geometry that reached the capture but did not make it to Remix, and is therefore
 		// only ever rasterized by the game. This is the injection's coverage gap.
 		void note_not_injected(const game::br_model* model, const char* reason);
+		// Why an actor failed the placement check -- the difference between a mover and a
+		// fingerprint that cannot hold still. Logged once per model name.
+		void note_placement_drift(const game::br_model* model, const char* reason);
 		void install_bounds_test_hook();
 		void ensure_white_texture(IDirect3DDevice9* dev);
 		IDirect3DTexture9* solid_colour_texture(IDirect3DDevice9* dev, uint32_t rgb);
@@ -300,6 +305,10 @@ std::vector<static_chunk> m_chunks;
 		// never dereferenced; a stale entry after a level change only costs one model its
 		// bake, and the set is cleared with the rest of the static world.
 		std::unordered_set<game::br_material*> m_animated_materials;
+
+		// Scene stamp of each material's last UV-transform update. Animation means updates
+		// in two different scenes; a load burst is many updates under one stamp.
+		std::unordered_map<game::br_material*, uint32_t> m_material_update_scene;
 
 		// Frames an actor must hold one placement before it counts as scenery. Cars fail on
 		// their second frame and are never baked.
@@ -372,6 +381,7 @@ std::vector<static_chunk> m_chunks;
 
 		std::map<std::string, std::string> m_skipped_models;
 		std::map<std::string, std::string> m_untextured_models;
+		std::map<std::string, std::string> m_drift_models;
 
 		// A scene with fewer models than this is a 3D HUD widget, not the race view.
 		static constexpr size_t MIN_WORLD_SCENE_MODELS = 8;

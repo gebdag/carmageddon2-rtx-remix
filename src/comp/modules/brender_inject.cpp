@@ -166,10 +166,16 @@ namespace comp
 		 * same nodes, same bytes, same placement. Physics rewrites the bytes and
 		 * reparenting changes the node addresses, so both read as movement.
 		 */
-		uint64_t placement_fingerprint(const game::br_actor* actor)
+		struct placement_id
 		{
-			uint64_t hash = 1469598103934665603ull;
-			const auto mix = [&hash](const void* data, const size_t bytes)
+			uint64_t full;    // chain nodes + transform bytes
+			uint64_t chain;   // chain nodes only, to tell reparenting from transform writes
+		};
+
+		placement_id placement_fingerprint(const game::br_actor* actor)
+		{
+			placement_id id{ 1469598103934665603ull, 1469598103934665603ull };
+			const auto mix = [](uint64_t& hash, const void* data, const size_t bytes)
 			{
 				const auto p = static_cast<const uint8_t*>(data);
 				for (size_t i = 0; i < bytes; ++i) {
@@ -180,12 +186,13 @@ namespace comp
 			int depth = 0;
 			for (const game::br_actor* node = actor; node && depth < 32; node = node->parent, ++depth)
 			{
-				mix(&node, sizeof(node));
-				mix(&node->t_type, sizeof(node->t_type));
-				mix(&node->t, sizeof(node->t));
+				mix(id.full, &node, sizeof(node));
+				mix(id.full, &node->t_type, sizeof(node->t_type));
+				mix(id.full, &node->t, sizeof(node->t));
+				mix(id.chain, &node, sizeof(node));
 			}
 
-			return hash;
+			return id;
 		}
 
 		uint64_t chunk_key(const IDirect3DTexture9* texture, const bool has_alpha)
@@ -995,7 +1002,9 @@ namespace comp
 		std::vector<geometry_part> parts;
 		std::vector<uint32_t> indices;
 
-		if (!extract_geometry(dev, model, fallback_material, vertices, parts, indices)) {
+		if (!extract_geometry(dev, model, fallback_material, vertices, parts, indices))
+		{
+			note_placement_drift(model, "bake failed: no geometry");
 			return false;
 		}
 
@@ -1003,7 +1012,9 @@ namespace comp
 		// the dynamic path does.
 		for (const auto& part : parts)
 		{
-			if (m_animated_materials.contains(part.material)) {
+			if (m_animated_materials.contains(part.material))
+			{
+				note_placement_drift(model, "kept dynamic: animated material");
 				return false;
 			}
 		}
@@ -1166,35 +1177,30 @@ namespace comp
 	}
 
 	/*
-	 * Demotes actors that have stopped being walked.
+	 * Detects a dead actor population.
 	 *
-	 * With frustum culling disabled every static actor is visited every scene, so a baked
-	 * actor that has gone unseen for a couple of seconds is genuinely gone. One or two at
-	 * a time is the game retiring pooled objects; nearly all of them at once means the
-	 * race changed under a reused world actor, and the tracked pointers with it.
+	 * A baked actor going unseen is normal, not stale: the game's own scenery cut-off
+	 * hides distant sections from the walk, and keeping them resident anyway is the whole
+	 * point of the chunks. Individual demotion keys off placement changes instead. Only a
+	 * wholesale disappearance -- the race changed under a reused world actor -- means the
+	 * tracked pointers are dead, and then everything resets.
 	 */
 	void brender_inject::sweep_stale_actors()
 	{
-		std::vector<game::br_actor*> stale;
+		if (m_actors.empty()) {
+			return;
+		}
+
+		size_t stale = 0;
 		for (const auto& [actor, record] : m_actors)
 		{
 			if (m_scenes_submitted - record.last_seen_scene > ACTOR_UNSEEN_DEMOTE_SCENES) {
-				stale.push_back(actor);
+				++stale;
 			}
 		}
 
-		if (stale.empty()) {
-			return;
-		}
-
-		if (stale.size() * 2 > m_actors.size())
-		{
-			reset_static_world("most tracked actors vanished");
-			return;
-		}
-
-		for (game::br_actor* actor : stale) {
-			demote_actor(actor, false);
+		if (stale * 10 >= m_actors.size() * 9) {
+			reset_static_world("nearly all tracked actors vanished");
 		}
 	}
 
@@ -1208,6 +1214,7 @@ namespace comp
 		m_actors.clear();
 		m_moving_actors.clear();
 		m_animated_materials.clear();
+		m_material_update_scene.clear();
 		m_have_unsealed = false;
 		m_live_actors = 0;
 
@@ -1216,19 +1223,27 @@ namespace comp
 	}
 
 	/*
-	 * A map_transform update on a material we have already learned marks it animated.
+	 * Marks a material animated once its UV transform is updated in two different scenes.
 	 *
-	 * The gate matters: BrMaterialUpdate fires for every material while a level loads, but
-	 * learn_materials only runs afterwards (from BrModelUpdate), so load-time setup never
-	 * lands here. What does is the funkotronic animation -- scrolling water, flashing
-	 * signs, a car's rear-light atlas -- which a sealed chunk would freeze mid-frame.
+	 * One update proves nothing: level loading calls BrMaterialUpdate with BR_MATU_ALL for
+	 * every material it touches, all while the scene counter stands still -- an entire
+	 * load burst carries one timestamp. The funkotronic animation is what spans scenes:
+	 * scrolling water updates every frame, a flashing sign every state change. Only those
+	 * must stay out of the sealed chunks, which would freeze them mid-frame.
 	 */
 	void brender_inject::on_material_update(game::br_material* material, const uint16_t flags)
 	{
-		if (!(flags & game::BR_MATU_MAP_TRANSFORM)
-			|| !m_materials.contains(reinterpret_cast<uint32_t>(material))
-			|| !m_animated_materials.insert(material).second)
-		{
+		if (!(flags & game::BR_MATU_MAP_TRANSFORM)) {
+			return;
+		}
+
+		const auto [stamp, first] = m_material_update_scene.try_emplace(material, m_scenes_submitted);
+		if (first || stamp->second == m_scenes_submitted) {
+			return;
+		}
+		stamp->second = m_scenes_submitted;
+
+		if (!m_animated_materials.insert(material).second) {
 			return;
 		}
 
@@ -1449,9 +1464,9 @@ namespace comp
 		 * position and leave a ghost there the moment it drove off.
 		 */
 		if (race_scene && shared::common::config::get().optimization.static_world
-			&& actor && !m_moving_actors.contains(actor))
+			&& actor && !(model->flags & 0x20) && !m_moving_actors.contains(actor))
 		{
-			const uint64_t placement = placement_fingerprint(actor);
+			const placement_id placement = placement_fingerprint(actor);
 			const auto [it, fresh] = m_actors.try_emplace(actor);
 			actor_record& record = it->second;
 
@@ -1467,13 +1482,18 @@ namespace comp
 				else
 				{
 					record.model = model;
-					record.placement = placement;
+					record.placement = placement.full;
+					record.placement_chain = placement.chain;
 					record.sightings = 1;
 					record.last_seen_scene = m_scenes_submitted;
 				}
 			}
-			else if (record.model != model || record.placement != placement)
+			else if (record.model != model || record.placement != placement.full)
 			{
+				note_placement_drift(model,
+					record.model != model ? "model swapped"
+					: record.placement_chain != placement.chain ? "chain relinked"
+					: "transform bytes changed");
 				demote_actor(actor, true);
 			}
 			else
@@ -1528,7 +1548,16 @@ namespace comp
 		refresh_part_state(*geometry);
 		queued.geometry = geometry;
 		m_queue.push_back(queued);
-		return race_scene;
+
+		/*
+		 * Dynamic models keep their game render even though they are injected. Not
+		 * everything a model draws passes through this hook -- pedestrian limbs are drawn
+		 * inside the ped's own render call, and Remix composites that rasterized stream --
+		 * so only geometry provably covered by the sealed chunks may be suppressed.
+		 * Suppressing the thousand-model static world is where the win was anyway; the
+		 * handful of dynamics cost about a millisecond.
+		 */
+		return false;
 	}
 
 	/*
@@ -2153,6 +2182,15 @@ namespace comp
 		const std::string name = model->identifier ? model->identifier : "<null>";
 		if (m_untextured_models.try_emplace(name, reason).second) {
 			shared::common::log("BRender", std::format("untextured: '{}' - {}", name, reason),
+				shared::common::LOG_TYPE::LOG_TYPE_DEFAULT, false);
+		}
+	}
+
+	void brender_inject::note_placement_drift(const game::br_model* model, const char* reason)
+	{
+		const std::string name = model->identifier ? model->identifier : "<null>";
+		if (m_drift_models.try_emplace(name, reason).second) {
+			shared::common::log("BRender", std::format("placement drift: '{}' - {}", name, reason),
 				shared::common::LOG_TYPE::LOG_TYPE_DEFAULT, false);
 		}
 	}

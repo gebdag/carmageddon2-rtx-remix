@@ -67,11 +67,11 @@ namespace shared::common
 			// Remix at a few dozen draws instead of thousands.
 			bool static_world = true;
 
-			// Drops the game's own render of every model the proxy has already injected.
-			// BRender transforms and lights on the CPU and nGlide rasterizes the result, and
-			// Remix discards all of it as pre-transformed, so with the injection running that
-			// work reaches nothing. Turn off when running without Remix: the injected
-			// geometry is then the only thing left drawing the world.
+			// Drops the game's own render of every model drawn from a live sealed chunk.
+			// BRender transforms and lights those on the CPU and nGlide rasterizes the
+			// result, all redundantly once the chunks carry them. Dynamic models are never
+			// suppressed: pedestrian limbs and other callback-drawn extras only exist in
+			// the game's own render stream. Turn off when running without Remix.
 			bool suppress_game_render = true;
 		} optimization;
 
