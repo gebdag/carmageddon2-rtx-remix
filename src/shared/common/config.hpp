@@ -73,6 +73,13 @@ namespace shared::common
 			// suppressed: pedestrian limbs and other callback-drawn extras only exist in
 			// the game's own render stream. Turn off when running without Remix.
 			bool suppress_game_render = true;
+
+			// Extends that suppression to every model the injection captured, not just the
+			// ones a sealed chunk covers. In a busy race the dynamics are most of the
+			// remaining CPU render cost. Off by default because the injection's coverage is
+			// not provably complete for them: whatever a model draws outside the
+			// BrZbModelRender hook exists only in the game's rasterized stream.
+			bool suppress_dynamics = false;
 		} optimization;
 
 		struct culling_settings

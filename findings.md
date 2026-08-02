@@ -1211,3 +1211,55 @@ not help, because that switch has to stay on for smoke.
 The flag is no longer the signal. `on_material_update` now keeps the last opacity it
 resolved per material and only counts an update as animation when the value actually moved.
 `BR_MATU_MAP_TRANSFORM` is unchanged -- the funk system's UV animation needs no such test.
+
+---
+
+## 15. The dips are the dynamic population, and nothing measured it (2026-08-02)
+
+The scene-probation build holds the static world steady -- demotions fell from 32662 to
+487, rebakes to 52, chunk vertices to 60-97k -- and the sampled scenes run at 60-63 fps.
+The dips remained, and the log could not see them.
+
+### 15.1 Why no dip ever appeared in the log
+
+Two separate blind spots. The periodic line samples one scene in 600, so a dip lasting a
+couple of seconds falls entirely between two samples. The `<-- new worst` line was supposed
+to catch exactly that, but it tracked an **all-time** worst, and scene 2 of every run is a
+load stall of 100-400 ms that holds the record for the rest of the session -- so it fired
+once, at startup, and never again.
+
+The worst frame is now tracked per reporting window and logged next to the sample, so every
+600 scenes the log carries both a typical frame and the window's worst with the same
+breakdown.
+
+### 15.2 What the sampled numbers do say
+
+Comparing the best and worst sampled scenes of one race:
+
+```
+scene 3000: 62.3 fps |  941 models (602 baked) | 1008 draws (+ 95 glide) | game 0.98 submit 0.45 other 14.19
+scene 3600: 47.4 fps | 1439 models (598 baked) | 2403 draws (+986 glide) | game 4.71 submit 4.31 other 10.52
+```
+
+The baked count is identical. What changes is the queue: 339 dynamic models becomes 841,
+and that alone is worth 9 ms of `game` plus `submit`. `other` -- game logic, physics, AI --
+sits at 10-14 ms in every sample and is a hard floor of roughly 70 fps that no amount of
+render work removes.
+
+So the remaining question is entirely *what those 841 models are*, and `models` minus
+`baked` could not answer it. Each queued model now records why the chunks could not carry
+it -- overlay, callback, vanishing, instanced, unbakeable, moving, probation, unsealed --
+and the counts ride in the report.
+
+### 15.3 SuppressDynamics
+
+`game` is BRender's software T&L plus the nGlide raster of models Remix discards, and the
+glide draws are those same models crossing the bridge. At the dip that is 4.7 ms and 986
+draws for geometry the injection has already sent in model space.
+
+Suppression has been scoped to chunk-covered geometry since section 9, because coverage is
+only provable there: what passes through BrZbModelRender is injected, and whatever a model
+draws outside that hook -- pedestrian limbs are the known case -- exists solely in the
+game's rasterized stream. `[Optimization] SuppressDynamics` makes that trade available and
+measurable rather than assumed. It is off by default; turning it on should take `game` to
+roughly 1 ms and the glide draws to near zero, and the peds are what to watch.

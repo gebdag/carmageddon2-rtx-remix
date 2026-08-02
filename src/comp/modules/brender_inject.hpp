@@ -313,15 +313,38 @@ namespace comp
 		                      std::vector<geometry_part>& parts,
 		                      std::vector<uint32_t>& indices);
 
+		/*
+		 * Why a model needed a draw of its own instead of coming from a sealed chunk.
+		 *
+		 * A dip is always a scene with a large dynamic population, and the population is
+		 * the only thing the report could not break down: 841 queued models says nothing
+		 * about whether they are cars, particles or scenery that failed to bake.
+		 */
+		enum class dynamic_reason : uint8_t
+		{
+			chunked,     // covered by a sealed chunk; never queued
+			overlay,     // not the race view -- HUD widgets and menus
+			callback,    // the model draws through its own render callback
+			vanishing,   // pickup or decal quad: the game deletes it rather than moving it
+			instanced,   // one actor re-placed between draws of a single scene
+			unbakeable,  // extraction failed, or it has used up its bakes
+			moving,      // its placement changed recently
+			probation,   // holding still, not yet promoted
+			unsealed,    // baked, but its chunk has not sealed yet
+			count
+		};
+
+		static const char* dynamic_reason_name(dynamic_reason reason);
+
 		void classify_actor(actor_record& record, const game::br_actor* actor,
 		                    game::br_model* model) const;
 
-		// Follows one actor's placement and keeps the chunks in step with it. Returns true
-		// when the actor is already live in a sealed chunk, so the caller neither queues it
-		// nor lets the game rasterize it.
-		bool track_static_actor(game::br_actor* actor, game::br_model* model,
-		                        game::br_material* fallback_material,
-		                        const game::br_matrix34& world);
+		// Follows one actor's placement and keeps the chunks in step with it. Returns
+		// `chunked` when the actor is already live in a sealed chunk, so the caller neither
+		// queues it nor lets the game rasterize it; otherwise why it still needs a draw.
+		dynamic_reason track_static_actor(game::br_actor* actor, game::br_model* model,
+		                                  game::br_material* fallback_material,
+		                                  const game::br_matrix34& world);
 
 		bool bake_actor(actor_record& record, game::br_model* model,
 		                game::br_material* fallback_material, const game::br_matrix34& world);
@@ -427,6 +450,9 @@ std::vector<static_chunk> m_chunks;
 		uint32_t m_fresh_this_scene = 0;
 		uint32_t m_live_seen_this_scene = 0;
 
+		// This scene's queued models, split by why the chunks could not carry them.
+		std::array<uint32_t, static_cast<size_t>(dynamic_reason::count)> m_dynamic_reasons{};
+
 		// Chunk indices are 16-bit.
 		static constexpr uint32_t CHUNK_VERTEX_LIMIT = 0xFFFFu;
 
@@ -523,14 +549,17 @@ std::vector<static_chunk> m_chunks;
 			double overlay_ms;
 			double frame_ms;
 			uint32_t frame_draws;
+			uint32_t scene;
+			std::array<uint32_t, static_cast<size_t>(dynamic_reason::count)> dynamic_reasons{};
 		};
 
 		void log_performance(const frame_stats& stats);
+		void log_frame_stats(const char* label, const frame_stats& stats);
 
 		uint32_t m_scenes_submitted = 0;
 		int64_t m_last_scene_ticks = 0;
 		double m_ticks_per_ms = 0.0;
-		frame_stats m_worst{};
+		frame_stats m_window_worst{};
 		scene_profile m_profile{};
 		int64_t m_overlay_ticks = 0;
 	};

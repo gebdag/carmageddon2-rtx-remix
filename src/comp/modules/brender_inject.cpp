@@ -1194,8 +1194,9 @@ namespace comp
 	 * except what the game deletes outright, which no amount of holding still would make
 	 * safe to bake.
 	 */
-	bool brender_inject::track_static_actor(game::br_actor* actor, game::br_model* model,
-		game::br_material* fallback_material, const game::br_matrix34& world)
+	brender_inject::dynamic_reason brender_inject::track_static_actor(game::br_actor* actor,
+		game::br_model* model, game::br_material* fallback_material,
+		const game::br_matrix34& world)
 	{
 		const auto [it, fresh] = m_actors.try_emplace(actor);
 		actor_record& record = it->second;
@@ -1206,15 +1207,15 @@ namespace comp
 			record.last_seen_scene = m_scenes_submitted;
 			++m_fresh_this_scene;
 
-			if (record.bakeable)
-			{
-				const placement_id seed = placement_fingerprint(actor);
-				record.placement = seed.where;
-				record.parent_chain = seed.parent;
-				record.sightings = 1;
+			if (!record.bakeable) {
+				return dynamic_reason::vanishing;
 			}
 
-			return false;
+			const placement_id seed = placement_fingerprint(actor);
+			record.placement = seed.where;
+			record.parent_chain = seed.parent;
+			record.sightings = 1;
+			return dynamic_reason::probation;
 		}
 
 		/*
@@ -1228,7 +1229,7 @@ namespace comp
 		{
 			if (unbake_actor(record)) { ++m_demotions.instanced; }
 			record.bakeable = false;
-			return false;
+			return dynamic_reason::instanced;
 		}
 
 		record.last_seen_scene = m_scenes_submitted;
@@ -1244,7 +1245,7 @@ namespace comp
 		// no placement to follow: skipping the chain walk keeps the pickups, the decal
 		// pools and every model that failed extraction off the per-frame hashing path.
 		if (!record.bakeable) {
-			return false;
+			return record.bakes ? dynamic_reason::unbakeable : dynamic_reason::vanishing;
 		}
 
 		const placement_id placement = placement_fingerprint(actor);
@@ -1270,6 +1271,7 @@ namespace comp
 
 		const uint32_t settle = record.demoted ? STATIC_REBAKE_SIGHTINGS
 		                                      : STATIC_PROMOTE_SIGHTINGS;
+		const bool moved = record.sightings == 0;
 
 		if (!record.baked && ++record.sightings >= settle)
 		{
@@ -1289,7 +1291,15 @@ namespace comp
 			}
 		}
 
-		return record.live;
+		if (record.live) {
+			return dynamic_reason::chunked;
+		}
+
+		if (record.baked) {
+			return dynamic_reason::unsealed;
+		}
+
+		return moved ? dynamic_reason::moving : dynamic_reason::probation;
 	}
 
 	/*
@@ -1802,12 +1812,19 @@ namespace comp
 		 * still for several frames first: baking on sight would bake every car at its
 		 * starting position and leave a ghost there the moment it drove off.
 		 */
-		if (race_scene && shared::common::config::get().optimization.static_world
-			&& actor && !(model->flags & 0x20)
-			&& track_static_actor(actor, model, fallback_material, model_to_world))
+		dynamic_reason reason = dynamic_reason::overlay;
+		if (race_scene && shared::common::config::get().optimization.static_world && actor)
 		{
-			return true;
+			reason = model->flags & 0x20
+				? dynamic_reason::callback
+				: track_static_actor(actor, model, fallback_material, model_to_world);
+
+			if (reason == dynamic_reason::chunked) {
+				return true;
+			}
 		}
+
+		++m_dynamic_reasons[static_cast<size_t>(reason)];
 
 		queued_model queued{};
 		queued.geometry = nullptr;
@@ -1837,14 +1854,15 @@ namespace comp
 		m_queue.push_back(queued);
 
 		/*
-		 * Dynamic models keep their game render even though they are injected. Not
-		 * everything a model draws passes through this hook -- pedestrian limbs are drawn
-		 * inside the ped's own render call, and Remix composites that rasterized stream --
-		 * so only geometry provably covered by the sealed chunks may be suppressed.
-		 * Suppressing the thousand-model static world is where the win was anyway; the
-		 * handful of dynamics cost about a millisecond.
+		 * A sealed chunk is proof that the injection carries this geometry, so its game
+		 * render always goes. A dynamic model has no such proof: not everything a model
+		 * draws passes through this hook -- pedestrian limbs are drawn inside the ped's own
+		 * render call, and Remix composites that rasterized stream -- so dropping it can
+		 * take geometry off the screen that nothing else replaces. In a race dense enough
+		 * to drop frames the dynamics are most of what BRender still transforms on the CPU,
+		 * which is why the trade is offered rather than decided here.
 		 */
-		return false;
+		return shared::common::config::get().optimization.suppress_dynamics;
 	}
 
 	/*
@@ -2144,6 +2162,8 @@ namespace comp
 		stats.demotions = m_demotions;
 		stats.relinks_absorbed = m_relinks_absorbed;
 		stats.repromotions = m_repromotions;
+		stats.scene = m_scenes_submitted;
+		stats.dynamic_reasons = m_dynamic_reasons;
 		stats.segments = static_cast<uint32_t>(m_lines.size());
 		stats.model_updates = m_profile.model_updates;
 		stats.rebuilds = m_profile.rebuilds;
@@ -2449,26 +2469,50 @@ namespace comp
 		return draws;
 	}
 
+	const char* brender_inject::dynamic_reason_name(const dynamic_reason reason)
+	{
+		switch (reason)
+		{
+		case dynamic_reason::overlay:    return "overlay";
+		case dynamic_reason::callback:   return "callback";
+		case dynamic_reason::vanishing:  return "vanishing";
+		case dynamic_reason::instanced:  return "instanced";
+		case dynamic_reason::unbakeable: return "unbakeable";
+		case dynamic_reason::moving:     return "moving";
+		case dynamic_reason::probation:  return "probation";
+		case dynamic_reason::unsealed:   return "unsealed";
+		default:                         return "chunked";
+		}
+	}
+
 	/*
-	 * Reports the slowest scene seen so far, and every scene that beats it.
+	 * Reports a scene every 600, and the worst frame of each window alongside it.
 	 *
-	 * A periodic sample cannot catch a stall that lasts a handful of frames, which is
-	 * exactly the case worth diagnosing. Tracking the worst frame instead means driving
-	 * until it hitches leaves the offending numbers in the log.
+	 * The worst frame is what is worth diagnosing and a periodic sample almost never lands
+	 * on one -- a dip lasting a couple of seconds falls entirely between two samples. An
+	 * all-time worst does not work either: one load stall early in the run holds the record
+	 * for the whole session and every dip after it goes unreported.
 	 */
 	void brender_inject::log_performance(const frame_stats& stats)
 	{
-		const bool first = m_scenes_submitted == 0;
-		const bool worse = stats.frame_ms > m_worst.frame_ms && stats.frame_ms < 1000.0;
+		if (stats.frame_ms > m_window_worst.frame_ms && stats.frame_ms < 1000.0) {
+			m_window_worst = stats;
+		}
 
-		if (!first && !worse && (m_scenes_submitted % 600) != 0) {
+		if (m_scenes_submitted != 0 && (m_scenes_submitted % 600) != 0) {
 			return;
 		}
 
-		if (worse) {
-			m_worst = stats;
+		log_frame_stats("scene", stats);
+		if (m_window_worst.scene != stats.scene) {
+			log_frame_stats("worst since last report, scene", m_window_worst);
 		}
 
+		m_window_worst = {};
+	}
+
+	void brender_inject::log_frame_stats(const char* label, const frame_stats& stats)
+	{
 		const double fps = stats.frame_ms > 0.0 ? 1000.0 / stats.frame_ms : 0.0;
 
 		// Whatever nothing above accounts for: game logic, physics, AI and nGlide's own work.
@@ -2477,25 +2521,33 @@ namespace comp
 			+ stats.game_render_ms + stats.scene_end_ms + stats.submit_ms
 			+ stats.present_ms + stats.overlay_ms);
 
+		std::string dynamics;
+		for (size_t i = 0; i < stats.dynamic_reasons.size(); ++i)
+		{
+			if (stats.dynamic_reasons[i]) {
+				dynamics += std::format("{}{} {}", dynamics.empty() ? "" : ", ",
+					dynamic_reason_name(static_cast<dynamic_reason>(i)), stats.dynamic_reasons[i]);
+			}
+		}
+
 		shared::common::log("BRender", std::format(
-			"scene {}: {:.1f} fps ({:.1f} ms) | {} models ({} baked in {} chunks),"
+			"{} {}: {:.1f} fps ({:.1f} ms) | {} models ({} baked in {} chunks),"
 			" {} demoted (moved {}, swapped {}, deformed {}, animated {}, instanced {};"
-			" {} relinks absorbed, {} rebaked) |"
+			" {} relinks absorbed, {} rebaked) | dynamic: {} |"
 			" {} draws (+{} glide, {} frame), {} verts, {} segments |"
 			" game {:.2f} sceneend {:.2f} overlay {:.2f} capture {:.2f} bounds {:.2f}"
 			" submit {:.2f} present {:.2f} other {:.2f} ms | {} updates, {} rebuilds |"
-			" geometry cached {}{}",
-			m_scenes_submitted, fps, stats.frame_ms, stats.models, stats.baked, stats.chunks,
+			" geometry cached {}",
+			label, stats.scene, fps, stats.frame_ms, stats.models, stats.baked, stats.chunks,
 			stats.demotions.total(), stats.demotions.moved, stats.demotions.swapped,
 			stats.demotions.deformed, stats.demotions.animated, stats.demotions.instanced,
-			stats.relinks_absorbed,
-			stats.repromotions, stats.draws, stats.glide_draws, stats.frame_draws,
+			stats.relinks_absorbed, stats.repromotions,
+			dynamics.empty() ? "none" : dynamics,
+			stats.draws, stats.glide_draws, stats.frame_draws,
 			stats.vertices, stats.segments, stats.game_render_ms, stats.scene_end_ms,
 			stats.overlay_ms, stats.capture_ms, stats.bounds_ms, stats.submit_ms,
-			stats.present_ms, other_ms, stats.model_updates, stats.rebuilds, m_geometry.size(),
-			worse && !first ? "  <-- new worst" : ""),
-			worse && !first ? shared::common::LOG_TYPE::LOG_TYPE_WARN : shared::common::LOG_TYPE::LOG_TYPE_DEFAULT,
-			false);
+			stats.present_ms, other_ms, stats.model_updates, stats.rebuilds, m_geometry.size()),
+			shared::common::LOG_TYPE::LOG_TYPE_DEFAULT, false);
 	}
 
 	/*

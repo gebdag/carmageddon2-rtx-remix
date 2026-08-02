@@ -97,6 +97,7 @@ namespace shared::common
 		// [Optimization]
 		optimization.static_world = get_bool("Optimization", "StaticWorld", true);
 		optimization.suppress_game_render = get_bool("Optimization", "SuppressGameRender", true);
+		optimization.suppress_dynamics = get_bool("Optimization", "SuppressDynamics", false);
 
 		// [Effects]
 		effects.translucent_pass = get_bool("Effects", "TranslucentPass", true);
