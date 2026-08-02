@@ -106,6 +106,8 @@ namespace shared::common
 		effects.vertex_colour = get_bool("Effects", "VertexColour", true);
 		effects.material_opacity = get_bool("Effects", "MaterialOpacity", true);
 		effects.fog = get_bool("Effects", "Fog", true);
+		effects.fog_volumetrics = get_bool("Effects", "FogVolumetrics", true);
+		effects.fog_tint = get_float("Effects", "FogTint", 0.08f);
 		effects.decal_offset = get_float("Effects", "DecalOffset", 0.02f);
 		effects.spark_width = get_float("Effects", "SparkWidth", 0.004f);
 

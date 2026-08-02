@@ -2,6 +2,7 @@
 #include "brender_inject.hpp"
 #include "shared/common/config.hpp"
 #include "shared/common/ffp_state.hpp"
+#include "shared/common/remix_api.hpp"
 
 namespace comp
 {
@@ -2355,7 +2356,12 @@ namespace comp
 					fog.colour, fog.min_distance, fog.max_distance,
 					m_view_inverse.m[3][0], m_view_inverse.m[3][1], m_view_inverse.m[3][2])
 				: std::string("depth cue: none"));
+			m_remix_fog_synced = false;
 			m_logged_fog = fog;
+		}
+
+		if (!m_remix_fog_synced) {
+			m_remix_fog_synced = push_fog_to_remix(fog);
 		}
 
 		dev->SetRenderState(D3DRS_FOGENABLE, fog.enabled ? TRUE : FALSE);
@@ -2376,6 +2382,95 @@ namespace comp
 		dev->SetRenderState(D3DRS_FOGSTART, as_dword(fog.min_distance));
 		dev->SetRenderState(D3DRS_FOGEND, as_dword(fog.max_distance));
 		dev->SetRenderState(D3DRS_FOGDENSITY, as_dword(1.0f));
+	}
+
+	/*
+	 * Retargets Remix's volumetric medium at the track's fog colour.
+	 *
+	 * The authored depth-cue colour is a display fade target -- at fog_max the vanilla
+	 * framebuffer pixel simply *becomes* that colour -- but Remix reads the same value as
+	 * a physical medium. Two things break under that reinterpretation. Sky light, this
+	 * port's only illumination, survives transmittance^5 no matter what the distances
+	 * are set to, so a dark cue (the "dark" mode, the red tracks) extinguishes the level
+	 * outright. And a genuinely red medium scatters the complementary hue -- cyan glow,
+	 * reddened background -- when the game wants the glow itself red.
+	 *
+	 * So the colour is decomposed into the terms Remix actually has for it: the
+	 * saturation goes to the single-scattering albedo, which is the colour of the fog's
+	 * own glow and cannot darken anything; a whisper of hue (FogTint) goes to the
+	 * transmittance, bounded so the weakest channel keeps most of the sky; and the raw
+	 * colour keeps riding the FOGCOLOR render state, where the multiscattering term
+	 * picks it up. Pushed once per depth-cue change, not per frame -- these are global
+	 * Remix options crossing the bridge.
+	 */
+	bool brender_inject::push_fog_to_remix(const game::scene_fog& fog) const
+	{
+		if (!shared::common::config::get().effects.fog_volumetrics) {
+			return true;
+		}
+		if (!shared::common::remix_api::is_initialized()) {
+			return false;
+		}
+
+		const auto& bridge = shared::common::remix_api::get().m_bridge;
+		if (!bridge.SetConfigVariable) {
+			return true;
+		}
+
+		// The neutral presets from rtx.conf, restored whenever the depth cue is off.
+		float albedo[3] = { 0.95f, 0.95f, 0.95f };
+		float transmittance[3] = { 0.93f, 0.93f, 0.93f };
+
+		if (fog.enabled)
+		{
+			const float channels[3] = {
+				static_cast<float>((fog.colour >> 16) & 0xFF) / 255.0f,
+				static_cast<float>((fog.colour >> 8) & 0xFF) / 255.0f,
+				static_cast<float>(fog.colour & 0xFF) / 255.0f,
+			};
+			const float max_channel = std::max({ channels[0], channels[1], channels[2] });
+
+			if (max_channel <= 0.0f)
+			{
+				// "dark" mode fades to black: no hue to preserve, so a dim neutral
+				// glow and slightly heavier extinction stand in for the darkening.
+				for (auto& a : albedo) { a = 0.35f; }
+				for (auto& t : transmittance) { t = 0.90f; }
+			}
+			else
+			{
+				const float tint = std::clamp(
+					shared::common::config::get().effects.fog_tint, 0.0f, 0.5f);
+
+				for (int i = 0; i < 3; ++i)
+				{
+					// Brightness-normalized hue: the fade colour's darkness encoded
+					// distance in the vanilla renderer and means nothing to a medium.
+					const float hue = channels[i] / max_channel;
+
+					albedo[i] = 0.25f + 0.70f * hue;
+					transmittance[i] = 0.97f - tint * (1.0f - hue);
+				}
+			}
+		}
+
+		const auto push = [&](const char* key, const float(&value)[3])
+		{
+			const std::string formatted =
+				std::format("{:.3f}, {:.3f}, {:.3f}", value[0], value[1], value[2]);
+
+			if (bridge.SetConfigVariable(key, formatted.c_str()) == REMIXAPI_ERROR_CODE_SUCCESS) {
+				shared::common::log("BRender", std::format("{} = {}", key, formatted));
+			}
+			else {
+				shared::common::log("BRender", std::format("failed to set {}", key),
+					shared::common::LOG_TYPE::LOG_TYPE_WARN);
+			}
+		};
+
+		push("rtx.volumetrics.singleScatteringAlbedo", albedo);
+		push("rtx.volumetrics.transmittanceColor", transmittance);
+		return true;
 	}
 
 	/*

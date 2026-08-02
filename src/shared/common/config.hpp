@@ -136,6 +136,19 @@ namespace shared::common
 			// track's red haze or white-out into the path tracer.
 			bool fog = true;
 
+			// Retarget Remix's volumetric medium at the track's fog colour through the
+			// bridge API. The authored colour is a display fade target, not a medium
+			// colour: fed to Remix raw, a dark cue absorbs the sky (the port's only
+			// light) to black, and a saturated medium scatters the *complementary*
+			// hue. The proxy therefore splits it -- saturation into the scattering
+			// albedo (the fog's own glow), a whisper of hue into the transmittance.
+			bool fog_volumetrics = true;
+
+			// How much of the fog hue the transmittance colour may carry, 0..0.5.
+			// Sky light survives transmittance^5 whatever the distances are set to,
+			// so even 0.2 leaves the weakest channel only ~4% of the sky.
+			float fog_tint = 0.08f;
+
 			// Distance translucent surfaces are lifted along their normals. BRender kept
 			// tyre tracks, shadows and impact smears out of the road by drawing them in
 			// depth-sorted order; a path tracer has no draw order, so co-planar decals

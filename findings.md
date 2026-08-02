@@ -1737,3 +1737,32 @@ y=0-anchored atmosphere shell fits -- `enableAtmosphere` should work with a rais
 since transmittance^(path) kills it identically through the long horizontal paths a finite
 shell produces.
 
+---
+
+## 24. The proxy decomposes the fade colour into medium terms (2026-08-02)
+
+Section 23's config kept the world lit but lost the red: with colour remap off, the only
+hue left was the multiscattering ambient, and a red *transmittance* could never have
+supplied it anyway -- a physically red medium scatters the complementary hue, so it glows
+cyan and merely reddens what is behind it. The game's authored value is a display fade
+target; Remix has no single parameter with that meaning, so the proxy now splits it into
+the parameters Remix does have, pushed over the bridge API (`SetConfigVariable`) once per
+depth-cue change from `push_fog_to_remix`:
+
+| game colour becomes | Remix parameter | why there |
+|---|---|---|
+| saturation (brightness-normalized hue, `0.25 + 0.70 * hue`) | `rtx.volumetrics.singleScatteringAlbedo` | the colour of the fog's own glow; an albedo cannot darken anything |
+| a whisper of hue (`0.97 - FogTint * (1 - hue)`, FogTint 0.08) | `rtx.volumetrics.transmittanceColor` | distance reddening; bounded because sky survival is transmittance^5 |
+| the raw value | `D3DRS_FOGCOLOR` (unchanged) | the multiscattering term reads the fog state directly |
+
+"dark" mode (colour 0x000000) has no hue and gets a dim neutral medium instead: albedo
+0.35, transmittance 0.90. Depth cue off restores the rtx.conf presets (0.95 / 0.93). The
+first push can beat the bridge to the first submit, so it retries each scene until the
+bridge is up (`m_remix_fog_synced`).
+
+Switches: `[Effects] FogVolumetrics` (default on) gates the API pushes;
+`[Effects] FogTint` is the transmittance-hue budget, clamped to 0.5 -- the ^5 law makes
+even 0.2 cost the weakest channel ~96% of the sky. `enableFogColorRemap` must stay off in
+rtx.conf: it would overwrite the pushed transmittance with the raw fade colour and
+reintroduce the section 23 blackout.
+

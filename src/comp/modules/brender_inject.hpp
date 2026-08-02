@@ -312,6 +312,16 @@ namespace comp
 		// legacy fog remapping can pick it up from the injected draws.
 		void apply_fog(IDirect3DDevice9* dev);
 
+		// Retargets Remix's volumetric medium at the track's fog colour over the
+		// bridge API, splitting a display fade colour into physically usable parts.
+		// Returns false only when the bridge is not up yet, so the caller can retry.
+		bool push_fog_to_remix(const game::scene_fog& fog) const;
+
+		// False while the current depth cue still needs to reach Remix. The first fog
+		// state of a session can beat the bridge initialization to the first submit,
+		// so the push retries until it lands rather than firing once and being lost.
+		bool m_remix_fog_synced = false;
+
 		// Last fog state pushed to the device, so changes are logged once rather than
 		// per scene. Colour 0xFFFFFFFF marks "nothing logged yet" — no real state matches,
 		// because a br_colour never carries an alpha byte.
