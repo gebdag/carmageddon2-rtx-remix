@@ -1666,6 +1666,14 @@ namespace comp
 		const auto& effects = shared::common::config::get().effects;
 		const auto [state, first] = m_material_state.try_emplace(material);
 
+		// The baseline is read from the material on first sight, whatever this update
+		// carries. Leaving it to the first opacity-flagged update means an entry created
+		// by a UV-only update holds a default no material ever has, and the next ordinary
+		// update reads as a fade -- which marked every road it touched as animated.
+		if (first) {
+			state->second.opacity = material_opacity(material);
+		}
+
 		const bool uv_moved = (flags & game::BR_MATU_MAP_TRANSFORM) != 0;
 		bool opacity_moved = false;
 		uint8_t opacity_was = state->second.opacity;

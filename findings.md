@@ -1438,3 +1438,31 @@ say, because the eviction line did not name its trigger. It now does: `UV transf
 `opacity A -> B`, or both. If the next run shows roads evicted on `opacity 255 -> 128`
 style transitions, the tint overlay's shared token list is the suspect; if `UV transform`,
 the funk system genuinely owns those surfaces and the cost is the game's design.
+
+---
+
+## 20. `opacity 0 -> 255`: the erosion was an uninitialized baseline (2026-08-02)
+
+Section 19's trigger detail ran for one session and convicted the opacity path outright.
+Every single road-class eviction reads `animates (opacity 0 -> 255)` -- road1 (67 actors),
+road2 (33), 1rok642 (18), concwalll (14), 2rokgrx (18) -- and 0 is not a value the game
+ever writes. It is `material_state`'s default.
+
+The entry for a material is created by whichever update arrives first. When that update
+carries only `BR_MATU_MAP_TRANSFORM` -- the funk system's per-frame UV tick, bit 0 alone --
+the opacity branch never runs and the baseline stays 0. The next ordinary
+`BR_MATU_MATERIAL` update reads the true 255, compares it against 0, and calls it a fade:
+the material is marked animated, everything baked with it is evicted for the race, and
+roads are the biggest geometry in the level. The session log shows `animated` climbing to
+141 actors on the revisited track with `game` at 9.4 ms and 1871 glide draws -- the evicted
+roads back on the game's own render -- against `animated 0` and a locked 62-64 fps on the
+first track. That asymmetry is track content, not session state: the first track's
+materials never take both update kinds, the desert's and city's roads do.
+
+The fix is one move: the baseline is read from the material at entry creation, whatever
+flags the creating update carries. A genuine fade still registers -- smoke's first sighting
+mid-fade differs from its next value -- and a material whose opacity never moves can no
+longer manufacture a transition out of the default.
+
+The two `UV transform` evictions in the same log (`room2`, `gDefault_track_material`, at
+the frontend boundary) are the genuine article and cost 7 actors between them.
