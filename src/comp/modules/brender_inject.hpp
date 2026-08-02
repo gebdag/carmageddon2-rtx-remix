@@ -625,6 +625,17 @@ std::vector<static_chunk> m_chunks;
 		void log_frame_stats(const char* label, const frame_stats& stats);
 
 		uint32_t m_scenes_submitted = 0;
+
+		/*
+		 * Race scene walks begun, which is not the same as scenes submitted.
+		 *
+		 * m_scenes_submitted only advances when a submit runs to completion, and a scene
+		 * whose camera has no usable projection -- the pause menu is one -- is walked in
+		 * full and then dropped. Anything that means "this scene" has to count walks, or a
+		 * dropped submit leaves two consecutive walks sharing a number and every actor in
+		 * the level reads as drawn twice in one scene.
+		 */
+		uint32_t m_scene_walks = 0;
 		int64_t m_last_scene_ticks = 0;
 		double m_ticks_per_ms = 0.0;
 		frame_stats m_window_worst{};

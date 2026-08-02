@@ -1364,3 +1364,42 @@ On a load the static world is dropped and the previous track's geometry and text
 released -- not for correctness, which 17.1 already owns, but so a session does not
 accumulate every track's uploads. `m_materials` is deliberately kept: the loader filled it
 on the way in.
+
+---
+
+## 18. A dropped submit froze the scene counter (2026-08-02)
+
+The pause menu stopped damaging textures and started destroying the bake instead: after a
+pause the static world was gone and did not come back, and geometry popped out of
+existence. Nothing in section 17 touches the chunks on a pause, so the cause was older.
+
+`m_scenes_submitted` advances on the **last line of a completed submit**. `submit` returns
+early whenever `build_projection` fails -- no camera, or a camera whose yon is not past its
+hither, which is what the pause menu leaves behind. The scene walk in front of it runs in
+full regardless: `BrZbSceneRenderBegin`, every `BrZbModelRender`, `capture_model` for each.
+
+So a dropped submit leaves two consecutive walks carrying the same scene number, and
+section 14.2's stencil test -- an actor drawn twice in one scene is an instancing stencil
+and may never bake -- fires on **every actor in the level at once**. `bakeable` is cleared
+permanently, so the static world is not merely dropped, it can never rebuild for the rest
+of that track. One frame with no usable projection was enough.
+
+The stencil test is right; it was counting the wrong thing. `m_scene_walks` is incremented
+in `begin_scene`, unconditionally, and everything that means "this scene" -- an actor's
+`last_seen_scene`, a geometry entry's `queued_scene` -- now compares against that.
+`m_scenes_submitted` keeps its own meaning for the report, the seal quiet window and
+geometry eviction.
+
+### 18.1 What else a track load was carrying over
+
+`m_race_camera` survived the flush. A race scene is recognised by comparing the current
+camera against it, so the previous track's camera pointer -- freed, and a candidate for
+recycling into anything -- was still the reference on the way into a new level. It is
+cleared when the frontend comes up, and the first submit of the next race establishes the
+real one. `m_submitted_world`, the frame clock and the window-worst sample are reset with
+the rest, so a load does not report itself as one enormous scene.
+
+Raster geometry appearing for a second or two after a load is the rebuild, not a bug: with
+no sealed chunks nothing is suppressed, so the game's own rasterized stream is all Remix
+has to composite until the chunks seal. It should stop once the first seal lands, and if it
+keeps recurring mid-race the demotion tally in the report says which bucket is churning.

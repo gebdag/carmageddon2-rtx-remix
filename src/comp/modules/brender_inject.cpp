@@ -868,7 +868,7 @@ namespace comp
 			// The game rewrites this model between renders of it and the queue is already
 			// holding the previous instance. Overwriting the buffers now would give every
 			// instance in the scene the last one's contents.
-			if (cached.queued_scene == m_scenes_submitted) {
+			if (cached.queued_scene == m_scene_walks) {
 				return transient_geometry(dev, model, fallback_material);
 			}
 
@@ -1236,7 +1236,7 @@ namespace comp
 		if (fresh)
 		{
 			classify_actor(record, actor, model);
-			record.last_seen_scene = m_scenes_submitted;
+			record.last_seen_scene = m_scene_walks;
 
 			if (!record.bakeable) {
 				return dynamic_reason::vanishing;
@@ -1256,14 +1256,14 @@ namespace comp
 		 * draw left behind, so counting draws as stillness let one frame satisfy the
 		 * probation and bake a particle into the world.
 		 */
-		if (record.last_seen_scene == m_scenes_submitted)
+		if (record.last_seen_scene == m_scene_walks)
 		{
 			if (unbake_actor(record)) { ++m_demotions.instanced; }
 			record.bakeable = false;
 			return dynamic_reason::instanced;
 		}
 
-		record.last_seen_scene = m_scenes_submitted;
+		record.last_seen_scene = m_scene_walks;
 
 		if (record.model != model)
 		{
@@ -1567,6 +1567,11 @@ namespace comp
 	{
 		m_in_frontend = true;
 		m_frontend_model_rebuilds = 0;
+
+		// Whatever camera the race was measured against is finished with. Keeping it would
+		// let a recycled camera pointer in the next track pass for the race view, and the
+		// first submit back establishes the real one anyway.
+		m_race_camera = nullptr;
 	}
 
 	/*
@@ -1625,6 +1630,12 @@ namespace comp
 		m_unsupported_styles.clear();
 		m_skipped_models.clear();
 		m_shaded_materials.clear();
+
+		// The world pointer is re-established by the check that follows this call, and the
+		// frame clock would otherwise report the whole load as one scene.
+		m_submitted_world = nullptr;
+		m_last_scene_ticks = 0;
+		m_window_worst = {};
 
 		shared::common::log("BRender", std::format(
 			"track state flushed after {} model rebuilds - geometry and textures re-upload",
@@ -1817,6 +1828,7 @@ namespace comp
 		m_camera = camera;
 		m_camera_valid = false;
 		m_capturing = !m_overlay_scene;
+		++m_scene_walks;
 		m_scene_models = 0;
 		m_profile = {};
 		forget_readable_regions();
@@ -1946,7 +1958,7 @@ namespace comp
 		}
 
 		refresh_part_state(*geometry);
-		geometry->queued_scene = m_scenes_submitted;
+		geometry->queued_scene = m_scene_walks;
 		queued.geometry = geometry;
 		m_queue.push_back(queued);
 
