@@ -1403,3 +1403,38 @@ Raster geometry appearing for a second or two after a load is the rebuild, not a
 no sealed chunks nothing is suppressed, so the game's own rasterized stream is all Remix
 has to composite until the chunks seal. It should stop once the first seal lands, and if it
 keeps recurring mid-race the demotion tally in the report says which bucket is churning.
+
+---
+
+## 19. The pause was crossing the load threshold (2026-08-02)
+
+The run log settles why a pause still killed performance: real track loads rebuild 3139,
+3181 and 2141 models -- and the pause rebuilt **152**, comfortably over section 17's
+threshold of 100, so the pause was flushed as if a track had loaded.
+
+The raw call count was the wrong measurement, not just the wrong threshold. The frontend
+re-rebuilds the same few preview models every frame, so the count grows with time spent in
+the menu, and any threshold loses eventually. **Distinct models** measure what was read in:
+a load runs BrModelUpdate over every model of the track, a menu over the same handful again
+and again. `m_frontend_models` is now a set, the threshold is 400 distinct, and both
+decisions still log their number.
+
+Also fixed from the same log: the per-reason dynamic counters were never reset per scene
+("vanishing 905918" is a session total, not a scene's), so they now clear in `begin_scene`
+alongside the rest.
+
+### 19.1 The erosion that remains is road materials marked "animated"
+
+After each genuine load the world seals fine (55-60 fps at scenes 1800/2400), then decays:
+`road1` animates (67 baked actors out), `slab1l` (61), `sidexxx?xxxx.MAT` (50), `concwalll`
+(28), `2rokgrx` (31) -- by scene 3000 the `animated` tally is 110 and the fps is 41.
+Roads are the biggest triangle counts in the level, so these evictions carry real cost, and
+every one also re-enables the game's own render of that geometry.
+
+Whether they are genuine funk animation (several tracks do animate surface textures) or a
+misread -- BR_MATU_MATERIAL rides along with non-visual updates, and the opacity byte is
+resolved through a token list some materials share -- is exactly what the log could not
+say, because the eviction line did not name its trigger. It now does: `UV transform`,
+`opacity A -> B`, or both. If the next run shows roads evicted on `opacity 255 -> 128`
+style transitions, the tint overlay's shared token list is the suspect; if `UV transform`,
+the funk system genuinely owns those surfaces and the cost is the game's design.

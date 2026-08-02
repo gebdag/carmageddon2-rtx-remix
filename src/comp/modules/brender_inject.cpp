@@ -617,7 +617,7 @@ namespace comp
 				// Must run first: the original frees the authored face array on the way out.
 				self->learn_materials(model);
 				self->invalidate_geometry(model);
-				self->note_model_rebuilt();
+				self->note_model_rebuilt(model);
 
 				self->profile().capture_ticks += now_ticks() - start;
 				++self->profile().model_updates;
@@ -1566,7 +1566,7 @@ namespace comp
 	void brender_inject::on_frontend_entered()
 	{
 		m_in_frontend = true;
-		m_frontend_model_rebuilds = 0;
+		m_frontend_models.clear();
 
 		// Whatever camera the race was measured against is finished with. Keeping it would
 		// let a recycled camera pointer in the next track pass for the race view, and the
@@ -1592,11 +1592,14 @@ namespace comp
 	{
 		m_in_frontend = false;
 
-		if (m_frontend_model_rebuilds < TRACK_LOAD_MODEL_REBUILDS)
+		const size_t distinct = m_frontend_models.size();
+		m_frontend_models.clear();
+
+		if (distinct < TRACK_LOAD_DISTINCT_MODELS)
 		{
 			shared::common::log("BRender", std::format(
-				"back in the race after {} model rebuilds - same track, nothing dropped",
-				m_frontend_model_rebuilds), shared::common::LOG_TYPE::LOG_TYPE_DEFAULT, true);
+				"back in the race after {} distinct model rebuilds - same track, nothing dropped",
+				distinct), shared::common::LOG_TYPE::LOG_TYPE_DEFAULT, true);
 			return;
 		}
 
@@ -1638,8 +1641,8 @@ namespace comp
 		m_window_worst = {};
 
 		shared::common::log("BRender", std::format(
-			"track state flushed after {} model rebuilds - geometry and textures re-upload",
-			m_frontend_model_rebuilds), shared::common::LOG_TYPE::LOG_TYPE_GREEN, true);
+			"track state flushed after {} distinct model rebuilds - geometry and textures re-upload",
+			distinct), shared::common::LOG_TYPE::LOG_TYPE_GREEN, true);
 	}
 
 	/*
@@ -1663,20 +1666,19 @@ namespace comp
 		const auto& effects = shared::common::config::get().effects;
 		const auto [state, first] = m_material_state.try_emplace(material);
 
-		bool animates = false;
-
-		if (flags & game::BR_MATU_MAP_TRANSFORM) {
-			animates = true;
-		}
+		const bool uv_moved = (flags & game::BR_MATU_MAP_TRANSFORM) != 0;
+		bool opacity_moved = false;
+		uint8_t opacity_was = state->second.opacity;
+		uint8_t opacity_now = opacity_was;
 
 		if ((flags & (game::BR_MATU_MATERIAL | game::BR_MATU_EXTRA)) && effects.material_opacity)
 		{
-			const uint8_t opacity = material_opacity(material);
-			animates = animates || (!first && opacity != state->second.opacity);
-			state->second.opacity = opacity;
+			opacity_now = material_opacity(material);
+			opacity_moved = !first && opacity_now != opacity_was;
+			state->second.opacity = opacity_now;
 		}
 
-		if (!animates) {
+		if (!uv_moved && !opacity_moved) {
 			return;
 		}
 
@@ -1709,12 +1711,19 @@ namespace comp
 
 		m_demotions.animated += evicted;
 
-		// One animated material can take a large share of the static world with it, and
-		// nothing else in the scene report says which material did it.
+		// One animated material can take a large share of the static world with it, and the
+		// trigger is named because the two have different failure modes: a UV transform is
+		// the funk system and almost certainly genuine, while an opacity move on something
+		// like a road would mean the byte is being misread and the eviction is the bug.
 		shared::common::log("BRender", std::format(
-			"material '{}' animates - {} baked actors returned to the dynamic path",
+			"material '{}' animates ({}) - {} baked actors returned to the dynamic path",
 			material->identifier && readable(material->identifier, 1)
-				? material->identifier : "<null>", evicted),
+				? material->identifier : "<null>",
+			uv_moved && opacity_moved
+				? std::format("UV transform, opacity {} -> {}", opacity_was, opacity_now)
+			: uv_moved ? "UV transform"
+			: std::format("opacity {} -> {}", opacity_was, opacity_now),
+			evicted),
 			shared::common::LOG_TYPE::LOG_TYPE_WARN, false);
 	}
 
@@ -1830,6 +1839,7 @@ namespace comp
 		m_capturing = !m_overlay_scene;
 		++m_scene_walks;
 		m_scene_models = 0;
+		m_dynamic_reasons = {};
 		m_profile = {};
 		forget_readable_regions();
 		m_queue.clear();

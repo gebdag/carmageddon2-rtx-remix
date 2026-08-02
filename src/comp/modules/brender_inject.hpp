@@ -58,9 +58,12 @@ namespace comp
 		// Called from the Frontend_Setup detour: the race is over, finished or abandoned.
 		void on_frontend_entered();
 
-		// Called from the BrModelUpdate detour. Only the count between leaving a race and
-		// returning to one matters: it is what separates a track load from a pause.
-		void note_model_rebuilt() { m_frontend_model_rebuilds += m_in_frontend ? 1u : 0u; }
+		// Called from the BrModelUpdate detour. Only models rebuilt between leaving a race
+		// and returning to one matter: they are what separates a track load from a pause.
+		void note_model_rebuilt(game::br_model* model)
+		{
+			if (m_in_frontend) { m_frontend_models.insert(model); }
+		}
 
 		/*
 		 * Where a scene's time goes, split by who spends it.
@@ -420,17 +423,19 @@ namespace comp
 		void resolve_frontend_return();
 
 		/*
-		 * Model rebuilds that mean a level was loaded rather than a race paused.
+		 * Distinct models rebuilt while away that mean a level was loaded, not paused.
 		 *
-		 * Loading a track runs BrModelUpdate over every model it reads, which is hundreds;
-		 * the frontend's rotating car previews rebuild a handful, and resuming from the
-		 * pause menu rebuilds none. Neither case comes near this, and both decisions are
-		 * logged with the count so the margin stays visible.
+		 * The raw call count cannot be the signal: the frontend re-rebuilds the same few
+		 * preview models every frame, so calls grow with time spent in the menu -- a pause
+		 * measured 152 against real loads' 2141-3181, and a longer menu visit would have
+		 * crossed any threshold. Distinct models measure what was read in: a load touches
+		 * every model of the track, a menu the same handful over and over. Both decisions
+		 * log the count so the margin stays visible.
 		 */
-		static constexpr uint32_t TRACK_LOAD_MODEL_REBUILDS = 100;
+		static constexpr size_t TRACK_LOAD_DISTINCT_MODELS = 400;
 
 		bool m_in_frontend = false;
-		uint32_t m_frontend_model_rebuilds = 0;
+		std::unordered_set<game::br_model*> m_frontend_models;
 		void release_chunks();
 		void release_geometry(model_geometry& geometry);
 		void evict_stale_geometry();
