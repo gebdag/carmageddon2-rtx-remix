@@ -1188,10 +1188,11 @@ namespace comp
 	 * Follows one actor's placement and keeps the chunks in step with it.
 	 *
 	 * The only property that decides whether geometry may bake is whether the game is
-	 * writing its placement. An actor that holds one for STATIC_PROMOTE_SIGHTINGS scenes
-	 * bakes; one whose transform changes is taken back out and starts that count again.
-	 * Nothing is excluded by name or by category except what the game deletes outright,
-	 * which no amount of holding still would make safe to bake.
+	 * writing its placement, measured per scene: an actor that holds one for
+	 * STATIC_PROMOTE_SIGHTINGS scenes bakes, and one whose transform changes is taken
+	 * back out and starts that count again. Nothing is excluded by name or by category
+	 * except what the game deletes outright, which no amount of holding still would make
+	 * safe to bake.
 	 */
 	bool brender_inject::track_static_actor(game::br_actor* actor, game::br_model* model,
 		game::br_material* fallback_material, const game::br_matrix34& world)
@@ -1202,6 +1203,7 @@ namespace comp
 		if (fresh)
 		{
 			classify_actor(record, actor, model);
+			record.last_seen_scene = m_scenes_submitted;
 			++m_fresh_this_scene;
 
 			if (record.bakeable)
@@ -1214,6 +1216,22 @@ namespace comp
 
 			return false;
 		}
+
+		/*
+		 * An actor drawn more than once in one scene is a stencil the game re-places
+		 * between draws -- the smoke quad, the spark emitter, the decal pools all render
+		 * dozens of instances through a single actor. Its placement is whatever the last
+		 * draw left behind, so counting draws as stillness let one frame satisfy the
+		 * probation and bake a particle into the world.
+		 */
+		if (record.last_seen_scene == m_scenes_submitted)
+		{
+			if (unbake_actor(record)) { ++m_demotions.instanced; }
+			record.bakeable = false;
+			return false;
+		}
+
+		record.last_seen_scene = m_scenes_submitted;
 
 		if (record.model != model)
 		{
@@ -1250,11 +1268,15 @@ namespace comp
 			++m_live_seen_this_scene;
 		}
 
-		if (!record.baked && ++record.sightings >= STATIC_PROMOTE_SIGHTINGS)
+		const uint32_t settle = record.demoted ? STATIC_REBAKE_SIGHTINGS
+		                                      : STATIC_PROMOTE_SIGHTINGS;
+
+		if (!record.baked && ++record.sightings >= settle)
 		{
 			if (bake_actor(record, model, fallback_material, world))
 			{
 				record.baked = true;
+				++record.bakes;
 				m_have_unsealed = true;
 				m_last_promotion_scene = m_scenes_submitted;
 				if (record.demoted) { ++m_repromotions; }
@@ -1457,6 +1479,12 @@ namespace comp
 		record.ranges.clear();
 		record.materials.clear();
 
+		// The dead vertices a rebake leaves behind are never reclaimed, so an actor that
+		// has used up its bakes has proved it is not scenery and stops trying.
+		if (record.bakes >= STATIC_MAX_BAKES) {
+			record.bakeable = false;
+		}
+
 		return was_baked;
 	}
 
@@ -1480,7 +1508,7 @@ namespace comp
 		release_chunks();
 		m_actors.clear();
 		m_animated_materials.clear();
-		m_material_update_scene.clear();
+		m_material_state.clear();
 		m_have_unsealed = false;
 		m_live_actors = 0;
 
@@ -1503,26 +1531,41 @@ namespace comp
 	 * updates its UV transform every frame, a flashing sign every state change, and a
 	 * fading sprite its opacity. A sealed chunk bakes all three, so anything that moves
 	 * mid-race has to stay on the dynamic path where it is re-read every capture.
+	 *
+	 * The flag alone is not the signal for opacity. The game re-publishes a material for
+	 * reasons the injection does not render -- BR_MATU_MATERIAL rides along with lighting
+	 * and index-range updates -- and taking those at face value flagged ROAD, 0RDSDTOP and
+	 * the terrain as animated, which is most of a level's surface area. Only a value that
+	 * actually moved counts.
 	 */
 	void brender_inject::on_material_update(game::br_material* material, const uint16_t flags)
 	{
-		// The opacity spellings only matter while opacity is being followed; without that
-		// switch a fading material looks no different baked, and watching those bits would
-		// evict geometry for a change the injection does not render.
-		uint16_t animatable = game::BR_MATU_MAP_TRANSFORM;
-		if (shared::common::config::get().effects.material_opacity) {
-			animatable |= game::BR_MATU_MATERIAL | game::BR_MATU_EXTRA;
+		const auto& effects = shared::common::config::get().effects;
+		const auto [state, first] = m_material_state.try_emplace(material);
+
+		bool animates = false;
+
+		if (flags & game::BR_MATU_MAP_TRANSFORM) {
+			animates = true;
 		}
 
-		if (!(flags & animatable)) {
+		if ((flags & (game::BR_MATU_MATERIAL | game::BR_MATU_EXTRA)) && effects.material_opacity)
+		{
+			const uint8_t opacity = material_opacity(material);
+			animates = animates || (!first && opacity != state->second.opacity);
+			state->second.opacity = opacity;
+		}
+
+		if (!animates) {
 			return;
 		}
 
-		const auto [stamp, first] = m_material_update_scene.try_emplace(material, m_scenes_submitted);
-		if (first || stamp->second == m_scenes_submitted) {
+		if (first || state->second.scene == m_scenes_submitted)
+		{
+			state->second.scene = m_scenes_submitted;
 			return;
 		}
-		stamp->second = m_scenes_submitted;
+		state->second.scene = m_scenes_submitted;
 
 		if (!m_animated_materials.insert(material).second) {
 			return;
@@ -1540,6 +1583,10 @@ namespace comp
 			}
 		}
 
+		if (!evicted) {
+			return;
+		}
+
 		m_demotions.animated += evicted;
 
 		// One animated material can take a large share of the static world with it, and
@@ -1548,8 +1595,7 @@ namespace comp
 			"material '{}' animates - {} baked actors returned to the dynamic path",
 			material->identifier && readable(material->identifier, 1)
 				? material->identifier : "<null>", evicted),
-			evicted ? shared::common::LOG_TYPE::LOG_TYPE_WARN
-			        : shared::common::LOG_TYPE::LOG_TYPE_DEFAULT, false);
+			shared::common::LOG_TYPE::LOG_TYPE_WARN, false);
 	}
 
 	/*
@@ -2433,14 +2479,16 @@ namespace comp
 
 		shared::common::log("BRender", std::format(
 			"scene {}: {:.1f} fps ({:.1f} ms) | {} models ({} baked in {} chunks),"
-			" {} demoted (moved {}, swapped {}, deformed {}, animated {}; {} relinks absorbed,"
-			" {} rebaked) | {} draws (+{} glide, {} frame), {} verts, {} segments |"
+			" {} demoted (moved {}, swapped {}, deformed {}, animated {}, instanced {};"
+			" {} relinks absorbed, {} rebaked) |"
+			" {} draws (+{} glide, {} frame), {} verts, {} segments |"
 			" game {:.2f} sceneend {:.2f} overlay {:.2f} capture {:.2f} bounds {:.2f}"
 			" submit {:.2f} present {:.2f} other {:.2f} ms | {} updates, {} rebuilds |"
 			" geometry cached {}{}",
 			m_scenes_submitted, fps, stats.frame_ms, stats.models, stats.baked, stats.chunks,
 			stats.demotions.total(), stats.demotions.moved, stats.demotions.swapped,
-			stats.demotions.deformed, stats.demotions.animated, stats.relinks_absorbed,
+			stats.demotions.deformed, stats.demotions.animated, stats.demotions.instanced,
+			stats.relinks_absorbed,
 			stats.repromotions, stats.draws, stats.glide_draws, stats.frame_draws,
 			stats.vertices, stats.segments, stats.game_render_ms, stats.scene_end_ms,
 			stats.overlay_ms, stats.capture_ms, stats.bounds_ms, stats.submit_ms,

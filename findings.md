@@ -1157,3 +1157,57 @@ probation.
 The one exclusion that cannot be derived from movement is deletion: a pickup vanishes
 without ever moving, and a chunk cannot give geometry back. That stays a positive test
 (`vanishes_outright`) over the pickup naming rule and the two decal pools.
+
+---
+
+## 14. Two things the tally caught that guesswork did not (2026-08-02)
+
+The per-reason counters from section 13 were run against a full city race. They refuted
+one of that section's own conclusions and found the real costs.
+
+### 14.1 Reparenting was never the problem
+
+`relinks absorbed` is **0** for the entire race. Every eviction logged as `chain relinked`
+had a changed transform as well; the label only reflected which test the diagnostic
+reported first. Section 13.2's split fingerprint is still correct -- placement and
+parentage are different questions -- but it fixed nothing, and the ~172 actors lost between
+scenes 600 and 1800 were lost to something else.
+
+### 14.2 Probation counted draws, not scenes
+
+`demoted 32662 (moved 32389 ... 32204 rebaked)` over 6000 scenes, from **229 distinct
+model names**. That is not decay, it is a bake/unbake oscillation running about five times
+a scene.
+
+`sightings` incremented once per `capture_model` call, and the game draws many instances
+through a single actor: the smoke quad, the spark emitter and both decal pools re-place one
+actor between draws. Three draws in one frame satisfied a three-scene probation, so a
+particle baked into the world, and the next draw's transform unbaked it. Under the old
+permanent blacklist the first unbake ended it; making demotion recoverable turned it into a
+loop.
+
+Two consequences, both visible in the log. Chunk vertices grew from 59k at the first seal
+to **283k** -- `punch_out` zeroes indices but never reclaims vertices, so every rebake left
+its predecessor behind as dead geometry. And chunk count climbed 298 -> 405 across **9 seal
+passes**, each one handing Remix a new set of buffers to hash.
+
+An actor drawn more than once in one scene is now classified as an instancing stencil and
+barred from baking -- a positive test on behaviour, no names involved. Probation counts
+scenes via `last_seen_scene`. A demoted actor must hold still for `STATIC_REBAKE_SIGHTINGS`
+(120 scenes, ~2 s) rather than 3, and `STATIC_MAX_BAKES` caps any actor at three bakes for
+the race, which bounds the dead vertices a recovery can leave behind.
+
+### 14.3 The widened animation rule was evicting the road
+
+`ROAD` (18 actors), `SMLRD` (16), `0RDSDTOP` (5), `0claybot` (9), `0SHRxxx?xxxx.MAT` (13)
+and 468 other materials were marked animated. Those are road and terrain -- most of a
+level's surface area.
+
+`8932aac` treated any `BR_MATU_MATERIAL` or `BR_MATU_EXTRA` update as animation. The game
+re-publishes materials for reasons the injection does not render; `BR_MATU_MATERIAL` rides
+along with lighting and index-range changes. Gating the rule behind `MaterialOpacity` did
+not help, because that switch has to stay on for smoke.
+
+The flag is no longer the signal. `on_material_update` now keeps the last opacity it
+resolved per material and only counts an update as animation when the value actually moved.
+`BR_MATU_MAP_TRANSFORM` is unchanged -- the funk system's UV animation needs no such test.

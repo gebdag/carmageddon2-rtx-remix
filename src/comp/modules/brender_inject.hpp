@@ -229,7 +229,9 @@ namespace comp
 			game::br_model* model;
 			uint64_t placement;      // fingerprint of the actor's transform chain
 			uint64_t parent_chain;   // node addresses, to tell a relink from a move
-			uint32_t sightings;      // consecutive scenes holding this placement
+			uint32_t sightings;       // consecutive scenes holding this placement
+			uint32_t last_seen_scene; // catches an actor re-placed between draws of one scene
+			uint8_t bakes;            // times it has entered a chunk, capped
 			bool bakeable;  // cleared for anything that can vanish, or that failed to bake
 			bool demoted;   // has been unbaked at least once, so a later bake is a recovery
 			bool noncar;    // bakes into the noncar chunks, apart from the pristine world
@@ -249,8 +251,12 @@ namespace comp
 			uint32_t swapped = 0;
 			uint32_t deformed = 0;
 			uint32_t animated = 0;
+			uint32_t instanced = 0;
 
-			uint32_t total() const { return moved + swapped + deformed + animated; }
+			uint32_t total() const
+			{
+				return moved + swapped + deformed + animated + instanced;
+			}
 		};
 
 		void submit(IDirect3DDevice9* dev);
@@ -382,14 +388,26 @@ std::vector<static_chunk> m_chunks;
 		// bake, and the set is cleared with the rest of the static world.
 		std::unordered_set<game::br_material*> m_animated_materials;
 
-		// Scene stamp of each material's last UV-transform update. Animation means updates
-		// in two different scenes; a load burst is many updates under one stamp.
-		std::unordered_map<game::br_material*, uint32_t> m_material_update_scene;
+		// What a material looked like at its last appearance-changing update. Animation
+		// means such updates in two different scenes; a load burst is many under one stamp.
+		struct material_state
+		{
+			uint32_t scene = 0;
+			uint8_t opacity = 0;
+		};
+		std::unordered_map<game::br_material*, material_state> m_material_state;
 
 		// Frames an actor must hold one placement before it counts as scenery. Cars fail on
 		// their second frame and are never baked; the same count is what a demoted actor
 		// serves before it may bake again.
 		static constexpr uint32_t STATIC_PROMOTE_SIGHTINGS = 3;
+
+		// What a demoted actor must hold instead, and how many times it may ever bake.
+		// A rebake appends a second copy to the chunks and leaves the first as dead
+		// vertices, so an actor that keeps changing its mind has to be cut off: the point
+		// of recovery is the lamppost that is knocked over once and then lies there.
+		static constexpr uint32_t STATIC_REBAKE_SIGHTINGS = 120;
+		static constexpr uint8_t STATIC_MAX_BAKES = 3;
 
 		// Scenes without a new promotion before the accumulated chunks seal. Sealing early
 		// means sealing often, and every seal hands Remix new buffers to hash.
