@@ -55,6 +55,9 @@ namespace comp
 
 		void set_overlay_scene(const bool active) { m_overlay_scene = active; }
 
+		// Called from the Frontend_Setup detour: the race is over, finished or abandoned.
+		void on_frontend_entered();
+
 		/*
 		 * Where a scene's time goes, split by who spends it.
 		 *
@@ -361,6 +364,19 @@ namespace comp
 		bool unbake_actor(actor_record& record);
 		void seal_chunks(IDirect3DDevice9* dev);
 		void reset_static_world(const char* reason);
+
+		/*
+		 * Drops everything learned from the track that is ending.
+		 *
+		 * Every cache below is keyed on a game pointer -- br_model, br_pixelmap, the
+		 * br_material::stored token -- and the game frees all three between races. The
+		 * allocator then hands the same addresses to the next track, so a surviving entry
+		 * is not stale in the harmless sense: it is a confident hit that returns the
+		 * previous track's texture, geometry or material. That is one bug, and it shows up
+		 * as misaligned textures, scenery from the last track, and a static world baked out
+		 * of both.
+		 */
+		void reset_for_new_track(const char* reason);
 		void release_chunks();
 		void release_geometry(model_geometry& geometry);
 		void evict_stale_geometry();
@@ -442,13 +458,6 @@ std::vector<static_chunk> m_chunks;
 		// move mid-race (powerups, noncars, decals, peds, cars) is excluded from baking
 		// instead. Race changes are detected by population takeover below.
 
-		// Fresh actor records created this scene, and live ones walked this scene. A race
-		// change reuses the world actor, so the pointer comparison alone never catches
-		// it; what it cannot hide is a whole scene of never-seen actors landing while
-		// none of the previously live ones are walked. A zone flood re-walks the current
-		// zone's live actors, so it never matches.
-		uint32_t m_fresh_this_scene = 0;
-		uint32_t m_live_seen_this_scene = 0;
 
 		// This scene's queued models, split by why the chunks could not carry them.
 		std::array<uint32_t, static_cast<size_t>(dynamic_reason::count)> m_dynamic_reasons{};

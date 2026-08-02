@@ -636,6 +636,17 @@ namespace comp
 			o_material_update(material, flags);
 		}
 
+		game::Frontend_Setup_t o_frontend_setup = nullptr;
+
+		void __fastcall hk_frontend_setup(void* self_ptr, void* unused)
+		{
+			if (const auto self = brender_inject::get()) {
+				self->on_frontend_entered();
+			}
+
+			o_frontend_setup(self_ptr, unused);
+		}
+
 		bool install(const uint32_t addr, void* stub, void** original, const char* name)
 		{
 			if (shared::utils::hook::detour(game::rebase(addr), stub, original)) {
@@ -672,6 +683,8 @@ namespace comp
 			reinterpret_cast<void**>(&o_model_update), "BrModelUpdate");
 		ok &= install(game::ADDR_BrMaterialUpdate, hk_material_update,
 			reinterpret_cast<void**>(&o_material_update), "BrMaterialUpdate");
+		ok &= install(game::ADDR_Frontend_Setup, hk_frontend_setup,
+			reinterpret_cast<void**>(&o_frontend_setup), "Frontend_Setup");
 
 		if (ok)
 		{
@@ -1205,7 +1218,6 @@ namespace comp
 		{
 			classify_actor(record, actor, model);
 			record.last_seen_scene = m_scenes_submitted;
-			++m_fresh_this_scene;
 
 			if (!record.bakeable) {
 				return dynamic_reason::vanishing;
@@ -1264,10 +1276,6 @@ namespace comp
 
 		record.placement = placement.where;
 		record.parent_chain = placement.parent;
-
-		if (record.live) {
-			++m_live_seen_this_scene;
-		}
 
 		const uint32_t settle = record.demoted ? STATIC_REBAKE_SIGHTINGS
 		                                      : STATIC_PROMOTE_SIGHTINGS;
@@ -1533,6 +1541,62 @@ namespace comp
 	}
 
 	/*
+	 * The frontend is up, so the race that was running is over.
+	 *
+	 * The flush happens here rather than at the next race scene because the game loads the
+	 * new track in between, and the load is what teaches learn_materials the new
+	 * br_material::stored tokens. Clearing afterwards would throw that away and leave every
+	 * model of the new track resolving to its fallback material.
+	 */
+	void brender_inject::on_frontend_entered()
+	{
+		reset_for_new_track("the frontend came up");
+
+		// Re-arms the world check below, which is otherwise a no-op for the rest of the
+		// session because the game reuses one world actor across races.
+		m_submitted_world = nullptr;
+		m_race_camera = nullptr;
+	}
+
+	void brender_inject::reset_for_new_track(const char* reason)
+	{
+		reset_static_world(reason);
+
+		// The queue and the transient pool hold pointers into m_geometry, so they go first.
+		m_queue.clear();
+		m_lines.clear();
+		release_transient();
+
+		for (auto& [model, geometry] : m_geometry) {
+			release_geometry(geometry);
+		}
+		m_geometry.clear();
+
+		for (auto& [pixelmap, texture] : m_textures)
+		{
+			if (texture) { texture->Release(); }
+		}
+		m_textures.clear();
+		m_materials.clear();
+
+		// The flat and spark swatches are keyed on colour rather than on a game pointer, so
+		// they stay valid across tracks and are the one thing worth keeping.
+
+		m_textures_ok = 0;
+		m_textures_failed = 0;
+		m_flat_probes = 0;
+		m_logged_spark_geometry = false;
+		m_unsupported_types.clear();
+		m_unsupported_styles.clear();
+		m_skipped_models.clear();
+		m_shaded_materials.clear();
+
+		shared::common::log("BRender", std::format(
+			"track state flushed - {} - geometry, textures and materials all re-learn",
+			reason), shared::common::LOG_TYPE::LOG_TYPE_GREEN, true);
+	}
+
+	/*
 	 * Marks a material animated once its appearance is updated in two different scenes.
 	 *
 	 * One update proves nothing: level loading calls BrMaterialUpdate with BR_MATU_ALL for
@@ -1719,8 +1783,6 @@ namespace comp
 		m_camera_valid = false;
 		m_capturing = !m_overlay_scene;
 		m_scene_models = 0;
-		m_fresh_this_scene = 0;
-		m_live_seen_this_scene = 0;
 		m_profile = {};
 		forget_readable_regions();
 		m_queue.clear();
@@ -2017,24 +2079,14 @@ namespace comp
 		// measured against from now on.
 		m_race_camera = m_camera;
 
-		// A new world actor means a new race; every tracked pointer belongs to the old one.
+		// A world actor swap without a frontend visit is not something the game is known to
+		// do, but it means the same thing and the tracked pointers are just as dead.
 		if (m_world != m_submitted_world)
 		{
 			if (m_submitted_world) {
-				reset_static_world("the world actor changed");
+				reset_for_new_track("the world actor changed");
 			}
 			m_submitted_world = m_world;
-		}
-
-		// The world actor is reused across races, so the pointer check above misses most
-		// changes. What a race change cannot hide is its population: an entire scene's
-		// worth of never-seen actors landing while none of the previously live ones are
-		// walked. The city's zone streaming floods fresh actors too, but a zone flood
-		// always re-walks the live actors of the zone the camera is in.
-		if (m_live_actors >= 100 && m_fresh_this_scene >= m_live_actors
-			&& m_live_seen_this_scene * 10 <= m_live_actors)
-		{
-			reset_static_world("a new actor population appeared");
 		}
 
 		LARGE_INTEGER start{};

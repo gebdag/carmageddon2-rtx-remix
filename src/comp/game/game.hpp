@@ -43,6 +43,21 @@ namespace comp::game
 	constexpr uint32_t ADDR_BrMaterialUpdate = 0x00520E70u;
 	typedef void(__cdecl* BrMaterialUpdate_t)(br_material* material, uint16_t flags);
 
+	/*
+	 * Frontend_Setup(this) — the frontend coming up, and the only unambiguous "not in a
+	 * race" edge the game offers.
+	 *
+	 * Everything reached from the race is entered through it: finishing, the pause menu via
+	 * FrontendEnterFromRace (0x0046D8E0), and the first-run boot. Inferring the same thing
+	 * from the scene walk cannot work, because a race change reuses the world actor and the
+	 * camera, so nothing the renderer sees distinguishes a new track from the old one.
+	 *
+	 * __thiscall, so the detour takes `this` in ecx: a __fastcall stub with an unused edx
+	 * has the same calling sequence.
+	 */
+	constexpr uint32_t ADDR_Frontend_Setup = 0x0046D1C0u;
+	typedef void(__fastcall* Frontend_Setup_t)(void* self, void* unused);
+
 	// The bits BrMaterialUpdate actually tests, in the order its branches read them
 	// (0x00520EEA, 0x00520F0C, 0x005213DD). MAP_TRANSFORM republishes the UV transform;
 	// MATERIAL republishes colour, opacity and flags; EXTRA republishes the token list.

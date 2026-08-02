@@ -1263,3 +1263,61 @@ draws outside that hook -- pedestrian limbs are the known case -- exists solely 
 game's rasterized stream. `[Optimization] SuppressDynamics` makes that trade available and
 measurable rather than assumed. It is off by default; turning it on should take `game` to
 roughly 1 ms and the glide draws to near zero, and the peds are what to watch.
+
+---
+
+## 16. Track changes: recycled pointers, not stale ones (2026-08-02)
+
+Three symptoms, one cause. On the second and later races of a session: performance
+degrades, textures come out misaligned, and geometry from the previous track appears in the
+new one. The first race of a session is always fine.
+
+### 16.1 Every cache is keyed on a pointer the game frees
+
+`reset_static_world` cleared the chunks, the actor records and the material state. It did
+not clear anything else, and nothing else was ever cleared for the life of the process:
+
+| cache | key | what a track change does to it |
+|---|---|---|
+| `m_textures` | `br_pixelmap*` | the new track's pixelmaps land on freed addresses -> **the previous track's texture is returned** |
+| `m_geometry` | `br_model*` | same, per model -> **the previous track's mesh is drawn** (only evicted after 900 unused scenes) |
+| `m_materials` | `br_material::stored` and the material pointer | resolves to a dead material -> wrong atlas cell, wrong opacity |
+
+These are not stale entries in the harmless sense. They are confident cache *hits* that
+return the wrong object, because the allocator hands the new track the addresses the old
+one just released. That is the misalignment, the carried-over geometry, and -- once the
+baker starts chunking geometry built from mismatched pairs -- the performance loss too.
+
+The colour and spark swatches are keyed on colour rather than on a game pointer, so they
+are the one thing that survives a track change intact.
+
+### 16.2 The old race-change signal could not work
+
+Two triggers existed and neither is a track change. The world actor pointer never changes,
+because the game reuses one across races. The population heuristic -- a whole scene of
+never-seen actors while none of the live ones are walked -- is inference over the scene
+walk, tuned against the city's zone streaming, and it fires late, or mid-race, or not at
+all. Both are gone.
+
+`Frontend_Setup` @ **0x0046D1C0** is the game's own answer. Everything that leaves a race
+enters it: finishing, and the pause menu via `FrontendEnterFromRace` (0x0046D8E0). It is
+`__thiscall` with no stack arguments, so a `__fastcall` detour taking `this` in ecx and an
+unused edx has an identical calling sequence.
+
+### 16.3 Why the flush runs at frontend entry, not at the next race
+
+It has to happen before the new track loads. `learn_materials` is driven from
+`BrModelUpdate`, which the level loader calls for every model, so the `br_material::stored`
+tokens for a track are learned during its load. Flushing at the first race scene of the new
+track would discard exactly that, and every model would fall back to its fallback material.
+
+`reset_for_new_track` therefore runs from the `Frontend_Setup` detour and drops the static
+world, the queue, the transient pool, all model geometry, all uploaded textures, the
+material table and the per-run diagnostic sets. It also clears `m_submitted_world` and
+`m_race_camera`, so the next race re-establishes both from scratch.
+
+**Known consequence:** the pause menu reaches `Frontend_Setup` too, so pausing and resuming
+mid-race flushes and rebuilds. Nothing is wrong afterwards -- the world re-bakes within a
+second or so -- but it is a hitch and a `track state flushed` line where none is needed.
+Narrowing that needs a way to tell an abandoned race from a paused one, which the argument
+to `FrontendEnterFromRace` may carry.
