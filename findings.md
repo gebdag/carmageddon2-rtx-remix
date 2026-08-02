@@ -1705,3 +1705,35 @@ level values in practice -- Remix supports one fog per frame anyway) and the ind
 tables (DEPTHCUE/FOG/ACIDFOG/BLUEGIT.TAB), which only matter to the software renderer's
 palette path.
 
+---
+
+## 23. Dark fog colours must not become the transmittance colour (2026-08-02)
+
+Enabling volumetrics with the section 22 config blacked the world out on New City 3, with
+only a faint red glow left, and no distance slider recovered it. The failure is exact and
+slider-proof: Remix derives the medium's attenuation as `sigma = -ln(transmittance)/D` per
+channel (rtx_global_volumetrics.cpp:544) and attenuates every infinitely-distant light --
+the sky, this port's only light source -- over a hard cap of `5 * D`
+(`maxAttenuationDistanceForNoAtmosphere`, :625). D cancels: **surviving sky light =
+transmittance^5, whatever the distances say.** With `enableFogColorRemap` on, a track's fog
+colour is that transmittance; 0x500000 gives 0.08^5 in red and (1/255)^5 in the clamped
+green/blue. Any dark or saturated depth cue -- "dark" mode outright, the red tracks -- is a
+guaranteed blackout, while white-fog tracks survive (0.94^5 = 0.73), which is why the first
+test looked fine.
+
+The game's depth cue is a *display* fade toward a colour, not a physical medium colour, and
+the world it fades is lit by a sky the physical reading would occlude. So the colour rides
+in the fog's own glow instead: `enableFogColorRemap = False` (transmittance stays the
+neutral 0.93 preset -> sky keeps 0.93^5 = 70%), and the track colour enters through
+`fogRemapColorMultiscatteringScale = 0.35`, which scales `fogState.color` into the fog's
+ambient in-scatter (:539). Distance remapping stays on, so fog extent still follows each
+track's `FOGEND`.
+
+The camera-position diagnostic also settled the atmosphere question for later: the race
+camera sits at world y = 8.5 on New City 3, so the world is Y-up at the origin and Remix's
+y=0-anchored atmosphere shell fits -- `enableAtmosphere` should work with a raised
+`atmosphereHeightMeters` (the default 30 is marginal for city verticality), and
+`atmosphereInverted` is not needed. Retest atmosphere only after the transmittance fix,
+since transmittance^(path) kills it identically through the long horizontal paths a finite
+shell produces.
+
