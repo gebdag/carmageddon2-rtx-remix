@@ -164,13 +164,17 @@ namespace comp
 		 * translations the float error of that round trip exceeds any workable epsilon --
 		 * every static actor read as jittering and nothing ever promoted. Nothing writes a
 		 * static actor's transform, so hashing the raw bytes up the parent chain is exact:
-		 * same nodes, same bytes, same placement. Physics rewrites the bytes and
-		 * reparenting changes the node addresses, so both read as movement.
+		 * same bytes, same placement.
+		 *
+		 * Placement is the transforms alone. Node addresses are hashed separately because
+		 * they answer a different question: where the actor hangs, not where it stands. The
+		 * game relinks whole groups of scenery without moving any of it, and folding the
+		 * addresses into the placement made every one of those relinks read as movement.
 		 */
 		struct placement_id
 		{
-			uint64_t full;    // chain nodes + transform bytes
-			uint64_t chain;   // chain nodes only, to tell reparenting from transform writes
+			uint64_t where;   // transform bytes up the chain
+			uint64_t parent;  // chain node addresses
 		};
 
 		placement_id placement_fingerprint(const game::br_actor* actor)
@@ -187,10 +191,9 @@ namespace comp
 			int depth = 0;
 			for (const game::br_actor* node = actor; node && depth < 32; node = node->parent, ++depth)
 			{
-				mix(id.full, &node, sizeof(node));
-				mix(id.full, &node->t_type, sizeof(node->t_type));
-				mix(id.full, &node->t, sizeof(node->t));
-				mix(id.chain, &node, sizeof(node));
+				mix(id.where, &node->t_type, sizeof(node->t_type));
+				mix(id.where, &node->t, sizeof(node->t));
+				mix(id.parent, &node, sizeof(node));
 			}
 
 			return id;
@@ -415,6 +418,25 @@ namespace comp
 			}
 
 			return false;
+		}
+
+		/*
+		 * Whether the game removes this actor rather than ever moving it.
+		 *
+		 * Holding still proves an actor is not being driven, but it says nothing about one
+		 * that is about to be deleted, and a chunk cannot give geometry back. Powerup
+		 * pickups disappear the instant they are taken -- a pickup is any actor whose
+		 * identifier carries 0xA3 ('£') as its second character, the test
+		 * SpecialActorEnumCallback (0x0040D1F0) uses -- and decal quads are pooled and
+		 * recycled at a new placement rather than moved to it.
+		 */
+		bool vanishes_outright(const game::br_actor* actor, const game::br_model* model)
+		{
+			const char* name = actor->identifier;
+			const bool pickup = readable(name, 2)
+				&& name[0] && static_cast<uint8_t>(name[1]) == 0xA3;
+
+			return pickup || is_decal_model(model);
 		}
 
 		// bounds is min[3] then max[3] in model space. The camera sits at the origin in view
@@ -767,16 +789,11 @@ namespace comp
 
 		// An actor baked with the old shape must not keep showing it. Cars never land here
 		// -- they are never baked -- but a crushed noncar does.
-		std::vector<game::br_actor*> demote;
-		for (const auto& [actor, record] : m_actors)
+		for (auto& [actor, record] : m_actors)
 		{
 			if (record.baked && record.model == model) {
-				demote.push_back(actor);
+				if (unbake_actor(record)) { ++m_demotions.deformed; }
 			}
-		}
-
-		for (game::br_actor* actor : demote) {
-			demote_actor(actor, true);
 		}
 	}
 
@@ -1157,6 +1174,102 @@ namespace comp
 		return !parts.empty();
 	}
 
+	// The two things about an actor that follow from its model rather than from what it is
+	// doing: which chunks it may join, and whether it may join any at all.
+	void brender_inject::classify_actor(actor_record& record, const game::br_actor* actor,
+		game::br_model* model) const
+	{
+		record.model = model;
+		record.noncar = model->identifier && model->identifier[0] == '&';
+		record.bakeable = !vanishes_outright(actor, model);
+	}
+
+	/*
+	 * Follows one actor's placement and keeps the chunks in step with it.
+	 *
+	 * The only property that decides whether geometry may bake is whether the game is
+	 * writing its placement. An actor that holds one for STATIC_PROMOTE_SIGHTINGS scenes
+	 * bakes; one whose transform changes is taken back out and starts that count again.
+	 * Nothing is excluded by name or by category except what the game deletes outright,
+	 * which no amount of holding still would make safe to bake.
+	 */
+	bool brender_inject::track_static_actor(game::br_actor* actor, game::br_model* model,
+		game::br_material* fallback_material, const game::br_matrix34& world)
+	{
+		const auto [it, fresh] = m_actors.try_emplace(actor);
+		actor_record& record = it->second;
+
+		if (fresh)
+		{
+			classify_actor(record, actor, model);
+			++m_fresh_this_scene;
+
+			if (record.bakeable)
+			{
+				const placement_id seed = placement_fingerprint(actor);
+				record.placement = seed.where;
+				record.parent_chain = seed.parent;
+				record.sightings = 1;
+			}
+
+			return false;
+		}
+
+		if (record.model != model)
+		{
+			note_placement_drift(model, "model swapped");
+			if (unbake_actor(record)) { ++m_demotions.swapped; }
+			classify_actor(record, actor, model);
+		}
+
+		// An actor the game deletes rather than moves can never enter a chunk, so there is
+		// no placement to follow: skipping the chain walk keeps the pickups, the decal
+		// pools and every model that failed extraction off the per-frame hashing path.
+		if (!record.bakeable) {
+			return false;
+		}
+
+		const placement_id placement = placement_fingerprint(actor);
+
+		if (record.placement != placement.where)
+		{
+			note_placement_drift(model, "transform bytes changed");
+			if (unbake_actor(record)) { ++m_demotions.moved; }
+		}
+		else if (record.parent_chain != placement.parent)
+		{
+			// Relinked without moving. The game regroups scenery as the city streams, and
+			// where an actor hangs in the hierarchy says nothing about where it stands.
+			++m_relinks_absorbed;
+		}
+
+		record.placement = placement.where;
+		record.parent_chain = placement.parent;
+
+		if (record.live) {
+			++m_live_seen_this_scene;
+		}
+
+		if (!record.baked && ++record.sightings >= STATIC_PROMOTE_SIGHTINGS)
+		{
+			if (bake_actor(record, model, fallback_material, world))
+			{
+				record.baked = true;
+				m_have_unsealed = true;
+				m_last_promotion_scene = m_scenes_submitted;
+				if (record.demoted) { ++m_repromotions; }
+			}
+			else
+			{
+				// Failing to bake is a property of the model, not of this moment, so
+				// retrying it every few scenes would only repeat the extraction.
+				record.bakeable = false;
+			}
+		}
+
+		return record.live;
+	}
+
 	/*
 	 * Extracts an actor's model once, bakes its placement into the vertices and appends
 	 * the result to the accumulating chunks.
@@ -1317,28 +1430,34 @@ namespace comp
 		}
 	}
 
-	// An actor that moved, deformed or picked up an animated material stops being scenery.
-	// Permanent demotion also blocks it from ever being tracked again; a vanished actor is
-	// left unmarked, since its pointer may be recycled for a brand-new one.
-	void brender_inject::demote_actor(game::br_actor* actor, const bool permanent)
+	/*
+	 * Takes an actor's geometry back out of the chunks and restarts its probation.
+	 *
+	 * The record stays, so an actor that stops again bakes again: in Carmageddon 2 wrecking
+	 * the scenery is the game, and a lamppost that is knocked flat still spends the rest of
+	 * the race lying perfectly still. Evicting it for good made the static world shrink for
+	 * the whole race, and every actor it lost cost both a proxy draw and the game render
+	 * that suppression only covers for chunk-backed geometry.
+	 *
+	 * Returns whether there was a bake to take back, so callers can attribute the loss.
+	 */
+	bool brender_inject::unbake_actor(actor_record& record)
 	{
-		const auto it = m_actors.find(actor);
-		if (it == m_actors.end()) {
-			return;
-		}
+		punch_out(record);
 
-		punch_out(it->second);
-		if (it->second.baked) {
-			++m_demotions;
-		}
-		if (it->second.live && m_live_actors) {
+		if (record.live && m_live_actors) {
 			--m_live_actors;
 		}
 
-		m_actors.erase(it);
-		if (permanent) {
-			m_moving_actors.insert(actor);
-		}
+		const bool was_baked = record.baked;
+		record.baked = false;
+		record.live = false;
+		record.demoted = record.demoted || was_baked;
+		record.sightings = 0;
+		record.ranges.clear();
+		record.materials.clear();
+
+		return was_baked;
 	}
 
 	void brender_inject::release_chunks()
@@ -1354,17 +1473,22 @@ namespace comp
 
 	void brender_inject::reset_static_world(const char* reason)
 	{
-		if (m_chunks.empty() && m_actors.empty() && m_moving_actors.empty()) {
+		if (m_chunks.empty() && m_actors.empty()) {
 			return;
 		}
 
 		release_chunks();
 		m_actors.clear();
-		m_moving_actors.clear();
 		m_animated_materials.clear();
 		m_material_update_scene.clear();
 		m_have_unsealed = false;
 		m_live_actors = 0;
+
+		// The tallies describe how one race's static world held up; carrying them into the
+		// next one would read as a world that started the race already decayed.
+		m_demotions = {};
+		m_relinks_absorbed = 0;
+		m_repromotions = 0;
 
 		shared::common::log("BRender", std::format("static world reset - {}", reason),
 			shared::common::LOG_TYPE::LOG_TYPE_WARN, true);
@@ -1382,10 +1506,15 @@ namespace comp
 	 */
 	void brender_inject::on_material_update(game::br_material* material, const uint16_t flags)
 	{
-		constexpr uint16_t ANIMATABLE = game::BR_MATU_MAP_TRANSFORM
-			| game::BR_MATU_MATERIAL | game::BR_MATU_EXTRA;
+		// The opacity spellings only matter while opacity is being followed; without that
+		// switch a fading material looks no different baked, and watching those bits would
+		// evict geometry for a change the injection does not render.
+		uint16_t animatable = game::BR_MATU_MAP_TRANSFORM;
+		if (shared::common::config::get().effects.material_opacity) {
+			animatable |= game::BR_MATU_MATERIAL | game::BR_MATU_EXTRA;
+		}
 
-		if (!(flags & ANIMATABLE)) {
+		if (!(flags & animatable)) {
 			return;
 		}
 
@@ -1400,20 +1529,27 @@ namespace comp
 		}
 
 		// Anything already baked with it is showing a frozen frame of the animation.
-		std::vector<game::br_actor*> demote;
-		for (const auto& [actor, record] : m_actors)
+		uint32_t evicted = 0;
+		for (auto& [actor, record] : m_actors)
 		{
 			if (record.baked
 				&& std::find(record.materials.begin(), record.materials.end(), material)
 					!= record.materials.end())
 			{
-				demote.push_back(actor);
+				if (unbake_actor(record)) { ++evicted; }
 			}
 		}
 
-		for (game::br_actor* actor : demote) {
-			demote_actor(actor, true);
-		}
+		m_demotions.animated += evicted;
+
+		// One animated material can take a large share of the static world with it, and
+		// nothing else in the scene report says which material did it.
+		shared::common::log("BRender", std::format(
+			"material '{}' animates - {} baked actors returned to the dynamic path",
+			material->identifier && readable(material->identifier, 1)
+				? material->identifier : "<null>", evicted),
+			evicted ? shared::common::LOG_TYPE::LOG_TYPE_WARN
+			        : shared::common::LOG_TYPE::LOG_TYPE_DEFAULT, false);
 	}
 
 	/*
@@ -1614,82 +1750,17 @@ namespace comp
 		++m_scene_models;
 
 		/*
-		 * Scenery holds one placement for the whole race, so it can be baked into the
-		 * chunks whatever its transform. Only things that actually move -- cars, wheels,
-		 * spinning powerups -- need a draw of their own. An actor has to hold still for
-		 * several frames first: baking on sight would bake every car at its starting
-		 * position and leave a ghost there the moment it drove off.
+		 * Scenery holds one placement for as long as nothing hits it, so it can be baked
+		 * into the chunks whatever its transform. Only things that are actually moving --
+		 * cars, wheels, spinning powerups -- need a draw of their own. An actor has to hold
+		 * still for several frames first: baking on sight would bake every car at its
+		 * starting position and leave a ghost there the moment it drove off.
 		 */
 		if (race_scene && shared::common::config::get().optimization.static_world
-			&& actor && !(model->flags & 0x20) && !m_moving_actors.contains(actor))
+			&& actor && !(model->flags & 0x20)
+			&& track_static_actor(actor, model, fallback_material, model_to_world))
 		{
-			const placement_id placement = placement_fingerprint(actor);
-			const auto [it, fresh] = m_actors.try_emplace(actor);
-			actor_record& record = it->second;
-
-			if (fresh)
-			{
-				// Anything that can vanish outright must stay dynamic: powerup pickups
-				// disappear the moment they are taken -- a pickup is any actor whose
-				// identifier carries 0xA3 ('£') as its second character, the same test
-				// SpecialActorEnumCallback (0x0040D1F0) uses -- and decal quads are
-				// pooled and recycled at new placements. Noncars (models with a leading
-				// '&') are most of a city's scenery, so they do get baked, but into
-				// chunks of their own: the rare one that gets hit is punched out by the
-				// placement check and lives dynamically from then on.
-				const char* actor_name = actor->identifier;
-				const bool pickup = readable(actor_name, 2)
-					&& actor_name[0] && static_cast<uint8_t>(actor_name[1]) == 0xA3;
-				if (pickup || is_decal_model(model))
-				{
-					m_actors.erase(it);
-					m_moving_actors.insert(actor);
-				}
-				else
-				{
-					record.model = model;
-					record.placement = placement.full;
-					record.placement_chain = placement.chain;
-					record.sightings = 1;
-					record.noncar = model->identifier && model->identifier[0] == '&';
-					++m_fresh_this_scene;
-				}
-			}
-			else if (record.model != model || record.placement != placement.full)
-			{
-				note_placement_drift(model,
-					record.model != model ? "model swapped"
-					: record.placement_chain != placement.chain ? "chain relinked"
-					: "transform bytes changed");
-				demote_actor(actor, true);
-			}
-			else
-			{
-				if (record.live) {
-					++m_live_seen_this_scene;
-				}
-
-				bool tracked = true;
-				if (!record.baked && ++record.sightings >= STATIC_PROMOTE_SIGHTINGS)
-				{
-					if (bake_actor(record, model, fallback_material, model_to_world))
-					{
-						record.baked = true;
-						m_have_unsealed = true;
-						m_last_promotion_scene = m_scenes_submitted;
-					}
-					else
-					{
-						// The record is gone after this; the actor stays dynamic for good.
-						demote_actor(actor, true);
-						tracked = false;
-					}
-				}
-
-				if (tracked && record.live) {
-					return true;
-				}
-			}
+			return true;
 		}
 
 		queued_model queued{};
@@ -2025,6 +2096,8 @@ namespace comp
 		stats.baked = m_live_actors;
 		stats.chunks = sealed_chunks;
 		stats.demotions = m_demotions;
+		stats.relinks_absorbed = m_relinks_absorbed;
+		stats.repromotions = m_repromotions;
 		stats.segments = static_cast<uint32_t>(m_lines.size());
 		stats.model_updates = m_profile.model_updates;
 		stats.rebuilds = m_profile.rebuilds;
@@ -2359,15 +2432,19 @@ namespace comp
 			+ stats.present_ms + stats.overlay_ms);
 
 		shared::common::log("BRender", std::format(
-			"scene {}: {:.1f} fps ({:.1f} ms) | {} models ({} baked in {} chunks, {} demoted),"
-			" {} draws (+{} glide, {} frame), {} verts, {} segments | game {:.2f} sceneend {:.2f}"
-			" overlay {:.2f} capture {:.2f} bounds {:.2f} submit {:.2f} present {:.2f}"
-			" other {:.2f} ms | {} updates, {} rebuilds | geometry cached {}{}",
+			"scene {}: {:.1f} fps ({:.1f} ms) | {} models ({} baked in {} chunks),"
+			" {} demoted (moved {}, swapped {}, deformed {}, animated {}; {} relinks absorbed,"
+			" {} rebaked) | {} draws (+{} glide, {} frame), {} verts, {} segments |"
+			" game {:.2f} sceneend {:.2f} overlay {:.2f} capture {:.2f} bounds {:.2f}"
+			" submit {:.2f} present {:.2f} other {:.2f} ms | {} updates, {} rebuilds |"
+			" geometry cached {}{}",
 			m_scenes_submitted, fps, stats.frame_ms, stats.models, stats.baked, stats.chunks,
-			stats.demotions, stats.draws, stats.glide_draws, stats.frame_draws, stats.vertices,
-			stats.segments, stats.game_render_ms, stats.scene_end_ms, stats.overlay_ms,
-			stats.capture_ms, stats.bounds_ms, stats.submit_ms, stats.present_ms, other_ms,
-			stats.model_updates, stats.rebuilds, m_geometry.size(),
+			stats.demotions.total(), stats.demotions.moved, stats.demotions.swapped,
+			stats.demotions.deformed, stats.demotions.animated, stats.relinks_absorbed,
+			stats.repromotions, stats.draws, stats.glide_draws, stats.frame_draws,
+			stats.vertices, stats.segments, stats.game_render_ms, stats.scene_end_ms,
+			stats.overlay_ms, stats.capture_ms, stats.bounds_ms, stats.submit_ms,
+			stats.present_ms, other_ms, stats.model_updates, stats.rebuilds, m_geometry.size(),
 			worse && !first ? "  <-- new worst" : ""),
 			worse && !first ? shared::common::LOG_TYPE::LOG_TYPE_WARN : shared::common::LOG_TYPE::LOG_TYPE_DEFAULT,
 			false);

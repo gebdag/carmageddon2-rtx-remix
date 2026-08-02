@@ -1071,3 +1071,89 @@ because `0x00655E50` is provably never assigned.
 
 Do **not** "fix" this by writing a value into `0x00655E50` -- any non-negative value there
 would make the frontend hide a live tint poly slot.
+
+---
+
+## 13. The static world decays over a race (2026-08-02)
+
+Section 9's chunks build correctly and then bleed. A full city race with the 2026-08-02
+build seals 848 actors into 341 chunks and immediately runs at 58-62 fps, then loses 303
+of them over the race:
+
+```
+scene  600: 848 baked, 341 chunks,  94 demoted, 2106 draws (+ 848 glide), game 3.42 submit 2.91 -> 58.1 fps
+scene 1800: 676 baked, 341 chunks, 266 demoted, 3044 draws (+ 905 glide), game 5.08 submit 6.12 -> 39.2 fps
+scene 4800: 669 baked, 343 chunks, 303 demoted, 3972 draws (+2326 glide), game 10.40 submit 8.44 -> 32.9 fps
+```
+
+`other` (game logic) holds at 9.5-13.3 ms throughout, so the whole 62 -> 33 fps swing is
+`game` + `submit`. Every eviction costs twice: the actor goes back to a per-model draw
+*and* regains its BRender T&L and nGlide render, because `SuppressGameRender` is scoped to
+chunk-covered geometry. Scene 3600 still reaches 62.1 fps, which is the proof that the
+chunks themselves are fine -- what varies is how much geometry is left outside them.
+
+### 13.1 Why it only ever shrinks
+
+`demote_actor` inserted into `m_moving_actors`, and `capture_model` tested that set before
+tracking an actor at all. Nothing removed from it. In a game whose entire premise is
+demolishing the scenery, a one-way blacklist means the static world can only decay until
+the race ends. That is why the rework measured well when tested and not after a full race.
+
+### 13.2 Reparenting was being read as movement
+
+`placement_fingerprint` mixed the parent chain's **node addresses** into the same hash as
+its transform bytes, so a relink read as a move. The city regroups scenery as it streams,
+which relinks whole instanced sets at once -- the log shows `&02lamp.act`, `&03traffic.act`,
+`&09citbarrier.act`, `&25citree2.act` and `&01citree1` all evicted as `chain relinked`, and
+those five model names cover the ~172 actors lost between scenes 600 and 1800.
+
+Placement and parentage answer different questions. The hash is now split: `where` is the
+transform bytes up the chain, `parent` is the node addresses. A change in `where` is a
+move; a change in `parent` alone is absorbed and counted. Nothing is lost by dropping the
+addresses from the placement -- a reparent that actually relocates the actor changes some
+ancestor's transform bytes, so it still reads as a move.
+
+### 13.3 Eviction is not instrumented
+
+`on_material_update` demotes every baked actor sharing a newly animated material in one
+sweep and logged nothing at all, so a mass eviction was indistinguishable from gradual
+drift in the single `demoted` counter. `8932aac` widened its trigger from
+`BR_MATU_MAP_TRANSFORM` to `| BR_MATU_MATERIAL | BR_MATU_EXTRA` **unconditionally**, while
+gating the rest of that commit behind `[Effects] MaterialOpacity` -- so the one change most
+able to shrink the static world was the one that could not be switched off for a
+measurement.
+
+### 13.4 What changed
+
+* **`unbake_actor` replaces `demote_actor`.** The record survives an eviction with its
+  bake taken back out and its sighting count restarted, so scenery that comes to rest
+  rejoins the static world. A knocked lamppost lying still is scenery again. The
+  `m_moving_actors` blacklist is gone.
+* **Split fingerprint** (13.2), with `relinks absorbed` counted so the rate is visible.
+* **Per-reason demotion tally** in the scene report: `moved`, `swapped`, `deformed`,
+  `animated`, plus `relinks absorbed` and `rebaked`. Every eviction lands in exactly one
+  bucket.
+* **`on_material_update` names the material** and how many baked actors it took, and the
+  `BR_MATU_MATERIAL | BR_MATU_EXTRA` widening now follows the `MaterialOpacity` switch:
+  without opacity being rendered, a fading material looks no different baked.
+* **Bakeability is decided once, from the model** (`classify_actor`), and unbakeable actors
+  skip the chain walk entirely rather than being fingerprinted every frame.
+
+### 13.5 Why the baker cannot whitelist "truly static" geometry instead
+
+The immovable set in this game is small. `4939c72` excluded every `&`-named model and only
+243 of ~1400 actors baked, costing 25 fps (`0ea4eaf`): in a Carmageddon city the buildings
+and road surface are one track mesh, and almost everything that gives the level its density
+-- trees, lamps, rails, bins, barriers -- is a noncar, individually knockable, with its own
+`DATA/NONCARS/*.txt` spec carrying `mass attached` / `mass unattached` and a torque
+threshold. There is no large class of geometry that is static by construction.
+
+So the test cannot be *what is this*, it has to be *is the game writing its placement* --
+which is what the fingerprint already measures, and now measures without the false
+positives. Cars are excluded by that test rather than by name: their transforms are
+rewritten every frame, including on the grid, so they never survive the three-scene
+probation.
+
+The one exclusion that cannot be derived from movement is deletion: a pickup vanishes
+without ever moving, and a chunk cannot give geometry back. That stays a positive test
+(`vanishes_outright`) over the pickup naming rule and the two decal pools.

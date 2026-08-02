@@ -227,14 +227,30 @@ namespace comp
 		struct actor_record
 		{
 			game::br_model* model;
-			uint64_t placement;         // fingerprint of the actor's transform chain
-			uint64_t placement_chain;   // node-address part alone, for drift diagnosis
-			uint32_t sightings;
-			bool noncar;  // bakes into the noncar chunks, apart from the pristine world
-			bool baked;   // copied into a chunk, possibly one still accumulating
-			bool live;    // its chunks are sealed and drawing; the game render is redundant
+			uint64_t placement;      // fingerprint of the actor's transform chain
+			uint64_t parent_chain;   // node addresses, to tell a relink from a move
+			uint32_t sightings;      // consecutive scenes holding this placement
+			bool bakeable;  // cleared for anything that can vanish, or that failed to bake
+			bool demoted;   // has been unbaked at least once, so a later bake is a recovery
+			bool noncar;    // bakes into the noncar chunks, apart from the pristine world
+			bool baked;     // copied into a chunk, possibly one still accumulating
+			bool live;      // its chunks are sealed and drawing; the game render is redundant
 			std::vector<baked_range> ranges;
 			std::vector<game::br_material*> materials;  // compared only, never dereferenced
+		};
+
+		// Where the static world loses geometry. Every eviction lands in exactly one bucket,
+		// so a run says whether the world is shrinking because things moved, because the
+		// game swapped a model, or because a material started animating -- distinctions the
+		// old single counter could not make, and the reason a decaying world went unnoticed.
+		struct demotion_tally
+		{
+			uint32_t moved = 0;
+			uint32_t swapped = 0;
+			uint32_t deformed = 0;
+			uint32_t animated = 0;
+
+			uint32_t total() const { return moved + swapped + deformed + animated; }
 		};
 
 		void submit(IDirect3DDevice9* dev);
@@ -291,13 +307,29 @@ namespace comp
 		                      std::vector<geometry_part>& parts,
 		                      std::vector<uint32_t>& indices);
 
+		void classify_actor(actor_record& record, const game::br_actor* actor,
+		                    game::br_model* model) const;
+
+		// Follows one actor's placement and keeps the chunks in step with it. Returns true
+		// when the actor is already live in a sealed chunk, so the caller neither queues it
+		// nor lets the game rasterize it.
+		bool track_static_actor(game::br_actor* actor, game::br_model* model,
+		                        game::br_material* fallback_material,
+		                        const game::br_matrix34& world);
+
 		bool bake_actor(actor_record& record, game::br_model* model,
 		                game::br_material* fallback_material, const game::br_matrix34& world);
 		void append_part_to_chunk(const geometry_part& part,
 		                          const std::vector<ffp_vertex>& vertices,
 		                          const std::vector<uint32_t>& indices, actor_record& record);
 		void punch_out(const actor_record& record);
-		void demote_actor(game::br_actor* actor, bool permanent);
+
+		// Takes an actor's geometry back out of the chunks and restarts its probation. The
+		// record survives, so scenery that comes to rest -- a knocked lamppost, a settled
+		// wreck -- rejoins the static world instead of costing a draw for the rest of the
+		// race. Actors that must never bake are marked unbakeable rather than unbaked.
+		// Returns whether there was a bake to take back, so callers can attribute the loss.
+		bool unbake_actor(actor_record& record);
 		void seal_chunks(IDirect3DDevice9* dev);
 		void reset_static_world(const char* reason);
 		void release_chunks();
@@ -340,10 +372,10 @@ std::vector<static_chunk> m_chunks;
 		// Keyed on the texture pointer with the blend bit folded in.
 		std::unordered_map<uint64_t, size_t> m_open_chunks;
 
-		// Every actor the race scene has walked, and the ones that have proved they move.
-		// Anything that moves must never be baked -- it would leave a ghost behind.
+		// Every actor the race scene has walked. A mover keeps its record with the bake
+		// taken back out, so the set of things that may bake is decided by what each actor
+		// is doing now, not by a one-way blacklist that only ever grew.
 		std::unordered_map<game::br_actor*, actor_record> m_actors;
-		std::unordered_set<game::br_actor*> m_moving_actors;
 
 		// Materials the funkotronic system has animated mid-race. Pointers are compared,
 		// never dereferenced; a stale entry after a level change only costs one model its
@@ -355,7 +387,8 @@ std::vector<static_chunk> m_chunks;
 		std::unordered_map<game::br_material*, uint32_t> m_material_update_scene;
 
 		// Frames an actor must hold one placement before it counts as scenery. Cars fail on
-		// their second frame and are never baked.
+		// their second frame and are never baked; the same count is what a demoted actor
+		// serves before it may bake again.
 		static constexpr uint32_t STATIC_PROMOTE_SIGHTINGS = 3;
 
 		// Scenes without a new promotion before the accumulated chunks seal. Sealing early
@@ -382,7 +415,14 @@ std::vector<static_chunk> m_chunks;
 		uint32_t m_last_promotion_scene = 0;
 		bool m_have_unsealed = false;
 		uint32_t m_live_actors = 0;
-		uint32_t m_demotions = 0;
+		demotion_tally m_demotions;
+
+		// Relinks that did not move anything, so the bake survived them. Under the old
+		// fingerprint every one of these evicted an actor for good.
+		uint32_t m_relinks_absorbed = 0;
+
+		// Actors promoted after an earlier demotion -- scenery that came to rest.
+		uint32_t m_repromotions = 0;
 		uint32_t m_scene_models = 0;
 
 		// The camera whose scene last submitted, i.e. the race view. Models seen under any
@@ -449,7 +489,9 @@ std::vector<static_chunk> m_chunks;
 			uint32_t models;
 			uint32_t baked;
 			uint32_t chunks;
-			uint32_t demotions;
+			demotion_tally demotions;
+			uint32_t relinks_absorbed;
+			uint32_t repromotions;
 			uint32_t segments;
 			uint32_t model_updates;
 			uint32_t rebuilds;
