@@ -2345,9 +2345,15 @@ namespace comp
 			|| fog.min_distance != m_logged_fog.min_distance
 			|| fog.max_distance != m_logged_fog.max_distance)
 		{
+			// The camera's world position rides along because Remix's volumetric
+			// atmosphere is a sphere anchored to world y = 0: whether this world's
+			// vertical range fits inside its default 30 m shell is exactly what
+			// decides if "Atmosphere Enabled" works or blacks the level out.
 			shared::common::log("BRender", fog.enabled
-				? std::format("depth cue: fog colour {:06X}, {:.2f} to {:.2f} world units",
-					fog.colour, fog.min_distance, fog.max_distance)
+				? std::format("depth cue: fog colour {:06X}, {:.2f} to {:.2f} world units,"
+					" camera world position ({:.1f}, {:.1f}, {:.1f})",
+					fog.colour, fog.min_distance, fog.max_distance,
+					m_view_inverse.m[3][0], m_view_inverse.m[3][1], m_view_inverse.m[3][2])
 				: std::string("depth cue: none"));
 			m_logged_fog = fog;
 		}
