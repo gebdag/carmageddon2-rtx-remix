@@ -91,6 +91,11 @@ namespace comp
 			float x, y, z;
 			float nx, ny, nz;
 			float u, v;
+
+			// BRender's authored vertex colour, and the surface colour outright for a
+			// prelit material. White for everything else, so the texture stage's modulate
+			// leaves lit geometry exactly as it was.
+			uint32_t diffuse = 0xFFFFFFFFu;
 		};
 
 		// One draw's worth of a model: the run of indices sharing a single material.
@@ -115,7 +120,18 @@ namespace comp
 			// animates br_material::map_transform while a race is running.
 			bool texture_transform_active;
 			D3DMATRIX texture_transform;
+
+			// br_material::opacity, or whatever its extra token list overrides it with,
+			// as the 0..255 byte BrMaterialUpdate publishes. Also resolved per capture:
+			// the smoke system rewrites it between every particle it draws.
+			uint8_t opacity;
 		};
+
+		// Whether a run belongs in the translucent pass. A material carries alpha, or the
+		// game has faded it -- BRender turns blending on for anything below full opacity.
+		static bool part_is_blended(const geometry_part& part) {
+			return part.has_alpha || part.opacity < 255;
+		}
 
 		// A model's prepared geometry, uploaded once and reused. Static contents are what let
 		// Remix keep the acceleration structure it builds instead of rebuilding every frame.
@@ -141,6 +157,11 @@ namespace comp
 			// submission. Marking instead of erasing keeps queued pointers valid; the
 			// rebuild happens the next time the model is captured.
 			bool dirty;
+
+			// Scene this geometry was last pushed to the queue in. A rebuild inside that
+			// same scene would rewrite data the queue is still pointing at, so it goes to
+			// a transient copy instead. Starts on a value no scene counter reaches.
+			uint32_t queued_scene = UINT32_MAX;
 		};
 
 		// One BRender line segment in world space. BRender draws EDGES-style models by
@@ -178,6 +199,7 @@ namespace comp
 		{
 			IDirect3DTexture9* texture;
 			bool has_alpha;
+			uint8_t opacity;
 			bool sealed;
 			std::vector<ffp_vertex> vertices;   // emptied on seal
 			std::vector<uint16_t> indices;      // emptied on seal
@@ -247,6 +269,20 @@ namespace comp
 		model_geometry* geometry_for(IDirect3DDevice9* dev, game::br_model* model,
 		                             game::br_material* fallback_material);
 
+		// Fills one model_geometry from a model's prepared block, reusing whatever buffers
+		// it already holds when the new contents are the same size. Returns false and leaves
+		// the entry drawable-free if the model has nothing to extract.
+		bool build_geometry(IDirect3DDevice9* dev, game::br_model* model,
+		                    game::br_material* fallback_material, model_geometry& into);
+
+		// A copy of a model's geometry that lives for one scene, for the case where the game
+		// rewrites a model between renders of it. Entries are recycled every scene rather
+		// than reallocated: the smoke system alone would otherwise create and destroy
+		// buffers for thirty-five quads a frame.
+		model_geometry* transient_geometry(IDirect3DDevice9* dev, game::br_model* model,
+		                                   game::br_material* fallback_material);
+		void release_transient();
+
 		// Walks a model's prepared groups into CPU-side vertices and per-texture index runs.
 		// Shared by the per-model buffers and the merged static batches.
 		bool extract_geometry(IDirect3DDevice9* dev, game::br_model* model,
@@ -269,6 +305,10 @@ namespace comp
 		void evict_stale_geometry();
 
 		void note_untextured(const game::br_model* model, const game::br_material* material);
+
+		// Materials whose surface is shaded by prelit vertex colours or faded by opacity --
+		// the two things that can change how already-working geometry looks.
+		void note_shaded_material(const game::br_material* material, bool prelit, uint8_t opacity);
 		void note_unsupported_style(const game::br_model* model, uint32_t style);
 
 		// Geometry that reached the capture but did not make it to Remix, and is therefore
@@ -288,6 +328,11 @@ namespace comp
 		std::vector<line_segment> m_lines;
 		std::vector<ffp_vertex> m_line_vertices;
 		std::unordered_map<game::br_model*, model_geometry> m_geometry;
+
+		// Per-scene copies for models the game rewrites between renders. A deque because the
+		// queue holds pointers into it for the length of the scene.
+		std::deque<model_geometry> m_transient;
+		size_t m_transient_used = 0;
 
 std::vector<static_chunk> m_chunks;
 
@@ -389,6 +434,7 @@ std::vector<static_chunk> m_chunks;
 		std::map<std::string, std::string> m_skipped_models;
 		std::map<std::string, std::string> m_untextured_models;
 		std::map<std::string, std::string> m_drift_models;
+		std::map<std::string, std::string> m_shaded_materials;
 
 		// A scene with fewer models than this is a 3D HUD widget, not the race view.
 		static constexpr size_t MIN_WORLD_SCENE_MODELS = 8;

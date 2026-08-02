@@ -103,10 +103,21 @@ namespace comp::game
 		void* stored;               // 0x50
 	};
 
+	// One entry of a br_material::extra list: a token and its value, terminated by a zero
+	// token. The value's meaning is the token's -- BRT_OPACITY_X carries a br_fixed_ls,
+	// BRT_OPACITY_F a float.
+	struct br_token_value
+	{
+		uint32_t token;
+		uint32_t value;
+	};
+
 	// Offsets recovered from MaterialNeedsAlpha (0x0051F630), which tests colour_map->type
-	// and walks the token-value list. The struct is larger than stock BRender 1.3.
-	// The prefix matches stock BRender and was confirmed against a live material:
-	// 'MOVER01' reads colour 0x212121, opacity 0xFF, ka 0.2, kd 0.8, power 20.0.
+	// and walks the token-value list, and from BrMaterialUpdate's BR_MATU_MATERIAL branch
+	// (0x00520F0C), which pushes colour @0x08, opacity @0x0C, flags @0x20, index_base @0x3C
+	// and index_range @0x3D to the renderer. The struct is larger than stock BRender 1.3.
+	// Confirmed against a live material: 'MOVER01' reads colour 0x212121, opacity 0xFF,
+	// ka 0.2, kd 0.8, power 20.0.
 	struct br_material
 	{
 		br_material* next;      // 0x00
@@ -129,12 +140,37 @@ namespace comp::game
 		uint8_t index_range;        // 0x3D
 		uint16_t pad3E;
 		void* colour_map;       // 0x40  br_pixelmap*
-		uint8_t pad44[0x08];
-		void* index_shade;      // 0x4C
+		void* screendoor;       // 0x44
+		void* index_shade;      // 0x48
+		void* index_blend;      // 0x4C  MaterialNeedsAlpha treats this as translucency
 		uint8_t pad50[0x08];
-		void* extra;            // 0x58  br_token_value list
+		br_token_value* extra;  // 0x58
 		uint8_t pad5C[0x3C];
 		uint32_t stored;        // 0x98  driver-side prepared material; groups key off this
+	};
+
+	// br_material::flags. Only the two the injection acts on are named; the rest are
+	// rasterizer hints BRender resolves before anything reaches this proxy.
+	enum br_material_flags : uint32_t
+	{
+		// BRender lights the model at render time and modulates the texture by the result.
+		BR_MATF_LIGHT = 0x0001,
+
+		// The authored vertex colours are already lit and are the surface colour. Sprites
+		// carry their tint this way: the smoke system rewrites gBlend_model's vertex RGB
+		// per particle (0x004FB289) and the spark emitter does the same (0x004F7CB0).
+		BR_MATF_PRELIT = 0x0002,
+	};
+
+	// br_token values the material's extra list can carry. Both name the same quantity --
+	// BrMaterialUpdate publishes br_material::opacity as BRT_OPACITY_F (0x00520F29) after
+	// scaling it by 1/255 -- so the integer part of the fixed form is that same 0..255 byte.
+	// Carmageddon 2 animates sprites through it: the smoke renderer writes alpha * 150 into
+	// the shared list at 0x004FB258 and the tint overlay writes 128 at 0x0045AAB4.
+	enum br_token_id : uint32_t
+	{
+		BRT_OPACITY_X = 0x00BE,
+		BRT_OPACITY_F = 0x00BF,
 	};
 
 	// The authored face array (br_model::faces). Valid only while BrModelUpdate is running —
@@ -162,7 +198,11 @@ namespace comp::game
 		char* identifier;   // 0x04
 		void* pixels;       // 0x08
 		uint32_t id;        // 0x0C
-		uint8_t pad10[0x18];
+
+		// Palette for the INDEX_* types. Confirmed at InitSmokeStuff 0x004FA340, which
+		// assigns the DRRENDER.PAL pixelmap (global 0x0074A674) to SMOKE.PIX here.
+		br_pixelmap* map;   // 0x10
+		uint8_t pad14[0x14];
 		uint32_t row_bytes; // 0x28
 		uint8_t type;       // 0x2C  br_pixelmap_type
 		uint8_t flags;      // 0x2D

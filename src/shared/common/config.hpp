@@ -112,6 +112,16 @@ namespace shared::common
 			// happens naturally otherwise: their faces are zero-area triangles.
 			bool sparks = true;
 
+			// Modulate the texture by BRender's authored vertex colour on prelit materials,
+			// which is where a sprite's tint lives -- smoke carries no colour anywhere else.
+			// Off leaves every surface the plain texture, so tinted sprites come out white.
+			bool vertex_colour = true;
+
+			// Follow br_material::opacity and the BRT_OPACITY tokens of its extra list into
+			// the texture factor's alpha. This is how the game fades smoke as it disperses
+			// and how overlay polys stay see-through. Off draws every surface fully opaque.
+			bool material_opacity = true;
+
 			// Distance translucent surfaces are lifted along their normals. BRender kept
 			// tyre tracks, shadows and impact smears out of the road by drawing them in
 			// depth-sorted order; a path tracer has no draw order, so co-planar decals

@@ -43,7 +43,13 @@ namespace comp::game
 	constexpr uint32_t ADDR_BrMaterialUpdate = 0x00520E70u;
 	typedef void(__cdecl* BrMaterialUpdate_t)(br_material* material, uint16_t flags);
 
+	// The bits BrMaterialUpdate actually tests, in the order its branches read them
+	// (0x00520EEA, 0x00520F0C, 0x005213DD). MAP_TRANSFORM republishes the UV transform;
+	// MATERIAL republishes colour, opacity and flags; EXTRA republishes the token list.
+	// The last two are how the game animates a sprite's opacity mid-race.
 	constexpr uint16_t BR_MATU_MAP_TRANSFORM = 0x0001;
+	constexpr uint16_t BR_MATU_MATERIAL = 0x0002;
+	constexpr uint16_t BR_MATU_EXTRA = 0x0040;
 
 	// BRender's own translucency test, and the one its device drivers act on: colour_map
 	// carries alpha, or the material has an index shade/blend table, or its extra token

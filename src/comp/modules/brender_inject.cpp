@@ -12,9 +12,10 @@ namespace comp
 		// texcoord usage is spelled out here instead of inferred.
 		constexpr D3DVERTEXELEMENT9 INJECT_DECL[] =
 		{
-			{ 0,  0, D3DDECLTYPE_FLOAT3, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_POSITION, 0 },
-			{ 0, 12, D3DDECLTYPE_FLOAT3, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_NORMAL,   0 },
-			{ 0, 24, D3DDECLTYPE_FLOAT2, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_TEXCOORD, 0 },
+			{ 0,  0, D3DDECLTYPE_FLOAT3,  D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_POSITION, 0 },
+			{ 0, 12, D3DDECLTYPE_FLOAT3,  D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_NORMAL,   0 },
+			{ 0, 24, D3DDECLTYPE_FLOAT2,  D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_TEXCOORD, 0 },
+			{ 0, 32, D3DDECLTYPE_D3DCOLOR, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_COLOR,   0 },
 			D3DDECL_END()
 		};
 
@@ -197,10 +198,13 @@ namespace comp
 
 		// Noncars get chunks of their own: a hit noncar is punched out of its chunk, and
 		// keeping that write away from the pristine world chunks is what keeps *their*
-		// geometry hashes immutable for Remix modding.
-		uint64_t chunk_key(const IDirect3DTexture9* texture, const bool has_alpha, const bool noncar)
+		// geometry hashes immutable for Remix modding. Opacity joins the key because a chunk
+		// draws under one texture factor, so runs faded to different degrees cannot share it.
+		uint64_t chunk_key(const IDirect3DTexture9* texture, const bool has_alpha,
+			const bool noncar, const uint8_t opacity)
 		{
 			return reinterpret_cast<uintptr_t>(texture)
+				| (static_cast<uint64_t>(opacity) << 32)
 				| (has_alpha ? 1ull << 63 : 0ull)
 				| (noncar ? 1ull << 62 : 0ull);
 		}
@@ -288,6 +292,95 @@ namespace comp
 
 			g_readable_regions.emplace_back(static_cast<const uint8_t*>(mbi.BaseAddress), end);
 			return true;
+		}
+
+		/*
+		 * The opacity BRender would hand its device driver for this material, 0..255.
+		 *
+		 * BrMaterialUpdate publishes br_material::opacity as BRT_OPACITY_F after scaling it
+		 * by 1/255 (0x00520F24) and turns blending on whenever it is below 255 (0x00520F6D).
+		 * A material's extra token list can carry the same quantity, and that is what the
+		 * game animates: the smoke renderer rewrites the shared list's value with
+		 * alpha * 150 before every particle (0x004FB258) and the tint overlay writes 128
+		 * (0x0045AAB4). Both land in the integer part of the fixed form, so the two token
+		 * spellings differ only in how the byte is encoded.
+		 *
+		 * The list is walked defensively: 'Acc Poly Mat' shares its terminator with the data
+		 * that follows it, so a malformed list has to end the walk rather than run off.
+		 */
+		uint8_t material_opacity(const game::br_material* material)
+		{
+			if (!material) {
+				return 255;
+			}
+
+			uint32_t opacity = material->opacity;
+
+			constexpr int MAX_TOKENS = 32;
+			const game::br_token_value* token = material->extra;
+			for (int i = 0; i < MAX_TOKENS && readable(token, sizeof(*token)) && token->token; ++i, ++token)
+			{
+				if (token->token == game::BRT_OPACITY_X) {
+					opacity = token->value >> 16;
+				}
+				else if (token->token == game::BRT_OPACITY_F)
+				{
+					float scalar = 0.0f;
+					std::memcpy(&scalar, &token->value, sizeof(scalar));
+					opacity = static_cast<uint32_t>(std::clamp(scalar, 0.0f, 1.0f) * 255.0f + 0.5f);
+				}
+			}
+
+			return static_cast<uint8_t>(std::min(opacity, 255u));
+		}
+
+		/*
+		 * Flattens a BRender palette pixelmap into 256 ARGB entries.
+		 *
+		 * A palette is an ordinary pixelmap whose pixels are the colour table, so it carries
+		 * its own type -- DRRENDER.PAL loads as one row of 32-bit entries. Entries the
+		 * palette does not define stay transparent black, which is what BRender's own
+		 * conversion leaves them as.
+		 */
+		bool build_palette(const game::br_pixelmap* pm, std::array<uint32_t, 256>& out)
+		{
+			if (!readable(pm, sizeof(*pm))) {
+				return false;
+			}
+
+			uint32_t bpp = 0;
+			switch (pm->type)
+			{
+			case game::BR_PMT_RGB_888:   bpp = 3; break;
+			case game::BR_PMT_RGBX_888:
+			case game::BR_PMT_RGBA_8888: bpp = 4; break;
+			default: return false;
+			}
+
+			const uint32_t entries = std::min<uint32_t>(
+				static_cast<uint32_t>(pm->width) * pm->height, 256u);
+			if (entries == 0 || pm->row_bytes < pm->width * bpp
+				|| !readable(pm->pixels, static_cast<size_t>(pm->row_bytes) * pm->height)) {
+				return false;
+			}
+
+			const auto base = static_cast<const uint8_t*>(pm->pixels);
+			for (uint32_t i = 0; i < entries; ++i)
+			{
+				const uint8_t* src = base + (i / pm->width) * pm->row_bytes + (i % pm->width) * bpp;
+				const uint32_t a = pm->type == game::BR_PMT_RGBA_8888 ? src[3] : 255u;
+				out[i] = (a << 24) | (src[2] << 16) | (src[1] << 8) | src[0];
+			}
+
+			return true;
+		}
+
+		// BRender writes the palette index into the top byte of a prepared vertex colour
+		// (0x0051FB70); only the low three bytes are the colour. D3DCOLOR wants the alpha
+		// there instead, and opacity travels as a render state rather than per vertex.
+		uint32_t to_d3d_colour(const uint32_t br_colour)
+		{
+			return 0xFF000000u | (br_colour & 0x00FFFFFFu);
 		}
 
 		/*
@@ -564,13 +657,16 @@ namespace comp
 			shared::common::log("BRender", std::format(
 				"Hooked the BRender scene walk - model-space injection armed. Static world {},"
 				" frustum culling {}, game render {}, translucent pass {}, texture transform {},"
-				" sparks {}, decal offset {:.3f}, spark width {:.3f}.",
+				" sparks {}, vertex colour {}, material opacity {}, decal offset {:.3f},"
+				" spark width {:.3f}.",
 				cfg.optimization.static_world ? "on" : "OFF",
 				cfg.culling.disable_frustum ? "DISABLED" : "on",
 				cfg.optimization.suppress_game_render ? "suppressed" : "ON",
 				cfg.effects.translucent_pass ? "on" : "OFF",
 				cfg.effects.texture_transform ? "on" : "OFF",
 				cfg.effects.sparks ? "on" : "OFF",
+				cfg.effects.vertex_colour ? "on" : "OFF",
+				cfg.effects.material_opacity ? "on" : "OFF",
 				cfg.effects.decal_offset, cfg.effects.spark_width),
 				shared::common::LOG_TYPE::LOG_TYPE_GREEN, true);
 		}
@@ -579,6 +675,7 @@ namespace comp
 	brender_inject::~brender_inject()
 	{
 		release_chunks();
+		release_transient();
 
 		for (auto& [model, geometry] : m_geometry) {
 			release_geometry(geometry);
@@ -721,37 +818,49 @@ namespace comp
 	brender_inject::model_geometry* brender_inject::geometry_for(IDirect3DDevice9* dev,
 		game::br_model* model, game::br_material* fallback_material)
 	{
-		// Rebuilt into the same node below; erasing would invalidate the pointer the current
-		// scene's queue may already hold.
-		model_geometry* cached = nullptr;
-		if (const auto it = m_geometry.find(model); it != m_geometry.end())
+		const auto it = m_geometry.find(model);
+		if (it != m_geometry.end())
 		{
-			it->second.last_used_scene = m_scenes_submitted;
-			if (!it->second.dirty) {
-				return it->second.vertex_buffer ? &it->second : nullptr;
+			model_geometry& cached = it->second;
+			cached.last_used_scene = m_scenes_submitted;
+
+			if (!cached.dirty) {
+				return cached.vertex_buffer ? &cached : nullptr;
 			}
 
-			cached = &it->second;
+			// The game rewrites this model between renders of it and the queue is already
+			// holding the previous instance. Overwriting the buffers now would give every
+			// instance in the scene the last one's contents.
+			if (cached.queued_scene == m_scenes_submitted) {
+				return transient_geometry(dev, model, fallback_material);
+			}
+
 			++m_profile.rebuilds;
 		}
 
+		model_geometry& slot = m_geometry[model];
+		return build_geometry(dev, model, fallback_material, slot) ? &slot : nullptr;
+	}
+
+	bool brender_inject::build_geometry(IDirect3DDevice9* dev, game::br_model* model,
+		game::br_material* fallback_material, model_geometry& into)
+	{
 		std::vector<ffp_vertex> vertices;
 		std::vector<geometry_part> parts;
 		std::vector<uint32_t> indices;
 
 		model_geometry geometry{};
 		geometry.last_used_scene = m_scenes_submitted;
+		geometry.queued_scene = into.queued_scene;
 
 		// 16-bit indices are enough for any single model this game ships; anything larger is
 		// corrupt data rather than a real mesh.
 		if (!extract_geometry(dev, model, fallback_material, vertices, parts, indices)
 			|| vertices.size() > 0xFFFF)
 		{
-			if (cached) {
-				release_geometry(*cached);
-			}
-			m_geometry[model] = geometry;
-			return nullptr;
+			release_geometry(into);
+			into = std::move(geometry);
+			return false;
 		}
 
 		const UINT vertex_bytes = static_cast<UINT>(vertices.size() * sizeof(ffp_vertex));
@@ -763,16 +872,14 @@ namespace comp
 		 * an identical pair every time churns the pool and stalls on the driver; refilling
 		 * one that already fits does neither.
 		 */
-		if (cached && cached->vertex_bytes == vertex_bytes && cached->index_bytes == index_bytes)
+		if (into.vertex_bytes == vertex_bytes && into.index_bytes == index_bytes)
 		{
-			geometry.vertex_buffer = std::exchange(cached->vertex_buffer, nullptr);
-			geometry.index_buffer = std::exchange(cached->index_buffer, nullptr);
+			geometry.vertex_buffer = std::exchange(into.vertex_buffer, nullptr);
+			geometry.index_buffer = std::exchange(into.index_buffer, nullptr);
 		}
 		else
 		{
-			if (cached) {
-				release_geometry(*cached);
-			}
+			release_geometry(into);
 
 			if (FAILED(dev->CreateVertexBuffer(vertex_bytes, D3DUSAGE_WRITEONLY, 0, D3DPOOL_MANAGED,
 				&geometry.vertex_buffer, nullptr))
@@ -780,8 +887,8 @@ namespace comp
 					D3DPOOL_MANAGED, &geometry.index_buffer, nullptr)))
 			{
 				release_geometry(geometry);
-				m_geometry[model] = geometry;
-				return nullptr;
+				into = std::move(geometry);
+				return false;
 			}
 		}
 
@@ -807,9 +914,39 @@ namespace comp
 		geometry.parts = std::move(parts);
 		geometry.vertex_count = static_cast<uint32_t>(vertices.size());
 
-		auto& slot = m_geometry[model];
-		slot = std::move(geometry);
-		return slot.vertex_buffer ? &slot : nullptr;
+		into = std::move(geometry);
+		return into.vertex_buffer != nullptr;
+	}
+
+	/*
+	 * A copy of a model's geometry that belongs to this scene alone.
+	 *
+	 * Carmageddon 2's smoke draws thirty-five particles from one four-vertex quad, rewriting
+	 * its vertex colours between each one (0x004FB289) -- the model is a stencil, not a mesh.
+	 * Every instance therefore needs its own buffers, but allocating them per particle per
+	 * frame would churn the managed pool, so the entries are pooled and recycled at the start
+	 * of each scene. Their buffers are reused in place whenever the size matches, which for a
+	 * fixed-size stencil is always.
+	 */
+	brender_inject::model_geometry* brender_inject::transient_geometry(IDirect3DDevice9* dev,
+		game::br_model* model, game::br_material* fallback_material)
+	{
+		if (m_transient_used == m_transient.size()) {
+			m_transient.emplace_back();
+		}
+
+		model_geometry& slot = m_transient[m_transient_used++];
+		++m_profile.rebuilds;
+		return build_geometry(dev, model, fallback_material, slot) ? &slot : nullptr;
+	}
+
+	void brender_inject::release_transient()
+	{
+		for (auto& geometry : m_transient) {
+			release_geometry(geometry);
+		}
+		m_transient.clear();
+		m_transient_used = 0;
 	}
 
 	/*
@@ -827,20 +964,27 @@ namespace comp
 	 */
 	void brender_inject::refresh_part_state(model_geometry& geometry) const
 	{
-		const bool follow_transform = shared::common::config::get().effects.texture_transform;
+		const auto& effects = shared::common::config::get().effects;
 
 		geometry.has_opaque = false;
 		geometry.has_blended = false;
 
 		for (auto& part : geometry.parts)
 		{
-			if (follow_transform && part.material && readable(part.material, sizeof(game::br_material)))
+			if (part.material && readable(part.material, sizeof(game::br_material)))
 			{
-				part.texture_transform_active =
-					build_texture_matrix(part.material->map_transform, part.texture_transform);
+				if (effects.texture_transform)
+				{
+					part.texture_transform_active =
+						build_texture_matrix(part.material->map_transform, part.texture_transform);
+				}
+
+				if (effects.material_opacity) {
+					part.opacity = material_opacity(part.material);
+				}
 			}
 
-			if (part.has_alpha) { geometry.has_blended = true; }
+			if (part_is_blended(part)) { geometry.has_blended = true; }
 			else { geometry.has_opaque = true; }
 		}
 	}
@@ -861,6 +1005,8 @@ namespace comp
 			game::br_material* material;
 			uint32_t vertex_base;
 			bool needs_alpha;
+			bool prelit;
+			uint8_t opacity;
 		};
 		std::vector<group_ref> groups;
 		groups.reserve(prepared->ngroups);
@@ -885,10 +1031,26 @@ namespace comp
 				}
 			}
 
-			const bool needs_alpha = material && readable(material, sizeof(game::br_material))
-				&& game::material_needs_alpha(material);
+			const bool live_material = material && readable(material, sizeof(game::br_material));
+			const bool needs_alpha = live_material && game::material_needs_alpha(material);
 
-			groups.push_back({ &group, material, vertex_base + total_vertices, needs_alpha });
+			// With BR_MATF_PRELIT the authored vertex colours are the surface colour and
+			// BRender uses them as they stand. Without it BRender lights the model itself,
+			// and carrying its result over would double up with Remix's own lighting.
+			const auto& effects = shared::common::config::get().effects;
+			const bool prelit = live_material
+				&& (material->flags & game::BR_MATF_PRELIT)
+				&& effects.vertex_colour;
+
+			const uint8_t opacity = live_material && effects.material_opacity
+				? material_opacity(material) : uint8_t{ 255 };
+
+			if (prelit || opacity < 255) {
+				note_shaded_material(material, prelit, opacity);
+			}
+
+			groups.push_back({ &group, material, vertex_base + total_vertices,
+			                   needs_alpha, prelit, opacity });
 			total_vertices += group.nvertices;
 		}
 
@@ -910,6 +1072,12 @@ namespace comp
 
 		for (const auto& ref : groups)
 		{
+			// BrModelUpdate fills this from br_vertex::red/green/blue whenever it is asked
+			// for BR_MODU_VERTEX_COLOURS (0x0051FB66), which is every time the smoke system
+			// recolours a particle. Null means the model was prepared without colours.
+			const uint32_t* colours = ref.prelit && readable(ref.group->vertex_colours,
+				sizeof(uint32_t) * ref.group->nvertices) ? ref.group->vertex_colours : nullptr;
+
 			for (uint16_t v = 0; v < ref.group->nvertices; ++v)
 			{
 				const game::v1_online_vertex& src = ref.group->vertices[v];
@@ -924,6 +1092,7 @@ namespace comp
 				dst.nz = src.nz;
 				dst.u = src.u;
 				dst.v = src.v;
+				dst.diffuse = colours ? to_d3d_colour(colours[v]) : 0xFFFFFFFFu;
 			}
 		}
 
@@ -961,6 +1130,7 @@ namespace comp
 			part.material = material;
 			part.has_alpha = entry.needs_alpha;
 			part.texture_transform = IDENTITY_MATRIX;
+			part.opacity = entry.opacity;
 			part.index_start = static_cast<uint32_t>(indices.size());
 
 			for (const auto& ref : groups)
@@ -1071,7 +1241,7 @@ namespace comp
 			return;
 		}
 
-		const uint64_t key = chunk_key(part.texture, part.has_alpha, record.noncar);
+		const uint64_t key = chunk_key(part.texture, part.has_alpha, record.noncar, part.opacity);
 		size_t chunk_index = SIZE_MAX;
 		if (const auto it = m_open_chunks.find(key); it != m_open_chunks.end())
 		{
@@ -1086,6 +1256,7 @@ namespace comp
 			static_chunk fresh{};
 			fresh.texture = part.texture;
 			fresh.has_alpha = part.has_alpha;
+			fresh.opacity = part.opacity;
 			m_chunks.push_back(std::move(fresh));
 			chunk_index = m_chunks.size() - 1;
 			m_open_chunks[key] = chunk_index;
@@ -1200,17 +1371,21 @@ namespace comp
 	}
 
 	/*
-	 * Marks a material animated once its UV transform is updated in two different scenes.
+	 * Marks a material animated once its appearance is updated in two different scenes.
 	 *
 	 * One update proves nothing: level loading calls BrMaterialUpdate with BR_MATU_ALL for
 	 * every material it touches, all while the scene counter stands still -- an entire
-	 * load burst carries one timestamp. The funkotronic animation is what spans scenes:
-	 * scrolling water updates every frame, a flashing sign every state change. Only those
-	 * must stay out of the sealed chunks, which would freeze them mid-frame.
+	 * load burst carries one timestamp. Animation is what spans scenes: scrolling water
+	 * updates its UV transform every frame, a flashing sign every state change, and a
+	 * fading sprite its opacity. A sealed chunk bakes all three, so anything that moves
+	 * mid-race has to stay on the dynamic path where it is re-read every capture.
 	 */
 	void brender_inject::on_material_update(game::br_material* material, const uint16_t flags)
 	{
-		if (!(flags & game::BR_MATU_MAP_TRANSFORM)) {
+		constexpr uint16_t ANIMATABLE = game::BR_MATU_MAP_TRANSFORM
+			| game::BR_MATU_MATERIAL | game::BR_MATU_EXTRA;
+
+		if (!(flags & ANIMATABLE)) {
 			return;
 		}
 
@@ -1358,6 +1533,9 @@ namespace comp
 		forget_readable_regions();
 		m_queue.clear();
 		m_lines.clear();
+
+		// The queue held pointers into these until the previous scene submitted.
+		m_transient_used = 0;
 	}
 
 	void brender_inject::capture_camera()
@@ -1537,6 +1715,7 @@ namespace comp
 		}
 
 		refresh_part_state(*geometry);
+		geometry->queued_scene = m_scenes_submitted;
 		queued.geometry = geometry;
 		m_queue.push_back(queued);
 
@@ -1769,10 +1948,18 @@ namespace comp
 		dev->SetRenderState(D3DRS_ALPHAREF, 0);
 
 		ensure_white_texture(dev);
-		dev->SetTextureStageState(0, D3DTSS_COLOROP, D3DTOP_SELECTARG1);
+
+		// The two things BRender modulates a surface by, in the two places D3D9 can carry
+		// them: the prelit vertex colour is per vertex and rides in the buffer, while
+		// opacity is one number per material that the game rewrites between draws, so it
+		// rides in the texture factor. Both are identity (white, opaque) for ordinary lit
+		// geometry, which leaves it exactly as the plain texture select did.
+		dev->SetTextureStageState(0, D3DTSS_COLOROP, D3DTOP_MODULATE);
 		dev->SetTextureStageState(0, D3DTSS_COLORARG1, D3DTA_TEXTURE);
-		dev->SetTextureStageState(0, D3DTSS_ALPHAOP, D3DTOP_SELECTARG1);
+		dev->SetTextureStageState(0, D3DTSS_COLORARG2, D3DTA_DIFFUSE);
+		dev->SetTextureStageState(0, D3DTSS_ALPHAOP, D3DTOP_MODULATE);
 		dev->SetTextureStageState(0, D3DTSS_ALPHAARG1, D3DTA_TEXTURE);
+		dev->SetTextureStageState(0, D3DTSS_ALPHAARG2, D3DTA_TFACTOR);
 		dev->SetTextureStageState(1, D3DTSS_COLOROP, D3DTOP_DISABLE);
 
 		// Remix reads the texcoord set from stage 0's TEXCOORDINDEX and then only accepts a
@@ -1898,6 +2085,7 @@ namespace comp
 		IDirect3DTexture9* bound_texture = nullptr;
 		bool texture_bound = false;
 		int bound_blend = -1;
+		int bound_opacity = -1;
 		const auto bind_texture = [&](IDirect3DTexture9* texture)
 		{
 			// Nothing is assumed about what the device already holds -- nGlide left it in an
@@ -1917,6 +2105,15 @@ namespace comp
 				bound_blend = wanted;
 			}
 		};
+		const auto bind_opacity = [&](const uint8_t opacity)
+		{
+			if (opacity != bound_opacity)
+			{
+				dev->SetRenderState(D3DRS_TEXTUREFACTOR,
+					0x00FFFFFFu | (static_cast<uint32_t>(opacity) << 24));
+				bound_opacity = opacity;
+			}
+		};
 
 		dev->SetTransform(D3DTS_WORLD, &IDENTITY_MATRIX);
 
@@ -1925,15 +2122,18 @@ namespace comp
 			if (!chunk.sealed || !chunk.vertex_buffer || !chunk.triangle_count) {
 				continue;
 			}
-			if (!combined && chunk.has_alpha != blended) {
+
+			const bool chunk_blended = chunk.has_alpha || chunk.opacity < 255;
+			if (!combined && chunk_blended != blended) {
 				continue;
 			}
 
 			dev->SetStreamSource(0, chunk.vertex_buffer, 0, sizeof(ffp_vertex));
 			dev->SetIndices(chunk.index_buffer);
 			bind_texture(chunk.texture);
+			bind_opacity(chunk.opacity);
 			if (combined) {
-				bind_blend(chunk.has_alpha);
+				bind_blend(chunk_blended);
 			}
 
 			if (SUCCEEDED(dev->DrawIndexedPrimitive(D3DPT_TRIANGLELIST, 0, 0,
@@ -1956,13 +2156,15 @@ namespace comp
 
 			for (const auto& part : geometry.parts)
 			{
-				if (!combined && part.has_alpha != blended) {
+				const bool part_blended = part_is_blended(part);
+				if (!combined && part_blended != blended) {
 					continue;
 				}
 
 				bind_texture(part.texture);
+				bind_opacity(part.opacity);
 				if (combined) {
-					bind_blend(part.has_alpha);
+					bind_blend(part_blended);
 				}
 
 				// Off for all but a handful of runs, so the stage state is only touched when
@@ -2031,6 +2233,10 @@ namespace comp
 		dev->SetRenderState(D3DRS_SRCBLEND, D3DBLEND_SRCALPHA);
 		dev->SetRenderState(D3DRS_DESTBLEND, D3DBLEND_ONE);
 		dev->SetRenderState(D3DRS_ZWRITEENABLE, FALSE);
+
+		// A streak's brightness is the texture's alone; the last material's opacity must not
+		// carry over into it.
+		dev->SetRenderState(D3DRS_TEXTUREFACTOR, 0xFFFFFFFFu);
 		dev->SetTextureStageState(0, D3DTSS_TEXTURETRANSFORMFLAGS, D3DTTFF_DISABLE);
 		dev->SetTransform(D3DTS_WORLD, &IDENTITY_MATRIX);
 
@@ -2167,6 +2373,31 @@ namespace comp
 			false);
 	}
 
+	/*
+	 * Names every material whose surface the injection now shades rather than taking the
+	 * texture as final: prelit vertex colours, partial opacity, or both.
+	 *
+	 * These two are the only material state that can darken or fade geometry that used to
+	 * come through untouched, so if a scene comes out wrong the log already says which
+	 * materials were involved -- and whether VertexColour or MaterialOpacity is the switch
+	 * to try. One line per distinct material name.
+	 */
+	void brender_inject::note_shaded_material(const game::br_material* material,
+		const bool prelit, const uint8_t opacity)
+	{
+		const std::string name = material->identifier ? material->identifier : "<null>";
+		const std::string state = std::format("{}{}{}",
+			prelit ? "prelit" : "",
+			prelit && opacity < 255 ? ", " : "",
+			opacity < 255 ? std::format("opacity {}/255", opacity) : "");
+
+		if (m_shaded_materials.try_emplace(name, state).second)
+		{
+			shared::common::log("BRender", std::format("shaded material: '{}' - {}", name, state),
+				shared::common::LOG_TYPE::LOG_TYPE_DEFAULT, false);
+		}
+	}
+
 	void brender_inject::note_untextured(const game::br_model* model, const game::br_material* material)
 	{
 		const char* reason = "texture upload failed";
@@ -2243,11 +2474,26 @@ namespace comp
 			return nullptr;
 		}
 
+		// An indexed pixelmap is only half the image; the palette it names holds the colours.
+		// BRender attaches it as br_pixelmap::map, which is what InitSmokeStuff does when it
+		// hands SMOKE.PIX the DRRENDER.PAL pixelmap (0x004FA340).
+		std::array<uint32_t, 256> palette{};
+		if (pm->type == game::BR_PMT_INDEX_8 && !build_palette(pm->map, palette))
+		{
+			if (m_unsupported_types.insert(pm->type).second) {
+				shared::common::log("BRender", std::format(
+					"indexed pixelmap '{}' has no usable palette", pm->identifier ? pm->identifier : "<null>"),
+					shared::common::LOG_TYPE::LOG_TYPE_ERROR, true);
+			}
+			return nullptr;
+		}
+
 		// Bytes per pixel implied by the type must agree with row_bytes, otherwise the
 		// layout has been misread and walking pixels would read arbitrary game memory.
 		uint32_t bpp = 0;
 		switch (pm->type)
 		{
+		case game::BR_PMT_INDEX_8:   bpp = 1; break;
 		case game::BR_PMT_RGB_555:
 		case game::BR_PMT_RGB_565:
 		case game::BR_PMT_RGBA_4444: bpp = 2; break;
@@ -2290,6 +2536,15 @@ namespace comp
 
 				switch (pm->type)
 				{
+				case game::BR_PMT_INDEX_8:
+				{
+					const uint32_t entry = palette[*src];
+					a = (entry >> 24) & 0xFF;
+					r = (entry >> 16) & 0xFF;
+					g = (entry >> 8) & 0xFF;
+					b = entry & 0xFF;
+					break;
+				}
 				case game::BR_PMT_RGB_555:
 				{
 					const uint16_t p = *reinterpret_cast<const uint16_t*>(src);

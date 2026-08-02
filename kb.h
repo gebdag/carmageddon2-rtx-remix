@@ -93,6 +93,8 @@ struct v1_online_vertex {
 /* 2x3 affine UV transform, row-vector: u' = u*m[0][0] + v*m[1][0] + m[2][0]. */
 struct br_matrix23 { float m[3][2]; };          /* 24 bytes */
 
+struct br_token_value { unsigned int token; unsigned int value; };
+
 /* Offsets from MaterialNeedsAlpha (0x0051F630) and the funk material update (0x00478930).
  * Larger than stock BRender 1.3. */
 struct br_material {
@@ -107,10 +109,13 @@ struct br_material {
     unsigned char index_range;      /* 0x3D */
     unsigned short pad3E;
     struct br_pixelmap *colour_map; /* 0x40 */
-    unsigned char pad44[0x08];
-    void *index_shade;              /* 0x4C */
+    void *screendoor;               /* 0x44 */
+    void *index_shade;              /* 0x48 */
+    void *index_blend;              /* 0x4C  MaterialNeedsAlpha reads translucency off this */
     unsigned char pad50[0x08];
-    void *extra;                    /* 0x58  br_token_value list */
+    struct br_token_value *extra;   /* 0x58  NOT always zero-terminated: 'Acc Poly Mat' at
+                                     *       0x005962F8 runs into the next object. Bound any
+                                     *       walk of it. */
     unsigned char pad5C[0x3C];
     unsigned int stored;            /* 0x98  driver-side material; v1_group[0x00] holds this */
 };
@@ -122,7 +127,9 @@ struct br_pixelmap {
     char *identifier;       /* 0x04 */
     void *pixels;           /* 0x08 */
     unsigned int id;        /* 0x0C */
-    unsigned char pad10[0x18];
+    struct br_pixelmap *map;/* 0x10  palette for the INDEX_* types; 0x004FA340 hands
+                             *       SMOKE.PIX the DRRENDER.PAL pixelmap (0x0074A674) */
+    unsigned char pad14[0x14];
     unsigned int row_bytes; /* 0x28 */
     unsigned char type;     /* 0x2C  3=INDEX_8 4=RGB_555 5=RGB_565 6=RGB_888 8=RGBA_8888
                              *       0x12=RGBA_4444 (alpha in the high nibble) */
@@ -193,9 +200,44 @@ enum br_render_style {
     BR_RSTYLE_BOUNDING_FACES = 7,
 };
 
+/* BrMaterialUpdate reads `flags` as a byte only; bits 8-15 of the 0x7FFF callers pass are
+ * ignored. Branch sites: 0x00520EEA, 0x00520F0C, 0x005211CE, 0x005212DB, 0x0052136E,
+ * 0x005213AF, 0x005213DD. */
 enum br_material_update {
-    BR_MATU_MAP_TRANSFORM = 0x0001,
+    BR_MATU_MAP_TRANSFORM = 0x0001, /* -> &material->map_transform, token 0xC8 */
+    BR_MATU_MATERIAL      = 0x0002, /* -> colour/opacity/flags token list */
+    BR_MATU_LIGHTING      = 0x0004,
+    BR_MATU_COLOUR_MAP    = 0x0008,
+    BR_MATU_EXTRA         = 0x0040, /* -> material->extra; how sprites animate opacity */
     BR_MATU_ALL = 0x7FFF,
+};
+
+/* The `flags` argument BrModelUpdate masks, read at 0x0051FAF7..0x0051FB1F. */
+enum br_model_update {
+    BR_MODU_VERTEX_POSITIONS = 0x0001,
+    BR_MODU_VERTEX_COLOURS   = 0x0002, /* fills v1_group::vertex_colours @0x0051FB66 */
+    BR_MODU_VERTEX_MAPPING   = 0x0004,
+    BR_MODU_VERTEX_NORMALS   = 0x0008,
+    BR_MODU_FACE_COLOURS     = 0x0020,
+    BR_MODU_ALL = 0x7FFF,
+};
+
+/* br_material::flags, from the bit tests in BrMaterialUpdate's BR_MATU_MATERIAL branch. */
+enum br_material_flags {
+    BR_MATF_LIGHT   = 0x0001,
+    BR_MATF_PRELIT  = 0x0002,   /* vertex colours are final; sprites carry their tint here */
+    BR_MATF_SMOOTH  = 0x0004,
+    BR_MATF_PERSPECTIVE = 0x0020,
+    BR_MATF_DECAL   = 0x0040,
+};
+
+/* Resolved from the BRender token-name table (records of {char* name, ?, token, type},
+ * 0x00668000..0x0066A400). Both spellings carry the same 0..255 opacity byte -- the fixed
+ * form in its integer part -- and MaterialNeedsAlpha treats either as translucency. */
+enum br_material_token {
+    BRT_BLEND_B   = 0x0085,
+    BRT_OPACITY_X = 0x00BE,
+    BRT_OPACITY_F = 0x00BF,
 };
 
 enum br_matrix_token {
@@ -337,3 +379,20 @@ $ 0x00655e50 int    g_tint_poly_dead        /* NEVER WRITTEN -- stays -1; read o
 @ 0x0046d1c0 void __thiscall Frontend_Setup(void *this /*ecx*/);        /* "START OF FRONTEND_Setup" */
 @ 0x00504230 void RaceLoopPauseHideTintPolys(void);    /* hides only slots 0x655E48 / 0x655E4C -- safe */
 @ 0x005042a0 void RaceLoopPauseRestoreTintPolys(void);
+
+/* --- Smoke / blend sprites (see findings.md section 12) --- */
+@ 0x004f9fc0 void InitSmokeStuff(void);                /* gBlend_model(2), gBlend_actor, 35 "some smoke" materials */
+@ 0x004fb1b0 void DrawSmokeParticles(void);            /* depth-sorts, then one BrZbSceneRenderAdd per particle */
+@ 0x0048ec00 struct br_pixelmap *__thiscall LoadPixelmap(char *name /*ecx*/);
+
+$ 0x0074cf30 void*  g_blend_model           /* br_model* "gBlend_model", 4 verts / 2 faces */
+$ 0x0074cf94 void*  g_blend_model2          /* br_model* "gBlend_model2", 6 verts / 4 faces */
+$ 0x0074caac void*  g_blend_actor           /* br_actor* "gBlend_actor", reused for every particle */
+$ 0x0074a674 void*  g_render_palette        /* br_pixelmap* DRRENDER.PAL, loaded at 0x004B50DA */
+$ 0x006a87f0 void*  g_smoke_draw_records    /* 35 entries, stride 0x24; [0x1C] = the slot's material */
+$ 0x006a880c void*  g_smoke_materials       /* == g_smoke_draw_records + 0x1C, walked as stride 0x24 */
+$ 0x006a8760 void*  g_smoke_draw_list       /* br_actor-less pointer list into the records above */
+$ 0x006aa56c int    g_smoke_draw_count
+$ 0x006b7840 void*  g_smoke_type_colours    /* 16 x 0x00RRGGBB, indexed by particle type nibble */
+$ 0x00660148 void*  g_smoke_extra_tokens    /* { BLEND_B 1 }, { OPACITY_X <rewritten per particle> }, { 0, 0 } */
+$ 0x005962f8 void*  g_accpoly_extra_tokens  /* same shape, value 0x00800000 (128/255); NOT terminated */

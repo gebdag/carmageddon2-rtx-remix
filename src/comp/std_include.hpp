@@ -20,6 +20,8 @@ constexpr auto COMP_MOD_VERSION_PATCH = 1;
 #include <cassert>
 #include <map>
 #include <set>
+#include <array>
+#include <deque>
 #include <unordered_set>
 #include <fstream>
 #include <iostream>

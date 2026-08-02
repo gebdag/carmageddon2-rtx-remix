@@ -798,6 +798,135 @@ models all match `*powerup*.act` (case-insensitively). **But** the models actual
 pickup actor at render time are the *clones*, whose identifiers are `"PowArm"`, `"PowPow"`,
 `"PowOff"` -- match the `"Pow"` prefix, or compare against the three globals in 10.2.
 
+## 12. Sprites: prelit vertex colour and animated opacity (2026-08-02)
+
+Symptom: smoke, dust and exhaust render as flat white puffs at full strength, and other
+translucent effects never thin out. The guess was palettized textures; it is not — a full
+race's log carries **no** `unhandled pixelmap type`, `untextured` or `skipped` line, so every
+colour_map that reached the injection uploaded fine. The colour and the fade never lived in
+the texture at all.
+
+### 12.1 The smoke system
+
+`InitSmokeStuff` @ **0x004F9FC0** builds the whole thing once:
+
+| what | global | built by |
+|---|---|---|
+| `gBlend_model` — 4 vertices, 2 faces (a quad) | `0x0074CF30` | `BrModelAllocate` @0x004F9FD7 |
+| `gBlend_model2` — 6 vertices, 4 faces | `0x0074CF94` | `BrModelAllocate` @0x004F9FED |
+| `gBlend_actor` | `0x0074CAAC` | `BrActorAllocate` @0x004F9FFF |
+| 35 materials all named `"some smoke"` | `0x006A880C`, stride 0x24 | `BrMaterialFind` loop @0x004FA013 |
+
+Both models get `flags |= BR_MODF_KEEP_ORIGINAL` (0x004FA2F0), so their authored
+`br_vertex` array stays alive. Every one of the 35 materials is then given the *same*
+three fields (0x004FA355..0x004FA376):
+
+```
+[mat+0x20] = 0x27          ; LIGHT|PRELIT|SMOOTH|PERSPECTIVE
+[mat+0x58] = 0x00660148    ; extra = { BLEND_B 1 }, { OPACITY_X 0x004B0000 }, { 0, 0 }
+[mat+0x40] = SMOKE.PIX     ; 64x64 BR_PMT_RGBA_4444, a white blob with a 4-bit alpha ramp
+```
+
+`DrawSmokeParticles` @ **0x004FB1B0** depth-sorts the live particles and draws them one at
+a time through the one shared actor. The particle record is 0x24 bytes at `0x006A87F0`
+(`+0x00` world position, `+0x0C` size, `+0x10` alpha, `+0x14` RGB from the 16-entry type
+table at `0x006B7840`, `+0x18` aspect, `+0x1C` the slot's material, `+0x20` the model):
+
+```
+0x004FB1FA  actor->t.translate  = record[0x00..0x08]
+0x004FB21C  actor->t.m[0][0]    = record[0x0C]
+0x004FB236  actor->material     = record[0x1C]
+0x004FB23C  fld [rec+0x10] / fmul 150.0 / fmul 65536.0 / ftol
+0x004FB258  mov [material->extra + 0x0C], eax     ; OPACITY_X value
+0x004FB25F  BrMaterialUpdate(material, 0x40)      ; BR_MATU_EXTRA
+0x004FB289  vertex[i].red/green/blue = record[0x14]   for every vertex
+0x004FB2AF  BrModelUpdate(model, 2)               ; BR_MODU_VERTEX_COLOURS
+0x004FB2C7  BrZbSceneRenderAdd(gBlend_actor)
+```
+
+**So a smoke puff's entire colour is the model's vertex RGB and its entire fade is one
+token in the material's extra list.** The material never changes, the texture is white, and
+both channels the game does use were being dropped. Everything the proxy submitted was
+therefore a fully opaque white quad — exactly the reported symptom.
+
+### 12.2 Opacity is a 0..255 byte, whichever token spells it
+
+`MaterialNeedsAlpha` @ 0x0051F630 tests `extra` for tokens **0xBE** and **0xBF**. The
+BRender token-name table (records of `{char* name, ?, token, type}` at 0x00668000..0x0066A400)
+resolves those to `OPACITY_X` (fixed) and `OPACITY_F` (float); `0x85` is `BLEND_B`. It also
+corrects `kb.h`: `material+0x4C` is **index_blend**, not index_shade (0x44 screendoor,
+0x48 index_shade).
+
+`BrMaterialUpdate`'s BR_MATU_MATERIAL branch pins the scale (0x00520F0C onward):
+
+```
+0x00520F18  token 0x0E COLOUR_RGB   = material->colour
+0x00520F29  token 0xBF OPACITY_F    = (float)material->opacity * 0.003922   ; 1/255
+0x00520F48  token 0x85 BLEND_B      = (material->opacity != 0xFF)
+```
+
+so `br_material::opacity` is a 0..255 byte and blending follows from it. The two runtime
+writers of `OPACITY_X` agree the fixed form carries that same byte in its integer part:
+smoke writes `alpha * 150` (peaking at 150/255 ≈ 59%) and `'Acc Poly Mat'` writes
+`0x00800000` = 128 at 0x0045AAB4. The `BLEND25/50/75.TAB` shade tables in `DATA/SHADETAB`
+name the same quantity.
+
+Note `'Acc Poly Mat'`'s list at 0x005962F8 is **not** zero-terminated — the next object's
+bytes follow it — so any walk of `extra` has to bound itself.
+
+### 12.3 Prelit is the flag that says "the vertex colour is the colour"
+
+`BrModelUpdate` writes the prepared group's colour array at 0x0051FB66:
+
+```
+vertex_colours[v] = (vertex.index << 24) | (red << 16) | (green << 8) | blue
+```
+
+guarded by the update flags read at 0x0051FAF7: `1` positions, `2` vertex colours, `4` UVs,
+`8` normals, `0x20` face colours — i.e. BRender's `BR_MODU_*`. The top byte is the palette
+index, not alpha.
+
+Whether that colour is the surface colour is `BR_MATF_PRELIT` (0x2). Without it BRender
+lights the model at render time and the prepared colours are just the authored ones, so
+carrying them into Remix would double up with Remix's own lighting. With it — smoke
+(flags 0x27) and `gLine_material` (flags 0x1007) — they are final. Track materials sampled
+from `DATA/MATERIAL/*.MAT` carry flags 0 or `BR_MATF_LIGHT`, so gating on PRELIT leaves the
+world untouched.
+
+### 12.4 What the proxy does now
+
+* `ffp_vertex` carries a `D3DCOLOR` diffuse, filled from `v1_group::vertex_colours` for
+  prelit materials and left white otherwise. Stage 0 becomes
+  `COLOROP = MODULATE(TEXTURE, DIFFUSE)`, which is identity for everything else.
+* `material_opacity()` resolves `br_material::opacity` and any OPACITY token in `extra`
+  into a 0..255 byte, re-read every capture (the smoke rewrites it between particles).
+  It rides in `D3DRS_TEXTUREFACTOR`'s alpha with
+  `ALPHAOP = MODULATE(TEXTURE, TFACTOR)`, and anything below 255 moves into the
+  translucent pass — which is what `BLEND_B` does in BRender.
+* Opacity joins `chunk_key`, since a sealed chunk draws under one texture factor.
+* `on_material_update` now treats BR_MATU_MATERIAL and BR_MATU_EXTRA as animation too, so a
+  material whose opacity moves between scenes is demoted out of the static world.
+* `upload_pixelmap` handles `BR_PMT_INDEX_8` through `br_pixelmap::map` (offset **0x10**,
+  confirmed at 0x004FA340 where SMOKE.PIX is handed the DRRENDER.PAL pixelmap). No shipped
+  texture has needed it so far; it closes the gap that would otherwise show as white.
+
+### 12.5 One model, many instances: transient geometry
+
+The smoke draws 35 particles from one 4-vertex quad, calling `BrModelUpdate` between each.
+`m_geometry` is keyed by `br_model`, so all 35 queued draws pointed at one entry and would
+have shown the last particle's colours. That was invisible while the buffers held only
+positions — identical for every particle — and became a real defect the moment the vertex
+colour went in.
+
+`geometry_for` now detects a rebuild of a model the current scene has already queued and
+builds into a pooled `model_geometry` that lives for that scene (`m_transient`, a deque so
+the queue's pointers stay valid, recycled rather than reallocated each scene).
+
+New switches, both default on: `[Effects] VertexColour` and `[Effects] MaterialOpacity`.
+The log names every material either one touches (`shaded material: '<name>' - ...`).
+
+---
+
 ## 11. ESC-menu crash: `TintPolyHide(-1)` (2026-07-31)
 
 Crash dump: `%LOCALAPPDATA%\CrashDumps\CARMA2_HW.EXE.27856.dmp`

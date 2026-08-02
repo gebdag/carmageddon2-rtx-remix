@@ -102,6 +102,8 @@ namespace shared::common
 		effects.translucent_pass = get_bool("Effects", "TranslucentPass", true);
 		effects.texture_transform = get_bool("Effects", "TextureTransform", true);
 		effects.sparks = get_bool("Effects", "Sparks", true);
+		effects.vertex_colour = get_bool("Effects", "VertexColour", true);
+		effects.material_opacity = get_bool("Effects", "MaterialOpacity", true);
 		effects.decal_offset = get_float("Effects", "DecalOffset", 0.02f);
 		effects.spark_width = get_float("Effects", "SparkWidth", 0.004f);
 
