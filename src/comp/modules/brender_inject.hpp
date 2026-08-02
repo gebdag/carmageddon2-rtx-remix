@@ -308,6 +308,15 @@ namespace comp
 
 		void submit(IDirect3DDevice9* dev);
 
+		// Publishes the race's depth cue as fixed-function fog render states so Remix's
+		// legacy fog remapping can pick it up from the injected draws.
+		void apply_fog(IDirect3DDevice9* dev);
+
+		// Last fog state pushed to the device, so changes are logged once rather than
+		// per scene. Colour 0xFFFFFFFF marks "nothing logged yet" — no real state matches,
+		// because a br_colour never carries an alpha byte.
+		game::scene_fog m_logged_fog{ false, 0xFFFFFFFFu, 0.0f, 0.0f };
+
 		enum class pass_kind
 		{
 			opaque,    // depth writes on, blending off

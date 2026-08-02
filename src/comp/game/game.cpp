@@ -85,6 +85,50 @@ namespace comp::game
 		}
 	}
 
+	scene_fog read_scene_fog()
+	{
+		scene_fog fog{};
+
+		const auto read_int = [](const uint32_t addr) {
+			return *reinterpret_cast<const int*>(rebase(addr));
+		};
+
+		const int type = read_int(ADDR_g_fogType);
+		if (type < 0 || type > 2) {
+			return fog;
+		}
+
+		// ApplyDepthCueToMaterial (0x004451EF..0x00445245): the two TXT exponents place
+		// the fog band on a log scale around the Yon draw distance.
+		const float yon = *reinterpret_cast<const float*>(rebase(ADDR_g_yon));
+		fog.min_distance = yon * std::pow(10.0f, static_cast<float>(-read_int(ADDR_g_fogP1)) * 0.1f);
+		fog.max_distance = yon * std::pow(10.0f, static_cast<float>(read_int(ADDR_g_fogP2)) * 0.1f);
+		fog.enabled = fog.max_distance > fog.min_distance;
+
+		// Per-mode colour, from the jump table at 0x00445328: "dark" fades to black,
+		// "fog" to near-white, "colour" to the level's authored RGB.
+		switch (type)
+		{
+		case 0:
+			fog.colour = 0x000000u;
+			break;
+		case 1:
+			fog.colour = 0xF8F8F8u;
+			break;
+		default:
+		{
+			const auto channel = [&](const uint32_t addr) {
+				return static_cast<uint32_t>(std::clamp(read_int(addr), 0, 255));
+			};
+			fog.colour = (channel(ADDR_g_fogR) << 16) | (channel(ADDR_g_fogG) << 8)
+				| channel(ADDR_g_fogB);
+			break;
+		}
+		}
+
+		return fog;
+	}
+
 	// Every address this port needs is a fixed RVA in a non-relocatable executable, so there
 	// is nothing to pattern-scan for. They live as constants in game.hpp; this hook only
 	// reports the module base so a mismatch is obvious in the log.

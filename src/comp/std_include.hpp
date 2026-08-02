@@ -14,7 +14,9 @@ constexpr auto COMP_MOD_VERSION_PATCH = 1;
 #include <stdlib.h>
 #include <string.h>
 #include <shellapi.h>
+#include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <mutex>
 #include <filesystem>
 #include <cassert>

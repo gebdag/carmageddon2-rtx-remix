@@ -693,7 +693,7 @@ namespace comp
 			shared::common::log("BRender", std::format(
 				"Hooked the BRender scene walk - model-space injection armed. Static world {},"
 				" frustum culling {}, game render {}, translucent pass {}, texture transform {},"
-				" sparks {}, vertex colour {}, material opacity {}, decal offset {:.3f},"
+				" sparks {}, vertex colour {}, material opacity {}, fog {}, decal offset {:.3f},"
 				" spark width {:.3f}.",
 				cfg.optimization.static_world ? "on" : "OFF",
 				cfg.culling.disable_frustum ? "DISABLED" : "on",
@@ -703,6 +703,7 @@ namespace comp
 				cfg.effects.sparks ? "on" : "OFF",
 				cfg.effects.vertex_colour ? "on" : "OFF",
 				cfg.effects.material_opacity ? "on" : "OFF",
+				cfg.effects.fog ? "on" : "OFF",
 				cfg.effects.decal_offset, cfg.effects.spark_width),
 				shared::common::LOG_TYPE::LOG_TYPE_GREEN, true);
 		}
@@ -2203,6 +2204,10 @@ namespace comp
 		dev->SetRenderState(D3DRS_ALPHAFUNC, D3DCMP_GREATER);
 		dev->SetRenderState(D3DRS_ALPHAREF, 0);
 
+		if (shared::common::config::get().effects.fog) {
+			apply_fog(dev);
+		}
+
 		ensure_white_texture(dev);
 
 		// The two things BRender modulates a surface by, in the two places D3D9 can carry
@@ -2313,6 +2318,58 @@ namespace comp
 		if ((m_scenes_submitted % 600) == 0) {
 			evict_stale_geometry();
 		}
+	}
+
+	/*
+	 * The race's depth cue, restated as D3D9 fixed-function fog.
+	 *
+	 * The game has no scene fog of its own -- the race TXT's depth-cue block is baked into
+	 * each material's fog fields and pushed to the Glide driver as a fog table, none of
+	 * which survives nGlide's shader path onto the D3D9 device. Remix's legacy fog
+	 * remapping reads D3DRS_FOGENABLE / FOGCOLOR / FOGSTART / FOGEND off the first fogged
+	 * draw of a frame to derive its volumetric transmittance colour and distance, so the
+	 * injected draws are where the depth cue re-enters the pipeline. The state block
+	 * restore at the end of submit keeps it off nGlide's stream.
+	 *
+	 * The depth cue is always distance-linear (BrMaterialUpdate emits BRT_FOG_T = LINEAR,
+	 * 0x005210FE), so linear vertex fog with the game's own min/max is the whole mapping.
+	 * The sky needs no exclusion here: the game fogs HORIZON.MAT through a shade table
+	 * rather than a fog flag, and the horizon never passes through this injection.
+	 */
+	void brender_inject::apply_fog(IDirect3DDevice9* dev)
+	{
+		const game::scene_fog fog = game::read_scene_fog();
+
+		if (fog.enabled != m_logged_fog.enabled
+			|| fog.colour != m_logged_fog.colour
+			|| fog.min_distance != m_logged_fog.min_distance
+			|| fog.max_distance != m_logged_fog.max_distance)
+		{
+			shared::common::log("BRender", fog.enabled
+				? std::format("depth cue: fog colour {:06X}, {:.2f} to {:.2f} world units",
+					fog.colour, fog.min_distance, fog.max_distance)
+				: std::string("depth cue: none"));
+			m_logged_fog = fog;
+		}
+
+		dev->SetRenderState(D3DRS_FOGENABLE, fog.enabled ? TRUE : FALSE);
+		if (!fog.enabled) {
+			return;
+		}
+
+		const auto as_dword = [](const float value)
+		{
+			DWORD out;
+			std::memcpy(&out, &value, sizeof(out));
+			return out;
+		};
+
+		dev->SetRenderState(D3DRS_FOGTABLEMODE, D3DFOG_NONE);
+		dev->SetRenderState(D3DRS_FOGVERTEXMODE, D3DFOG_LINEAR);
+		dev->SetRenderState(D3DRS_FOGCOLOR, fog.colour);
+		dev->SetRenderState(D3DRS_FOGSTART, as_dword(fog.min_distance));
+		dev->SetRenderState(D3DRS_FOGEND, as_dword(fog.max_distance));
+		dev->SetRenderState(D3DRS_FOGDENSITY, as_dword(1.0f));
 	}
 
 	/*

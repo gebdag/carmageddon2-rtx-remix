@@ -145,11 +145,18 @@ namespace comp::game
 		void* index_blend;      // 0x4C  MaterialNeedsAlpha treats this as translucency
 		uint8_t pad50[0x08];
 		br_token_value* extra;  // 0x58
-		uint8_t pad5C[0x3C];
+
+		// Baked in by ApplyDepthCueToMaterial (0x004451A0) from the race's depth-cue
+		// block: min/max are world units on the camera hither/yon scale, colour is
+		// 0x00RRGGBB. Only read when flags carries BR_MATF_FOG_LOCAL.
+		float fog_min;          // 0x5C
+		float fog_max;          // 0x60
+		uint32_t fog_colour;    // 0x64
+		uint8_t pad68[0x30];
 		uint32_t stored;        // 0x98  driver-side prepared material; groups key off this
 	};
 
-	// br_material::flags. Only the two the injection acts on are named; the rest are
+	// br_material::flags. Only the ones the injection acts on are named; the rest are
 	// rasterizer hints BRender resolves before anything reaches this proxy.
 	enum br_material_flags : uint32_t
 	{
@@ -160,6 +167,11 @@ namespace comp::game
 		// carry their tint this way: the smoke system rewrites gBlend_model's vertex RGB
 		// per particle (0x004FB289) and the spark emitter does the same (0x004F7CB0).
 		BR_MATF_PRELIT = 0x0002,
+
+		// This material is fogged with its fog_min/fog_max/fog_colour fields.
+		// BrMaterialUpdate publishes them as BRT_FOG_* tokens only when this is set
+		// (0x005210FE); the sky's HORIZON.MAT deliberately never carries it.
+		BR_MATF_FOG_LOCAL = 0x00080000,
 	};
 
 	// br_token values the material's extra list can carry. Both name the same quantity --

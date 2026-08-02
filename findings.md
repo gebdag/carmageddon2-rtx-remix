@@ -1466,3 +1466,242 @@ longer manufacture a transition out of the default.
 
 The two `UV transform` evictions in the same log (`room2`, `gDefault_track_material`, at
 the frontend boundary) are the genuine article and cost 7 actors between them.
+
+---
+
+## 21. Fog / depth cue (2026-08-02)
+
+### Summary
+
+C2 has no global fog state in the renderer. Fog is **per-`br_material`**: the race TXT
+carries one "depth cue" block, the loader stores it in a small block of globals, and
+`ApplyDepthCueToMaterial` (0x004451A0) bakes it into `flags` / `fog_min` / `fog_max` /
+`fog_colour` of each material that needs it. `BrMaterialUpdate` (0x00520E70) then publishes
+those four fields to the renderer as `BRT_FOG_T / FOG_MIN_F / FOG_MAX_F / FOG_RGB` on the
+`BRT_PRIMITIVE` state part. A d3d9 proxy hooking `ModelRenderStyle_Faces` already has the
+material pointer, so **fog can be read straight off the material** -- no token interception
+needed -- with the level globals available as a cross-check.
+
+### Key Addresses
+
+| Address | Description |
+|---------|-------------|
+| 0x00504BF0 | Race/level TXT loader; depth-cue block parsed at 0x00505E6B..0x00505EC7 |
+| 0x00660E90 | Depth-cue mode keyword table: `{"dark","fog","colour"}` (index 0,1,2; no match = -1) |
+| 0x0048FA70 | ParseEnumFromList(ecx=file, edx=table, count) -> index |
+| 0x0048FDC0 | ParseTwoInts(ecx=file, edx=&a, [b]) -- `"%d"`, separators `"\t ,/"` |
+| 0x0048FE30 | ParseThreeInts(ecx=file, edx=&r, [g],[b]) |
+| 0x00481C29 | Level start: `SetDepthCue(level block..., apply=1)` |
+| 0x00445340 | **SetDepthCue** -- stores live state, then walks material lists applying it |
+| 0x004451A0 | **ApplyDepthCueToMaterial(ecx = br_material\*)** -- writes flags/fog_min/fog_max/fog_colour |
+| 0x00447220 | CommitLevelDepthCue -- copies the level block into the live block |
+| 0x00446CC0 | Debug key: cycles depth-effect mode ("Fog mode" / "Colour Fog mode" / "Darkness mode" / "Depth effects disabled") |
+| 0x00520E70 | `BrMaterialUpdate(material, parts)`; fog tokens emitted at 0x005210FE..0x00521150 |
+| 0x00521181 | `g_pRenderer->vtbl+0x84` (partSetMany) with part `BRT_PRIMITIVE` (0x7C) |
+| 0x00445620 | Loads DEPTHCUE.TAB / FOG.TAB / ACIDFOG.TAB / BLUEGIT.TAB shade tables + HORIZON.MAT |
+
+### 21.1 `br_material` fog fields (BRender struct-reflection table at 0x006637F0)
+
+The file-format reflection table for `br_material` (struct size 0x9C) names them explicitly:
+
+```
+type=0x05 off=0x20  flags
+type=0x0a off=0x5c  fog_min          (br_scalar -> float in this build)
+type=0x0a off=0x60  fog_max          (br_scalar -> float)
+type=0x12 off=0x64  fog_colour       (br_colour)
+```
+
+* `flags & 0x00080000` = **`BR_MATF_FOG_LOCAL`** -- fog enable for this material.
+  (Confirmed by the neighbouring bits in `BrMaterialUpdate`: 0x10000 -> `MAP_ANTIALIASING_T`,
+  0x20000 -> `MAP_INTERPOLATION_T`, 0x40000 -> `MIP_INTERPOLATION_T`, 0x80000 -> `FOG_T`.)
+* `fog_min` / `fog_max` are **IEEE floats**, not 16.16 fixed. This build is the float BRender:
+  `BrMaterialUpdate` emits `FOG_MIN_F` (0x97) / `FOG_MAX_F` (0x99), never the `_X` fixed-point
+  tokens 0x98 / 0x9A.
+* `fog_colour` is `BR_COLOUR` = **0x00RRGGBB** (packed at 0x004452F8: `edi = ((R<<8)|G)<<8 | B`).
+
+### 21.2 The level depth-cue globals
+
+Parsed straight out of the race TXT at 0x00505E6B (all `int`):
+
+| Address | Field |
+|---------|-------|
+| 0x0075D744 | `g_depthCueType` -- -1 none, **0 dark**, **1 fog**, **2 colour** (keyword table 0x00660E90) |
+| 0x0075D748 | `g_depthCueP1` -- fog-start exponent (decibel-ish, see formula) |
+| 0x0075D74C | `g_depthCueP2` -- fog-end exponent |
+| 0x0075D750 | `g_depthCueR` (0..255) |
+| 0x0075D754 | `g_depthCueG` |
+| 0x0075D758 | `g_depthCueB` |
+| 0x0075D75C | `g_depthCueShadeTable` -- `br_pixelmap*` (DEPTHCUE/FOG/ACIDFOG/BLUEGIT .TAB) |
+
+`SetDepthCue` mirrors that block into the **live** set, which is what actually drives the
+materials -- this is the set a proxy should read every frame:
+
+| Address | Field |
+|---------|-------|
+| 0x0075D760 | `g_fogType` (live) |
+| 0x0075D764 | `g_fogP1` (live) |
+| 0x0075D768 | `g_fogP2` (live) |
+| 0x0075D76C | `g_fogR` (live) |
+| 0x0075D770 | `g_fogG` (live) |
+| 0x0075D774 | `g_fogB` (live) |
+| 0x0075D778 | `g_fogShadeTable` (live `br_pixelmap*`) |
+| 0x0074CAA8 / 0x0074CF2C / 0x0074CAD0 | duplicate copies of level R / G / B (written at 0x00505EB6) |
+| 0x00761F4C | `g_yon` -- float view-depth / far-distance scale, default **5.0** (0x40A00000), tweakable by debug keys; also written into camera `+0xC` (yon_z) at 0x0047DA0B and 0x0047E405 |
+
+Right after parsing, 0x00505EDF has a conditional override: if the mode is not already 1 it is
+forced to `type=1 (fog), p1=7, p2=0, RGB=(0xF8,0xF8,0xF8)` -- a hard-coded white-fog fallback.
+
+### 21.3 Value formats -- how the TXT ints become fog distances
+
+`ApplyDepthCueToMaterial` (0x004451A0), for every mode except "off":
+
+```
+material->fog_min   = g_yon * pow(10.0, -g_fogP1 * 0.1)      ; 0x004451EF..0x00445226
+material->fog_max   = g_yon * pow(10.0,  g_fogP2 * 0.1)      ; 0x00445210..0x00445245
+material->flags    |= 0x00080000                              ; BR_MATF_FOG_LOCAL
+BrMaterialUpdate(material, 0x7FFF)                            ; 0x00445310
+```
+
+Constants: 10.0 @0x00589CA8 (double), 0.1 @0x00589CB0 (double), `pow` @0x005769A0,
+`g_yon` @0x00761F4C.
+
+So `fog_min`/`fog_max` are **BRender world units, the same units as the camera hither/yon**,
+expressed relative to `g_yon`. With the debug default `p1=10, p2=0` and `g_yon=5.0` that gives
+`fog_min = 0.5`, `fog_max = 5.0`.
+
+Per-mode `fog_colour` (jump table at 0x00445328, index = `type + 1`):
+
+| type | mode | code | fog_colour |
+|------|------|------|-----------|
+| -1 | off | 0x004451E3 | `flags &= ~0x00080000` (fog disabled, nothing else written) |
+| 0 | dark | 0x004451EF | `0x00000000` (black -- depth-darkening) |
+| 1 | fog | 0x00445250 | `0x00F8F8F8` (near-white) |
+| 2 | colour | 0x004452AE | `(R<<16)|(G<<8)|B` from the live globals |
+
+### 21.4 How it reaches the renderer / driver
+
+`BrMaterialUpdate` 0x00520E70 builds a `{token, value}` pair array on the stack and submits it
+in one call. The fog part (0x005210FE):
+
+```
+edx = material->flags & 0x00080000
+pairs += { BRT_FOG_T (0x95), edx ? BRT_LINEAR (0x93) : BRT_NONE (0x01) }
+if (edx) {
+    pairs += { BRT_FOG_MIN_F (0x97), material->fog_min  }   ; [esi+0x5C]
+    pairs += { BRT_FOG_MAX_F (0x99), material->fog_max  }   ; [esi+0x60]
+    pairs += { BRT_FOG_RGB   (0x96), material->fog_colour } ; [esi+0x64]
+}
+...
+g_pRenderer->vtbl[0x84](g_pRenderer, BRT_PRIMITIVE /*0x7C*/, 0, pairs, &out)   ; 0x00521181
+```
+
+Token values resolved from the BRender token-name table (records are 0x18 bytes,
+`{char* name, type, token, part}`, aligned on 0x00668C58):
+
+| Token | Value | Data type |
+|-------|-------|-----------|
+| `FOG_T` | 0x95 | enum (`NONE`=0x01 / `LINEAR`=0x93) |
+| `FOG_RGB` | 0x96 | br_colour |
+| `FOG_MIN_F` | 0x97 | float |
+| `FOG_MAX_F` | 0x99 | float |
+| `FOG_MIN_X` | 0x98 | br_fixed (unused by this build) |
+| `FOG_MAX_X` | 0x9A | br_fixed (unused) |
+| `FOG_TL` | 0x12F | table/pixelmap variant, unused here |
+| `PRIMITIVE` | 0x7C | state part these live on |
+
+**Glide driver.** `hardware_3dfx.bdd` imports exactly three fog entry points from `glide2x.dll`:
+
+```
+_grFogMode@4         IAT 0x1000B24C   thunk 0x1000598C
+_grFogColorValue@4   IAT 0x1000B250   thunk 0x10005986
+_grFogTable@4        IAT 0x1000B254   thunk 0x10005980
+```
+
+All consumed by one state-apply function at **0x10001100** (driver-local fog state struct):
+
+```
++0x2C fog type   -> 1 (NONE) ? grFogMode(0) : grFogMode(2 /*GR_FOG_WITH_TABLE_ON_Q*/)
++0x30 fog colour -> grFogColorValue()          (cached in 0x10011718)
++0x34 fog_min    \  cached in 0x1000D034 / 0x1001171C; log/exp-mapped into a 64-entry
++0x38 fog_max    /  byte table at 0x100116D8 -> grFogTable()  (0x100011FF)
+```
+
+That is the proof the four material fields reach the hardware unchanged.
+`hardware_d3d.bdd` contains no fog strings and no matching state block -- the D3D backend
+does not implement fog at all.
+
+### 21.5 Per-material exclusions (what is *not* fogged)
+
+Fog is opt-in per material via `BR_MATF_FOG_LOCAL`. Two sources set it:
+
+1. **Authored** -- track/world materials come from `.MAT` files with the flag already set
+   (or not). Nothing at load time forces it on for the whole scene.
+2. **Patched at runtime** by `SetDepthCue` 0x00445340, which walks a *specific* list of
+   engine-generated materials and calls `ApplyDepthCueToMaterial` on each:
+   `[0x0075BB60]`, `[0x007634B8]`, the per-car material arrays at `0x00763090`
+   (`[0x00762430]` entries, each iterating `[car+0xE14]` materials at `[car+0xE0C]`),
+   `BrMaterialFind("GIBSLICK")`, `BrMaterialFind("PEDSMEAR")`, `0x0074CEE8..0x0074CEF0`,
+   `0x007632CC..0x00763484` (stride 0x28), and `[0x0074B74C]`.
+   Additional call sites: 0x004EA799 / 0x004EA7F2 (0x006A3340 material array, count
+   `[0x006A6D38]`) and 0x004F2BE4.
+
+**The sky/horizon is deliberately excluded.** `HORIZON.MAT` is held in `[0x0067C4E0]` and is
+never passed to `ApplyDepthCueToMaterial`; instead `SetDepthCue` writes the shade-table
+pixelmap into `horizonMat->colour_map` (`+0x40`) and calls `BrMaterialUpdate(mat, 0x7FFF)`
+(0x00445361..0x00445376). The horizon gets its depth cue from the indexed shade table, not
+from `BR_MATF_FOG_LOCAL`, so a proxy must not apply scene fog to it.
+
+Related pixelmap globals loaded at 0x00445620:
+`0x0079EC20` DEPTHCUE.TAB, `0x0079EC38` FOG.TAB, `0x0079EC24` ACIDFOG.TAB,
+`0x0079EC28` BLUEGIT.TAB, `0x0067C4E0` HORIZON.MAT (`br_material*`),
+`0x0067C4A0` SHADETAB (`br_pixelmap*`).
+
+### Suggested Live Verification
+
+* Read `[0x0075D760]` (type) and `[0x0075D764..0x0075D774]` after a race loads on a foggy
+  level and confirm they match the TXT.
+* Breakpoint 0x004451A0 during level load; dump `ecx` and the resulting
+  `[ecx+0x20] & 0x80000`, `[ecx+0x5C]`, `[ecx+0x60]`, `[ecx+0x64]` to confirm the formula
+  and the 0x00RRGGBB packing.
+* In the proxy's `ModelRenderStyle_Faces` hook, log `material->flags & 0x80000` per draw and
+  check that the sky/horizon group comes through with the bit clear.
+* `mem write` `[0x00761F4C]` (g_yon) and confirm fog distances move with it -- that decides
+  whether fog range should be re-derived from the proxy's own far plane.
+
+---
+
+## 22. Fog restored through Remix's legacy fog remapping (2026-08-02)
+
+Section 21's depth cue is now re-published by the proxy. dxvk-remix's `setFogState`
+(d3d9_rtx_utils.cpp) captures the plain fixed-function fog render states off every draw --
+`D3DRS_FOGENABLE / FOGCOLOR / FOGSTART / FOGEND / FOGTABLEMODE / FOGVERTEXMODE` -- and its
+scene manager renders "the first unreplaced fog" of the frame. With
+`rtx.volumetrics.enableFogRemap` on, a `D3DFOG_LINEAR` state's colour and end distance drive
+the volumetric transmittance colour and measurement distance
+(rtx_global_volumetrics.cpp:472).
+
+`apply_fog` in `submit()` therefore sets exactly those states before the injected passes,
+and the state-block restore keeps them off nGlide's stream. Values come from
+`game::read_scene_fog()`, which mirrors `ApplyDepthCueToMaterial` from the live globals
+each scene: type (`[0x0075D760]`, -1/0/1/2) picks the colour (black / 0xF8F8F8 / level RGB),
+and `fog_min/max = g_yon * 10^(∓p/10)` with the exponents from `[0x0075D764/68]` and g_yon
+from `[0x00761F4C]`. Always `D3DFOG_LINEAR` -- the game's BrMaterialUpdate never emits any
+other fog type (0x005210FE). Reading the globals rather than sampling baked materials means
+the fog survives the static world: a sealed chunk's materials are never re-read, but the
+globals are live every scene, and the debug keys that cycle the depth-cue mode mid-race
+(0x00446CC0) are reflected immediately. The change is logged once per state change as
+`depth cue: fog colour RRGGBB, min to max world units`.
+
+Switch: `[Effects] Fog`, default on. Remix side: `rtx.conf` now carries
+`rtx.volumetrics.enableFogRemap = True` and `enableFogColorRemap = True` (colour remap is
+off by default in Remix and without it a track's red haze would stay grey);
+`enableFogMaxDistanceRemap` already defaults on. The remap only takes effect while Remix's
+volumetric lighting is enabled. The sky needs no exclusion on our side -- HORIZON.MAT is
+fogged through a shade table, never through `BR_MATF_FOG_LOCAL`, and the horizon never
+passes through the injection; `rtx.fogIgnoreSky` exists as a further guard if it ever does.
+
+Not carried over: the per-material `fog_min/max/colour` fields (all materials share the
+level values in practice -- Remix supports one fog per frame anyway) and the indexed shade
+tables (DEPTHCUE/FOG/ACIDFOG/BLUEGIT.TAB), which only matter to the software renderer's
+palette path.
+

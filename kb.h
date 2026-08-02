@@ -396,3 +396,62 @@ $ 0x006aa56c int    g_smoke_draw_count
 $ 0x006b7840 void*  g_smoke_type_colours    /* 16 x 0x00RRGGBB, indexed by particle type nibble */
 $ 0x00660148 void*  g_smoke_extra_tokens    /* { BLEND_B 1 }, { OPACITY_X <rewritten per particle> }, { 0, 0 } */
 $ 0x005962f8 void*  g_accpoly_extra_tokens  /* same shape, value 0x00800000 (128/255); NOT terminated */
+
+/* --- Fog / depth cue (see findings.md section 21) --- */
+/* br_material fog fields (struct size 0x9C, reflection table @ 0x006637F0):
+     +0x20 flags   bit 0x00080000 = BR_MATF_FOG_LOCAL (fog enable)
+     +0x5C float   fog_min      world units, same scale as camera hither/yon
+     +0x60 float   fog_max
+     +0x64 BR_COLOUR fog_colour 0x00RRGGBB                                     */
+enum BrMaterialFogFlag { BR_MATF_FOG_LOCAL = 0x00080000 };
+enum BrFogToken {
+    BRT_NONE      = 0x001,
+    BRT_LINEAR    = 0x093,
+    BRT_FOG_T     = 0x095,   /* value = BRT_LINEAR or BRT_NONE */
+    BRT_FOG_RGB   = 0x096,   /* br_colour  0x00RRGGBB */
+    BRT_FOG_MIN_F = 0x097,   /* float */
+    BRT_FOG_MIN_X = 0x098,   /* br_fixed, unused by this build */
+    BRT_FOG_MAX_F = 0x099,   /* float */
+    BRT_FOG_MAX_X = 0x09A,   /* br_fixed, unused */
+    BRT_FOG_TL    = 0x12F,
+    BRT_PRIMITIVE = 0x07C    /* state part the fog tokens live on */
+};
+enum DepthCueType { DEPTHCUE_OFF = -1, DEPTHCUE_DARK = 0, DEPTHCUE_FOG = 1, DEPTHCUE_COLOUR = 2 };
+
+@ 0x00445340 void __fastcall SetDepthCue(int type /*ecx*/, void *shade_table /*edx*/, int p1, int p2, int r, int g, int b, int apply); /* ret 0x18 */
+@ 0x004451a0 void __fastcall ApplyDepthCueToMaterial(void *material /*ecx*/); /* writes flags|0x80000, fog_min, fog_max, fog_colour, then BrMaterialUpdate(mat,0x7FFF) */
+@ 0x00447220 void CommitLevelDepthCue(void);           /* level block 0x75D744.. -> live block 0x75D760.. */
+@ 0x00446cc0 void CycleDepthEffectMode(void);          /* debug key: "Fog mode"/"Colour Fog mode"/"Darkness mode"/"Depth effects disabled" */
+@ 0x00445620 void LoadDepthCueTables(void);            /* DEPTHCUE/FOG/ACIDFOG/BLUEGIT .TAB + HORIZON.MAT */
+@ 0x00520e70 void __cdecl BrMaterialUpdate(void *material, int parts); /* emits FOG_T/MIN_F/MAX_F/RGB on BRT_PRIMITIVE via renderer vtbl+0x84 */
+@ 0x00504bf0 void RaceTxtLoad(void);                   /* depth-cue block parsed at 0x00505E6B..0x00505EC7 */
+@ 0x0048fa70 int  __fastcall ParseEnumFromList(void *file /*ecx*/, char **names /*edx*/, int count);
+@ 0x0048fdc0 void __fastcall ParseTwoInts(void *file /*ecx*/, int *a /*edx*/, int *b);
+@ 0x0048fe30 void __fastcall ParseThreeInts(void *file /*ecx*/, int *a /*edx*/, int *b, int *c);
+
+$ 0x0075d744 int    g_depthCueType          /* from race TXT: -1 none / 0 dark / 1 fog / 2 colour */
+$ 0x0075d748 int    g_depthCueP1            /* fog-start exponent; fog_min = g_yon * 10^(-P1/10) */
+$ 0x0075d74c int    g_depthCueP2            /* fog-end exponent;   fog_max = g_yon * 10^( P2/10) */
+$ 0x0075d750 int    g_depthCueR             /* 0..255 */
+$ 0x0075d754 int    g_depthCueG
+$ 0x0075d758 int    g_depthCueB
+$ 0x0075d75c void*  g_depthCueShadeTable    /* br_pixelmap* */
+$ 0x0075d760 int    g_fogType               /* live copy -- read this per frame */
+$ 0x0075d764 int    g_fogP1
+$ 0x0075d768 int    g_fogP2
+$ 0x0075d76c int    g_fogR
+$ 0x0075d770 int    g_fogG
+$ 0x0075d774 int    g_fogB
+$ 0x0075d778 void*  g_fogShadeTable         /* br_pixelmap* */
+$ 0x0074caa8 int    g_levelFogR             /* duplicate of g_depthCueR, written at 0x00505EB6 */
+$ 0x0074cf2c int    g_levelFogG
+$ 0x0074cad0 int    g_levelFogB
+$ 0x00761f4c float  g_yon                   /* view depth / far distance, default 5.0; scales fog_min/fog_max */
+$ 0x0067c4e0 void*  g_horizonMaterial       /* HORIZON.MAT -- NEVER fogged; shade table goes in its +0x40 colour_map */
+$ 0x0067c4a0 void*  g_shadeTabPixelmap      /* SHADETAB */
+$ 0x0079ec20 void*  g_pmDepthCueTab         /* DEPTHCUE.TAB */
+$ 0x0079ec38 void*  g_pmFogTab              /* FOG.TAB */
+$ 0x0079ec24 void*  g_pmAcidFogTab          /* ACIDFOG.TAB */
+$ 0x0079ec28 void*  g_pmBlueGitTab          /* BLUEGIT.TAB */
+$ 0x00660e90 void*  g_depthCueModeNames     /* {"dark","fog","colour"} */
+

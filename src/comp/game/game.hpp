@@ -130,6 +130,36 @@ namespace comp::game
 		return *reinterpret_cast<void**>(rebase(ADDR_g_pRenderer));
 	}
 
+	/*
+	 * The live depth-cue block — the race TXT's one fog description, mirrored here by
+	 * SetDepthCue (0x00445340) and baked into each fogged material's fog_min / fog_max /
+	 * fog_colour by ApplyDepthCueToMaterial (0x004451A0). There is no other scene fog
+	 * state in the game: these five ints plus g_yon are everything the depth cue is
+	 * computed from, so reading them mirrors what every material was patched with.
+	 */
+	constexpr uint32_t ADDR_g_fogType = 0x0075D760u; // int: -1 none, 0 dark, 1 fog, 2 colour
+	constexpr uint32_t ADDR_g_fogP1 = 0x0075D764u;   // int: fog-start exponent
+	constexpr uint32_t ADDR_g_fogP2 = 0x0075D768u;   // int: fog-end exponent
+	constexpr uint32_t ADDR_g_fogR = 0x0075D76Cu;    // int 0..255, mode "colour" only
+	constexpr uint32_t ADDR_g_fogG = 0x0075D770u;
+	constexpr uint32_t ADDR_g_fogB = 0x0075D774u;
+
+	// The "Yon" draw distance the fog exponents scale. Also written into every camera's
+	// yon_z when one is created (0x0047DA0B, 0x0047E405).
+	constexpr uint32_t ADDR_g_yon = 0x00761F4Cu;     // float
+
+	struct scene_fog
+	{
+		bool enabled;
+		uint32_t colour;     // 0x00RRGGBB
+		float min_distance;  // world units at which fog begins
+		float max_distance;  // world units at which it saturates
+	};
+
+	// The scene's depth cue as linear fog parameters, computed the way
+	// ApplyDepthCueToMaterial bakes them into a material.
+	scene_fog read_scene_fog();
+
 	// ---
 
 	extern void init_game_addresses();

@@ -129,6 +129,13 @@ namespace shared::common
 			// and how overlay polys stay see-through. Off draws every surface fully opaque.
 			bool material_opacity = true;
 
+			// Publish the race's depth-cue state as D3D9 fixed-function fog render
+			// states on the injected draws. Remix's legacy fog remapping reads exactly
+			// these (D3DRS_FOGENABLE / FOGCOLOR / FOGSTART / FOGEND) to derive its
+			// volumetric transmittance colour and distance, so this is what carries a
+			// track's red haze or white-out into the path tracer.
+			bool fog = true;
+
 			// Distance translucent surfaces are lifted along their normals. BRender kept
 			// tyre tracks, shadows and impact smears out of the road by drawing them in
 			// depth-sorted order; a path tracer has no draw order, so co-planar decals
