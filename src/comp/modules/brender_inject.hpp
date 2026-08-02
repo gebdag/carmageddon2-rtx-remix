@@ -58,6 +58,10 @@ namespace comp
 		// Called from the Frontend_Setup detour: the race is over, finished or abandoned.
 		void on_frontend_entered();
 
+		// Called from the BrModelUpdate detour. Only the count between leaving a race and
+		// returning to one matters: it is what separates a track load from a pause.
+		void note_model_rebuilt() { m_frontend_model_rebuilds += m_in_frontend ? 1u : 0u; }
+
 		/*
 		 * Where a scene's time goes, split by who spends it.
 		 *
@@ -136,10 +140,47 @@ namespace comp
 			return part.has_alpha || part.opacity < 255;
 		}
 
+		/*
+		 * What a game object was when we cached something built from it.
+		 *
+		 * A br_model or br_pixelmap pointer is not an identity. The game frees a track's
+		 * models and pixelmaps when the race ends, and the allocator hands the same
+		 * addresses to the next track, so a surviving cache entry is not a stale miss -- it
+		 * is a confident hit that returns the previous track's mesh or texture. Every entry
+		 * therefore carries what it was built from and re-checks it on the way out.
+		 */
+		struct model_identity
+		{
+			const void* prepared;
+			const void* vertices;
+			const void* faces;
+			uint16_t nvertices;
+			uint16_t nfaces;
+
+			bool operator==(const model_identity&) const = default;
+		};
+
+		struct pixelmap_identity
+		{
+			const void* pixels;
+			const void* palette;
+			uint32_t row_bytes;
+			uint16_t width;
+			uint16_t height;
+			uint8_t type;
+
+			bool operator==(const pixelmap_identity&) const = default;
+		};
+
+		static model_identity identify(const game::br_model* model);
+		static pixelmap_identity identify(const game::br_pixelmap* pm);
+
 		// A model's prepared geometry, uploaded once and reused. Static contents are what let
 		// Remix keep the acceleration structure it builds instead of rebuilding every frame.
 		struct model_geometry
 		{
+			model_identity identity;
+
 			IDirect3DVertexBuffer9* vertex_buffer;
 			IDirect3DIndexBuffer9* index_buffer;
 			std::vector<geometry_part> parts;
@@ -376,7 +417,20 @@ namespace comp
 		 * as misaligned textures, scenery from the last track, and a static world baked out
 		 * of both.
 		 */
-		void reset_for_new_track(const char* reason);
+		void resolve_frontend_return();
+
+		/*
+		 * Model rebuilds that mean a level was loaded rather than a race paused.
+		 *
+		 * Loading a track runs BrModelUpdate over every model it reads, which is hundreds;
+		 * the frontend's rotating car previews rebuild a handful, and resuming from the
+		 * pause menu rebuilds none. Neither case comes near this, and both decisions are
+		 * logged with the count so the margin stays visible.
+		 */
+		static constexpr uint32_t TRACK_LOAD_MODEL_REBUILDS = 100;
+
+		bool m_in_frontend = false;
+		uint32_t m_frontend_model_rebuilds = 0;
 		void release_chunks();
 		void release_geometry(model_geometry& geometry);
 		void evict_stale_geometry();
@@ -508,7 +562,12 @@ std::vector<static_chunk> m_chunks;
 
 		// Keyed on the colour_map rather than the material, so materials sharing a texture
 		// share one upload and Remix sees one stable hash for them.
-		std::unordered_map<const game::br_pixelmap*, IDirect3DTexture9*> m_textures;
+		struct cached_texture
+		{
+			IDirect3DTexture9* texture;
+			pixelmap_identity identity;
+		};
+		std::unordered_map<const game::br_pixelmap*, cached_texture> m_textures;
 		std::set<uint32_t> m_unsupported_types;
 		std::set<uint32_t> m_unsupported_styles;
 

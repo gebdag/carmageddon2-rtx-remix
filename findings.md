@@ -1321,3 +1321,46 @@ mid-race flushes and rebuilds. Nothing is wrong afterwards -- the world re-bakes
 second or so -- but it is a hitch and a `track state flushed` line where none is needed.
 Narrowing that needs a way to tell an abandoned race from a paused one, which the argument
 to `FrontendEnterFromRace` may carry.
+
+---
+
+## 17. Pause is not a track change (2026-08-02)
+
+Section 16's flush fixed the track transition and broke the pause menu: pausing and
+resuming left the textures wrong. `Frontend_Setup` fires for both, and flushing a track
+that is still loaded is not recoverable -- `m_materials` is taught the `br_material::stored`
+tokens by the level loader, and nothing re-teaches them once a race is running, so every
+model came back resolving to its fallback material.
+
+Two separate mistakes were folded into one flush, and they are now separate.
+
+### 17.1 A cache entry has to prove it still describes its key
+
+The real defect behind the misaligned textures was never the lifecycle. It was that
+`m_textures` and `m_geometry` trusted a raw game pointer as an identity, and the allocator
+reuses those addresses. Each entry now carries what it was built from and re-checks it on
+every lookup:
+
+* `model_identity`: `prepared`, `vertices`, `faces`, `nvertices`, `nfaces`.
+* `pixelmap_identity`: `pixels`, `map` (the palette), `row_bytes`, `width`, `height`, `type`.
+
+A mismatch rebuilds the geometry or re-uploads the texture. This holds whatever the
+lifecycle detection decides, and it covers recycling that happens for reasons nobody has
+enumerated -- which is the only honest position to hold about an allocator.
+
+### 17.2 A track load rebuilds models; a pause does not
+
+That leaves the static world, which is the only genuinely track-scoped state: sealed chunks
+hold geometry copied out of the old track, and actors that never get walked again would
+never punch themselves out.
+
+`Frontend_Setup` starts a count instead of a flush. At the first race scene back,
+`BrModelUpdate` calls made while away decide what happened: loading a level runs it over
+every model it reads, in the hundreds; the frontend's rotating car previews rebuild a
+handful; resuming from pause rebuilds none. `TRACK_LOAD_MODEL_REBUILDS` is 100 and both
+outcomes log the count, so the margin is visible in any run rather than assumed.
+
+On a load the static world is dropped and the previous track's geometry and textures are
+released -- not for correctness, which 17.1 already owns, but so a session does not
+accumulate every track's uploads. `m_materials` is deliberately kept: the loader filled it
+on the way in.

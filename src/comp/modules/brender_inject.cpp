@@ -617,6 +617,7 @@ namespace comp
 				// Must run first: the original frees the authored face array on the way out.
 				self->learn_materials(model);
 				self->invalidate_geometry(model);
+				self->note_model_rebuilt();
 
 				self->profile().capture_ticks += now_ticks() - start;
 				++self->profile().model_updates;
@@ -716,8 +717,8 @@ namespace comp
 			release_geometry(geometry);
 		}
 
-		for (auto& [pm, texture] : m_textures) {
-			if (texture) { texture->Release(); }
+		for (auto& [pm, cached] : m_textures) {
+			if (cached.texture) { cached.texture->Release(); }
 		}
 
 		for (auto& [rgb, texture] : m_spark_textures) {
@@ -854,6 +855,12 @@ namespace comp
 			model_geometry& cached = it->second;
 			cached.last_used_scene = m_scenes_submitted;
 
+			// The pointer is the same but the mesh behind it is not, so whatever this entry
+			// holds belongs to a model the game has since freed.
+			if (!(cached.identity == identify(model))) {
+				cached.dirty = true;
+			}
+
 			if (!cached.dirty) {
 				return cached.vertex_buffer ? &cached : nullptr;
 			}
@@ -880,6 +887,7 @@ namespace comp
 		std::vector<uint32_t> indices;
 
 		model_geometry geometry{};
+		geometry.identity = identify(model);
 		geometry.last_used_scene = m_scenes_submitted;
 		geometry.queued_scene = into.queued_scene;
 
@@ -1185,6 +1193,17 @@ namespace comp
 		}
 
 		return !parts.empty();
+	}
+
+	brender_inject::model_identity brender_inject::identify(const game::br_model* model)
+	{
+		return { model->prepared, model->vertices, model->faces,
+		         model->nvertices, model->nfaces };
+	}
+
+	brender_inject::pixelmap_identity brender_inject::identify(const game::br_pixelmap* pm)
+	{
+		return { pm->pixels, pm->map, pm->row_bytes, pm->width, pm->height, pm->type };
 	}
 
 	// The two things about an actor that follow from its model rather than from what it is
@@ -1541,26 +1560,42 @@ namespace comp
 	}
 
 	/*
-	 * The frontend is up, so the race that was running is over.
-	 *
-	 * The flush happens here rather than at the next race scene because the game loads the
-	 * new track in between, and the load is what teaches learn_materials the new
-	 * br_material::stored tokens. Clearing afterwards would throw that away and leave every
-	 * model of the new track resolving to its fallback material.
+	 * Leaving the race. Whether that means a new track or only the pause menu is not
+	 * knowable yet, so nothing is dropped here -- the counting starts instead.
 	 */
 	void brender_inject::on_frontend_entered()
 	{
-		reset_for_new_track("the frontend came up");
-
-		// Re-arms the world check below, which is otherwise a no-op for the rest of the
-		// session because the game reuses one world actor across races.
-		m_submitted_world = nullptr;
-		m_race_camera = nullptr;
+		m_in_frontend = true;
+		m_frontend_model_rebuilds = 0;
 	}
 
-	void brender_inject::reset_for_new_track(const char* reason)
+	/*
+	 * Decides, at the first race scene back, whether a track was loaded while we were away.
+	 *
+	 * Loading a level runs BrModelUpdate over every model it reads, in the hundreds. The
+	 * frontend rebuilds a handful for its rotating car previews, and resuming from the
+	 * pause menu rebuilds none at all: the track is still loaded and every pointer in the
+	 * module still describes what it did before the menu opened. Dropping the static world
+	 * on a pause is a rebuild the game never asked for.
+	 *
+	 * Only the static world is track-scoped. The geometry and texture caches carry the
+	 * identity of what they were built from and re-check it on every lookup, so a recycled
+	 * pointer cannot return the wrong object whatever this decides; releasing them here is
+	 * about not holding the previous track's uploads for the rest of the session.
+	 */
+	void brender_inject::resolve_frontend_return()
 	{
-		reset_static_world(reason);
+		m_in_frontend = false;
+
+		if (m_frontend_model_rebuilds < TRACK_LOAD_MODEL_REBUILDS)
+		{
+			shared::common::log("BRender", std::format(
+				"back in the race after {} model rebuilds - same track, nothing dropped",
+				m_frontend_model_rebuilds), shared::common::LOG_TYPE::LOG_TYPE_DEFAULT, true);
+			return;
+		}
+
+		reset_static_world("a new track was loaded");
 
 		// The queue and the transient pool hold pointers into m_geometry, so they go first.
 		m_queue.clear();
@@ -1572,15 +1607,15 @@ namespace comp
 		}
 		m_geometry.clear();
 
-		for (auto& [pixelmap, texture] : m_textures)
+		for (auto& [pixelmap, cached] : m_textures)
 		{
-			if (texture) { texture->Release(); }
+			if (cached.texture) { cached.texture->Release(); }
 		}
 		m_textures.clear();
-		m_materials.clear();
 
-		// The flat and spark swatches are keyed on colour rather than on a game pointer, so
-		// they stay valid across tracks and are the one thing worth keeping.
+		// m_materials keeps what it has: the loader taught it this track's stored tokens on
+		// the way in, and nothing re-teaches them once the race is running. The flat and
+		// spark swatches are keyed on colour rather than a game pointer, so they stay valid.
 
 		m_textures_ok = 0;
 		m_textures_failed = 0;
@@ -1592,8 +1627,8 @@ namespace comp
 		m_shaded_materials.clear();
 
 		shared::common::log("BRender", std::format(
-			"track state flushed - {} - geometry, textures and materials all re-learn",
-			reason), shared::common::LOG_TYPE::LOG_TYPE_GREEN, true);
+			"track state flushed after {} model rebuilds - geometry and textures re-upload",
+			m_frontend_model_rebuilds), shared::common::LOG_TYPE::LOG_TYPE_GREEN, true);
 	}
 
 	/*
@@ -2079,12 +2114,16 @@ namespace comp
 		// measured against from now on.
 		m_race_camera = m_camera;
 
-		// A world actor swap without a frontend visit is not something the game is known to
-		// do, but it means the same thing and the tracked pointers are just as dead.
+		if (m_in_frontend) {
+			resolve_frontend_return();
+		}
+
+		// A world actor swap is not something the game is known to do -- one world actor is
+		// reused across races -- but it would mean the same thing as a track load.
 		if (m_world != m_submitted_world)
 		{
 			if (m_submitted_world) {
-				reset_for_new_track("the world actor changed");
+				reset_static_world("the world actor changed");
 			}
 			m_submitted_world = m_world;
 		}
@@ -2680,12 +2719,26 @@ namespace comp
 		}
 
 		const auto pm = static_cast<const game::br_pixelmap*>(material->colour_map);
-		if (const auto it = m_textures.find(pm); it != m_textures.end()) {
-			return it->second ? it->second : m_white_texture;
+		if (!readable(pm, sizeof(*pm))) {
+			return m_white_texture;
+		}
+
+		const pixelmap_identity identity = identify(pm);
+		const auto it = m_textures.find(pm);
+		if (it != m_textures.end())
+		{
+			if (it->second.identity == identity) {
+				return it->second.texture ? it->second.texture : m_white_texture;
+			}
+
+			// A different image at the same address: the previous track's pixelmap was
+			// freed and this one was allocated over it.
+			if (it->second.texture) { it->second.texture->Release(); }
+			m_textures.erase(it);
 		}
 
 		IDirect3DTexture9* texture = upload_pixelmap(dev, pm);
-		m_textures[pm] = texture;
+		m_textures[pm] = { texture, identity };
 
 		if (texture) { ++m_textures_ok; }
 		else { ++m_textures_failed; }
