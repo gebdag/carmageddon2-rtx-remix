@@ -682,3 +682,76 @@ $ 0x0068be38 int    g_letterbox_enabled  /* gates the 4 back-buffer rectangleFil
 $ 0x0067c478 unsigned int g_swap_hold_ms /* PDScreenSwap is skipped until now > this + 500 */
 $ 0x0079f940 void*  g_brender_device_list /* BrDevAdd target, capacity 16, allocated at 0x00527EDF */
 $ 0x0079f934 void*  g_brender_module_list /* the BrDLLLoad internal module registry */
+
+/* --- Backface culling (see findings.md section 30) ---
+ * BRender culls per face, in MODEL space, from the prepared "online" face planes -- not
+ * from a screen-space area and not from br_face. The Glide driver never culls
+ * (grCullMode(GR_CULL_DISABLE) once at init), so this is the only facing test in the game,
+ * and it runs downstream of the ModelRenderStyle_Faces hook: a hook there sees unculled
+ * model-space geometry.
+ *
+ * The pipeline builder at 0x00542BAD switches on renderer+0x18 (BRP_CULL type, published
+ * by BrMaterialUpdate from the material flags):
+ *     BRT_NONE      0x01  -> 0x00543110 / 0x00543190: every face marked visible, no test
+ *     BRT_ONE_SIDED 0xAD  -> 0x005431F0 / 0x00543450 -> 0x005432B0 (persp) / 0x00543380 (par)
+ *     BRT_TWO_SIDED 0xAE  -> 0x005434E0 / 0x005437C0 -> 0x005435A0 / 0x005436B0: same test,
+ *                           never culls; sets front/back flag 4/5 and a normal-flip sign
+ *
+ * The one-sided perspective test, 0x005432DB..0x0054330C:
+ *     keep face  <=>  dot(online_face->n, g_cull_eye_model) >= online_face->d
+ * with d = dot(n, v0) and n = normalize((v1-v0) x (v2-v0)) over the PIVOT-RELATIVE online
+ * vertices, so the test is dot(n, eye - v0) >= 0: keep when the eye is on the normal's
+ * side. Equality is kept. The parallel variant compares dot(n, viewdir) against 0.0.
+ *
+ * Winding: a front face is v0->v1->v2 counter-clockwise as seen from the eye in BRender's
+ * right-handed model space. Under a right-handed projection that is counter-clockwise in
+ * NDC and, after D3D's downward-Y viewport flip, CLOCKWISE on screen -- which is D3D9's
+ * own front-face convention (dxvk d3d9_rtx.cpp: frontFace = VK_FRONT_FACE_CLOCKWISE), so
+ * the mode that culls back faces is D3DCULL_CCW (dxvk d3d9_util.cpp:271 maps it to
+ * VK_CULL_MODE_BACK_BIT).
+ */
+enum br_material_cull_flags {
+    BR_MATF_ALWAYS_VISIBLE = 0x0800,  /* -> BRT_NONE: no facing test at all */
+    BR_MATF_TWO_SIDED      = 0x1000,  /* -> BRT_TWO_SIDED: tested, never culled; wins over 0x0800 */
+    BR_MATF_FORCE_FRONT    = 0x2000,  /* BRT_FORCE_FRONT_B -- lighting only, not culling */
+};
+
+enum br_cull_token {
+    BRP_CULL       = 0x74,   /* renderer part BrMaterialUpdate publishes the mode on */
+    BRT_TYPE_T     = 0xAC,
+    BRT_NONE_CULL  = 0x01,
+    BRT_ONE_SIDED  = 0xAD,
+    BRT_TWO_SIDED  = 0xAE,
+};
+
+/* The prepared face the cull walks: v1_group +0x04, stride 0x1C. Its plane is rebuilt by
+ * FUN_0051F6A0 from the online (pivot-relative) vertices -- it is NOT a copy of br_face. */
+struct v1_online_face_plane {
+    unsigned short v[3];        /* 0x00 */
+    unsigned char pad06[6];     /* 0x06  per-face index/colour */
+    struct br_vector3 n;        /* 0x0C */
+    float d;                    /* 0x18  = dot(n, v0 - pivot) */
+};                              /* 0x1C */
+
+@ 0x00542930 void V1Model_Render(void *geom, void *renderer, void *prepared, void *material, int type);       /* vtable 0x0058BE98 +0x44 */
+@ 0x00543a10 void V1Model_RenderOnScreen(void *geom, void *renderer, void *prepared, void *material, int type);/* +0x4C, bounds ACCEPT */
+@ 0x00542960 void V1Model_RenderGroups(void);          /* builds the per-group stage pipeline, then runs it */
+@ 0x00540d00 void *V1ModelGeometryAllocate(void);      /* writes vtable 0x0058BE98 */
+@ 0x00540590 void *DefaultRendererFloatAllocate(void); /* "Default-Renderer-Float" -- owns the geometry objects */
+@ 0x005432b0 void CullFacesOneSidedPerspective(void);  /* THE backface cull, test at 0x00543304 */
+@ 0x00543380 void CullFacesOneSidedParallel(void);
+@ 0x005435a0 void CullFacesTwoSidedPerspective(void);  /* flags front/back, never culls */
+@ 0x005436b0 void CullFacesTwoSidedParallel(void);
+@ 0x00543110 void CullFacesNone(void);                 /* marks every face visible */
+@ 0x00536fb0 void BrPlaneEquation(br_vector3 *out_n_and_d, br_vector3 *v0, br_vector3 *v1, br_vector3 *v2); /* n = (v1-v0)x(v2-v0) normalized, d = +dot(n,v0) */
+@ 0x0051f6a0 void BuildOnlineFacePlanes(void *group);  /* called from BrModelUpdate 0x0051FCC5 */
+@ 0x00543a80 void ComputeCullEye(void);                /* model-space eye (persp) or view dir (parallel) */
+
+$ 0x0079faf4 float  g_cull_eye_model_x     /* eye position in model space; w at 0x0079FB00 = 1.0 */
+$ 0x0079faf8 float  g_cull_eye_model_y
+$ 0x0079fafc float  g_cull_eye_model_z
+$ 0x0079f9a4 void*  g_online_faces         /* v1_group+0x04, stride 0x1C -- what the cull walks */
+$ 0x0079f984 void*  g_face_flags           /* stride 4, flag byte at +2: 0 culled, 4 front, 5 back */
+$ 0x0079f988 void*  g_vertex_refcounts
+$ 0x0079f99c int    g_visible_face_count
+$ 0x0079f9b4 int    g_online_face_count

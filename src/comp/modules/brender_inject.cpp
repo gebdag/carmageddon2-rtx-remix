@@ -203,10 +203,13 @@ namespace comp
 		/*
 		 * Whether the material asks for both of its sides to be drawn.
 		 *
-		 * BRender rejects back faces, so a shell of single-layer polygons -- a car body,
-		 * and its windows with it -- is one-sided geometry. Submitting it double-sided
-		 * makes a path tracer intersect the inside of every surface as well, which for
-		 * glass means an interface where the game has none.
+		 * BrMaterialUpdate publishes one of three cull modes from these two flags:
+		 * ALWAYS_VISIBLE gives BRT_NONE, which installs a stage that marks every face
+		 * visible without testing anything, and TWO_SIDED gives BRT_TWO_SIDED, which runs
+		 * the facing test only to flip the normal for lighting. Everything else is
+		 * BRT_ONE_SIDED and is culled. So a car body -- and its windows with it -- is
+		 * one-sided geometry, and submitting it double-sided makes a path tracer intersect
+		 * the inside of every surface as well: for glass, an interface the game has none.
 		 */
 		bool material_is_two_sided(const game::br_material* material)
 		{
@@ -1182,12 +1185,15 @@ namespace comp
 	/*
 	 * Names the screen-space winding of a back face, once enough triangles have been seen.
 	 *
-	 * The projection handed to Remix is right-handed with the camera down -Z, so a
-	 * triangle whose geometric normal faces the camera comes out counter-clockwise in
-	 * normalized device coordinates, and the viewport's downward Y flips that to
-	 * clockwise on screen. Front faces are therefore clockwise, and the mode that culls
-	 * back faces is D3DCULL_CCW -- provided the order we emit is the outward one, which
-	 * is exactly what the sampling measured. When it is not, both halves flip.
+	 * BRender keeps a face when the eye is on its normal's side, with the normal taken as
+	 * (v1 - v0) x (v2 - v0): a front face is wound counter-clockwise as seen from the eye.
+	 * The projection handed to Remix is right-handed with the camera down -Z, so that is
+	 * counter-clockwise in normalized device coordinates, and the viewport's downward Y
+	 * flips it to clockwise on screen -- which is D3D9's own front-face convention. The
+	 * mode that culls back faces is therefore D3DCULL_CCW, provided the order we emit
+	 * indices in is the order BRender took its normal from. That last part is the only
+	 * thing not settled by the engine, so it is measured rather than assumed; when the
+	 * measurement disagrees, both halves flip.
 	 */
 	DWORD brender_inject::resolve_cull_mode()
 	{

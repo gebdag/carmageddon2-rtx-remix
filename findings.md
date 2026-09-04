@@ -2344,3 +2344,86 @@ These address the section 29.1 limitation, which no code change removes:
    `rtx.useDenoiser = False` (separates accumulation from the raw signal), and
    `rtx.uniqueObjectDistance` tuned to this game's scale -- the default 300 units is wider
    than the entire visible world (section 28.2).
+
+---
+
+## 30. BRender's facing rule, confirmed from the rasterizer (2026-09-05)
+
+Section 29 shipped a cull mode on a measurement. The engine's own rule is now read out of
+the binary, and it agrees.
+
+### 30.1 There is exactly one facing test, and the hardware path does not skip it
+
+`ModelRenderStyle_Faces` (0x00525FC0) dispatches through `g_pGeometryV1Model`'s vtable
+(0x0058BE98, `+0x44` render / `+0x4C` renderOnScreen) into **0x00542960**, which builds a
+per-group pipeline of stage function pointers and runs it. The `.bdd` device drivers export
+only `BrDrv1Begin` and register a *primitive* library ("3Dfx-Primitives"), not a geometry
+object: the geometry always comes from the EXE's own "Default-Renderer-Float", so the
+Glide and software paths run the same cull. The Glide driver itself calls
+`grCullMode(GR_CULL_DISABLE)` once at init and never culls.
+
+The cull stage is chosen at **0x00542BAD** on `renderer + 0x18`, which `BrMaterialUpdate`
+publishes as `BRP_CULL` (token 0x74) straight from the material flags:
+
+```c
+uVar4 = 0xad;                                                /* BRT_ONE_SIDED */
+if ((material->flags & 0x800)  != 0) uVar4 = 1;              /* BRT_NONE      */
+if ((material->flags & 0x1000) != 0) uVar4 = 0xae;           /* BRT_TWO_SIDED */
+partSet(renderer, 0x74, 0, 0xac, uVar4);
+```
+
+* `0x0800` = **BR_MATF_ALWAYS_VISIBLE** -> `BRT_NONE` -> 0x00543110 marks every face
+  visible and runs no test at all.
+* `0x1000` = **BR_MATF_TWO_SIDED** -> `BRT_TWO_SIDED` -> 0x005435A0 runs the same test but
+  never culls; it records front/back as flag 4/5 and a sign used to flip the normal for
+  lighting. It wins over 0x0800.
+* Neither -> `BRT_ONE_SIDED` -> 0x005432B0, the cull.
+
+So both bits mean "do not cull", which is exactly the mask `material_is_two_sided` uses.
+`0x2000` is `FORCE_FRONT_B` and is lighting only.
+
+### 30.2 The test is a model-space plane test
+
+0x005432DB..0x0054330C, per face, over the prepared "online" faces (`v1_group + 0x04`,
+stride 0x1C, normal at +0x0C, `d` at +0x18):
+
+```
+keep  <=>  dot(face->n, eye_in_model_space) >= face->d        (fcomp at 0x00543304)
+```
+
+`d = dot(n, v0)`, so this is `dot(n, eye - v0) >= 0` -- keep when the eye is on the
+normal's side; equality is kept. The eye is the view-space origin pushed back into model
+space by `ComputeCullEye` (0x00543A80) into 0x0079FAF4. The parallel-camera variant
+(0x00543380) compares `dot(n, viewdir)` against 0. There is no screen-space area test
+anywhere, and the primitive emitters downstream contain no second cull.
+
+The planes are **rebuilt** for the online faces by `BuildOnlineFacePlanes` (0x0051F6A0,
+called from BrModelUpdate at 0x0051FCC5) from the pivot-relative online vertices, through
+`BrPlaneEquation` (0x00536FB0):
+
+```
+n = normalize((v1 - v0) x (v2 - v0))
+d = +dot(n, v0)
+```
+
+### 30.3 Which D3D cull mode that makes
+
+`n = (v1 - v0) x (v2 - v0)` pointing at the eye means a front face is wound
+counter-clockwise **as seen from the eye**, in right-handed model space. Under the
+right-handed projection the injection hands Remix, that is counter-clockwise in NDC, and
+D3D's viewport flips Y, so it is **clockwise on screen** -- which is D3D9's own front-face
+convention: dxvk sets `frontFace = VK_FRONT_FACE_CLOCKWISE` (d3d9_rtx.cpp:637) and maps
+`D3DCULL_CCW -> VK_CULL_MODE_BACK_BIT` (d3d9_util.cpp:271-277).
+
+**`D3DCULL_CCW` culls back faces here.** That is what `resolve_cull_mode` picks when the
+winding measurement agrees with the authored normals, which it must, since the vertex
+normals are averages of these same face normals. The measurement is kept as the check on
+the one step the engine does not settle -- that the injection emits indices in the order
+BRender took its normal from -- and it logs its verdict either way.
+
+### 30.4 A note for anything that hooks lower
+
+The cull runs *inside* 0x00542960, downstream of `ModelRenderStyle_Faces`. A hook at the
+render style, which is where this injection taps, therefore sees complete unculled
+model-space geometry -- which is why the facing has to be reconstructed here at all. A
+hook at the primitive emitters would see post-cull screen-space data instead.
