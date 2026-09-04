@@ -387,38 +387,37 @@ namespace comp
 			return 0xFF000000u | (br_colour & 0x00FFFFFFu);
 		}
 
-		/*
-		 * Whether a model is one of the game's pooled decal quads.
-		 *
-		 * Translucency is not the test. Glass, smoke and water are translucent too, and none
-		 * of them overlays a surface it could fight with -- lifting those off their own
-		 * normals is what pulls a windscreen out of its frame. The two pools are small,
-		 * fixed, and built once at startup, so they are walked directly rather than cached:
-		 * this only runs when a model is first seen, and nothing can then go stale.
-		 */
-		bool is_decal_model(const game::br_model* model)
+		// Whether a model belongs to one of the game's pooled quad actors. The pools are
+		// small, fixed, and built once at startup, so they are walked directly rather than
+		// cached: this only runs when a model is first seen, and nothing can then go stale.
+		bool in_quad_pool(const game::quad_pool& pool, const game::br_model* model)
 		{
-			if (!model) {
+			const auto entries = reinterpret_cast<const uint8_t*>(game::rebase(pool.address));
+			if (!readable(entries, static_cast<size_t>(pool.stride) * pool.count)) {
 				return false;
 			}
 
-			for (const game::decal_pool& pool : { game::GROUND_DECAL_POOL, game::IMPACT_DECAL_POOL })
+			for (uint32_t i = 0; i < pool.count; ++i)
 			{
-				const auto entries = reinterpret_cast<const uint8_t*>(game::rebase(pool.address));
-				if (!readable(entries, static_cast<size_t>(pool.stride) * pool.count)) {
-					continue;
-				}
-
-				for (uint32_t i = 0; i < pool.count; ++i)
-				{
-					const auto actor = *reinterpret_cast<game::br_actor* const*>(entries + i * pool.stride);
-					if (readable(actor, sizeof(game::br_actor)) && actor->model == model) {
-						return true;
-					}
+				const auto actor = *reinterpret_cast<game::br_actor* const*>(entries + i * pool.stride);
+				if (readable(actor, sizeof(game::br_actor)) && actor->model == model) {
+					return true;
 				}
 			}
 
 			return false;
+		}
+
+		/*
+		 * Whether a model is one of the game's ground decal quads.
+		 *
+		 * Translucency is not the test. Glass, smoke, sprites and water are translucent too,
+		 * and none of them overlays a surface it could fight with -- lifting those off their
+		 * own normals is what pulls a windscreen out of its frame.
+		 */
+		bool is_decal_model(const game::br_model* model)
+		{
+			return model && in_quad_pool(game::GROUND_DECAL_POOL, model);
 		}
 
 		/*
@@ -428,8 +427,8 @@ namespace comp
 		 * that is about to be deleted, and a chunk cannot give geometry back. Powerup
 		 * pickups disappear the instant they are taken -- a pickup is any actor whose
 		 * identifier carries 0xA3 ('£') as its second character, the test
-		 * SpecialActorEnumCallback (0x0040D1F0) uses -- and decal quads are pooled and
-		 * recycled at a new placement rather than moved to it.
+		 * SpecialActorEnumCallback (0x0040D1F0) uses -- and the pooled decal and sprite
+		 * quads are recycled at a new placement rather than moved to it.
 		 */
 		bool vanishes_outright(const game::br_actor* actor, const game::br_model* model)
 		{
@@ -437,7 +436,7 @@ namespace comp
 			const bool pickup = readable(name, 2)
 				&& name[0] && static_cast<uint8_t>(name[1]) == 0xA3;
 
-			return pickup || is_decal_model(model);
+			return pickup || is_decal_model(model) || in_quad_pool(game::SPRITE_PARTICLE_POOL, model);
 		}
 
 		// bounds is min[3] then max[3] in model space. The camera sits at the origin in view
@@ -525,7 +524,7 @@ namespace comp
 			}
 
 			if (const auto self = brender_inject::get(); self) {
-				self->begin_scene(world, camera);
+				self->begin_scene(world, camera, static_cast<game::br_pixelmap*>(colour));
 			}
 
 			o_scene_begin(world, camera, colour, depth);
@@ -581,32 +580,74 @@ namespace comp
 			}
 		}
 
-		void __cdecl hk_model_render(game::br_actor* actor, game::br_model* model, void* material, void* env,
-		                             uint32_t style, uint32_t bounds, uint32_t use_custom)
+		// BrZbModelRender hands a model with this flag to model->custom instead of drawing
+		// it, when its use_custom argument is set (0x00521890, the first branch).
+		constexpr uint16_t BR_MODF_CUSTOM = 0x0020;
+
+		void render_original(brender_inject* self, game::br_actor* actor, game::br_model* model,
+		                     void* material, void* env, uint32_t style, uint32_t bounds, uint32_t use_custom)
 		{
-			const auto self = brender_inject::get();
-			bool injected = false;
-
-			if (self && model)
-			{
-				const int64_t start = now_ticks();
-				injected = self->capture_model(actor, model, static_cast<game::br_material*>(material), style);
-				self->profile().capture_ticks += now_ticks() - start;
-			}
-
-			// The original transforms and lights this model on the CPU and hands the result to
-			// nGlide, which Remix then discards as pre-transformed. Once the model has been
-			// injected in model space, none of that reaches the screen.
-			if (injected && shared::common::config::get().optimization.suppress_game_render) {
-				return;
-			}
-
 			const int64_t start = now_ticks();
 			o_model_render(actor, model, material, env, style, bounds, use_custom);
 
 			if (self) {
 				self->profile().game_render_ticks += now_ticks() - start;
 			}
+		}
+
+		bool capture_timed(brender_inject* self, game::br_actor* actor, game::br_model* model,
+		                   void* material, uint32_t style)
+		{
+			const int64_t start = now_ticks();
+			const bool suppress = self->capture_model(actor, model, static_cast<game::br_material*>(material), style);
+			self->profile().capture_ticks += now_ticks() - start;
+			return suppress;
+		}
+
+		/*
+		 * The capture point, and where the game's own render of a captured model is dropped.
+		 *
+		 * Suppression rewrites the render style to NONE rather than skipping the call:
+		 * BrZbModelRender still runs, still publishes its state to the renderer and still
+		 * hands a model with a custom callback to that callback, but the style thunk it
+		 * dispatches to is a bare return, so BRender does no transform, no lighting and
+		 * sends nGlide nothing. Skipping the call outright would also skip the callbacks,
+		 * and the powerup icons draw through theirs.
+		 *
+		 * A model with a custom callback is not captured here. The callback draws it by
+		 * calling BrZbModelRender again with use_custom cleared (PowerupModelCustomCB ends
+		 * in exactly that, via 0x00523070), and that nested call is where the capture and
+		 * the suppression happen -- capturing here too would queue the model twice, once
+		 * with whatever the callback was about to change. A callback that draws nothing
+		 * through the hook still gets its model captured, after the fact.
+		 */
+		void __cdecl hk_model_render(game::br_actor* actor, game::br_model* model, void* material, void* env,
+		                             uint32_t style, uint32_t bounds, uint32_t use_custom)
+		{
+			const auto self = brender_inject::get();
+			if (!self || !model)
+			{
+				render_original(self, actor, model, material, env, style, bounds, use_custom);
+				return;
+			}
+
+			if (use_custom && (model->flags & BR_MODF_CUSTOM))
+			{
+				const uint32_t captures_before = self->captures_this_scene();
+				render_original(self, actor, model, material, env, style, bounds, use_custom);
+
+				if (self->captures_this_scene() == captures_before) {
+					capture_timed(self, actor, model, material, style);
+				}
+				return;
+			}
+
+			uint32_t forwarded_style = style;
+			if (capture_timed(self, actor, model, material, style)) {
+				forwarded_style = (style & ~0xFFu) | game::BR_RSTYLE_NONE;
+			}
+
+			render_original(self, actor, model, material, env, forwarded_style, bounds, use_custom);
 		}
 
 		void __cdecl hk_model_update(game::br_model* model, uint16_t flags)
@@ -666,6 +707,7 @@ namespace comp
 		p_this = this;
 
 		m_queue.reserve(2048);
+		m_draw_states.reserve(8192);
 
 		LARGE_INTEGER frequency{};
 		QueryPerformanceFrequency(&frequency);
@@ -990,42 +1032,61 @@ namespace comp
 	}
 
 	/*
-	 * Re-reads the one piece of material state the game animates per frame.
+	 * Resolves what each part of a model looks like in the draw being captured.
 	 *
-	 * The funkotronic system rewrites br_material::map_transform to pick one cell out of a
-	 * texture atlas -- that is how a car's rear-light panel switches between off, braking,
-	 * reversing and both -- so it cannot be resolved once when the geometry is built.
-	 * Translucency stays with the geometry, because it decides how far the vertices are
-	 * lifted off the surface they overlay.
+	 * A model's geometry is built once, but what the game draws with it changes between
+	 * calls without the geometry ever being touched: the sprite systems render one shared
+	 * quad per particle with a different material argument each time, an animated sprite
+	 * material points its colour_map at a different frame, the funkotronic system rewrites
+	 * map_transform to pick a cell of an atlas, and the smoke fades by rewriting opacity.
+	 * Every one of those is read here, per capture, into a state record of this draw's
+	 * own. Only the vertex data is shared.
 	 *
-	 * Only ever called from capture_model, which runs inside BrZbModelRender: the materials
-	 * this model renders with are necessarily still alive there. Submit works off the values
-	 * left behind and never touches the game's memory.
+	 * Runs inside BrZbModelRender, where every material involved is necessarily alive.
+	 * Submit works off the records left behind and never touches the game's memory.
 	 */
-	void brender_inject::refresh_part_state(model_geometry& geometry) const
+	void brender_inject::resolve_draw_state(IDirect3DDevice9* dev, const model_geometry& geometry,
+		game::br_material* fallback_material, queued_model& queued)
 	{
 		const auto& effects = shared::common::config::get().effects;
 
-		geometry.has_opaque = false;
-		geometry.has_blended = false;
+		queued.state_first = static_cast<uint32_t>(m_draw_states.size());
+		queued.has_opaque = false;
+		queued.has_blended = false;
 
-		for (auto& part : geometry.parts)
+		for (const auto& part : geometry.parts)
 		{
-			if (part.material && readable(part.material, sizeof(game::br_material)))
+			draw_state state{};
+			state.texture = part.texture;
+			state.opacity = part.opacity;
+			bool has_alpha = part.has_alpha;
+
+			game::br_material* material = part.inherits_material ? fallback_material : part.material;
+			if (material && readable(material, sizeof(game::br_material)))
 			{
+				IDirect3DTexture9* texture = texture_for(dev, material);
+				state.texture = texture && texture != m_white_texture
+					? texture
+					: solid_colour_texture(dev, material->colour & 0x00FFFFFFu);
+
+				has_alpha = game::material_needs_alpha(material);
+
 				if (effects.texture_transform)
 				{
-					part.texture_transform_active =
-						build_texture_matrix(part.material->map_transform, part.texture_transform);
+					state.texture_transform_active =
+						build_texture_matrix(material->map_transform, state.texture_transform);
 				}
 
 				if (effects.material_opacity) {
-					part.opacity = material_opacity(part.material);
+					state.opacity = material_opacity(material);
 				}
 			}
 
-			if (part_is_blended(part)) { geometry.has_blended = true; }
-			else { geometry.has_opaque = true; }
+			state.blended = has_alpha || state.opacity < 255;
+			if (state.blended) { queued.has_blended = true; }
+			else { queued.has_opaque = true; }
+
+			m_draw_states.push_back(state);
 		}
 	}
 
@@ -1046,6 +1107,7 @@ namespace comp
 			uint32_t vertex_base;
 			bool needs_alpha;
 			bool prelit;
+			bool inherited;   // took the render call's material for want of one of its own
 			uint8_t opacity;
 		};
 		std::vector<group_ref> groups;
@@ -1090,7 +1152,7 @@ namespace comp
 			}
 
 			groups.push_back({ &group, material, vertex_base + total_vertices,
-			                   needs_alpha, prelit, opacity });
+			                   needs_alpha, prelit, group.material_token == 0, opacity });
 			total_vertices += group.nvertices;
 		}
 
@@ -1169,7 +1231,6 @@ namespace comp
 			part.texture = texture;
 			part.material = material;
 			part.has_alpha = entry.needs_alpha;
-			part.texture_transform = IDENTITY_MATRIX;
 			part.opacity = entry.opacity;
 			part.index_start = static_cast<uint32_t>(indices.size());
 
@@ -1178,6 +1239,8 @@ namespace comp
 				if (ref.material != material) {
 					continue;
 				}
+
+				part.inherits_material |= ref.inherited;
 
 				for (uint16_t f = 0; f < ref.group->nfaces; ++f)
 				{
@@ -1609,6 +1672,7 @@ namespace comp
 
 		// The queue and the transient pool hold pointers into m_geometry, so they go first.
 		m_queue.clear();
+		m_draw_states.clear();
 		m_lines.clear();
 		release_transient();
 
@@ -1835,7 +1899,7 @@ namespace comp
 			shared::common::LOG_TYPE::LOG_TYPE_GREEN, true);
 	}
 
-	void brender_inject::begin_scene(game::br_actor* world, game::br_actor* camera)
+	void brender_inject::begin_scene(game::br_actor* world, game::br_actor* camera, game::br_pixelmap* colour)
 	{
 		if (const auto& culling = shared::common::config::get().culling;
 			culling.disable_frustum || culling.bubble_radius > 0.0f)
@@ -1843,20 +1907,53 @@ namespace comp
 			install_bounds_test_hook();
 		}
 
+		note_scene_target(camera, colour);
+
 		m_world = world;
 		m_camera = camera;
 		m_camera_valid = false;
 		m_capturing = !m_overlay_scene;
 		++m_scene_walks;
 		m_scene_models = 0;
+		m_captures = 0;
 		m_dynamic_reasons = {};
 		m_profile = {};
 		forget_readable_regions();
 		m_queue.clear();
+		m_draw_states.clear();
 		m_lines.clear();
 
 		// The queue held pointers into these until the previous scene submitted.
 		m_transient_used = 0;
+	}
+
+	/*
+	 * Names each (camera, colour target) pair the incremental API opens a scene on, once.
+	 *
+	 * The race view is not the only scene that comes through BrZbSceneRenderBegin: the
+	 * horizon is drawn in a scene of its own just before it, a mirror view draws to a
+	 * second sub-pixelmap of the back buffer, and reflective surfaces render the whole
+	 * world into a 64x64 texture first. Which of those reach the submit is decided by the
+	 * model count and the race camera; this line is what says whether that held.
+	 */
+	void brender_inject::note_scene_target(const game::br_actor* camera, const game::br_pixelmap* colour)
+	{
+		if (!m_scene_targets.insert({ camera, colour }).second) {
+			return;
+		}
+
+		const auto race_view = *reinterpret_cast<const game::br_pixelmap* const*>(
+			game::rebase(game::ADDR_g_race_view_pixelmap));
+		const char* name = readable(colour, sizeof(*colour)) && readable(colour->identifier, 1)
+			? colour->identifier : "<null>";
+
+		shared::common::log("BRender", std::format(
+			"scene target: colour pixelmap '{}' @ {:#010x} ({}), camera @ {:#010x}, {}",
+			name, reinterpret_cast<uint32_t>(colour),
+			colour == race_view ? "the race view" : "not the race view",
+			reinterpret_cast<uint32_t>(camera),
+			m_overlay_scene ? "overlay pass" : "incremental scene"),
+			shared::common::LOG_TYPE::LOG_TYPE_DEFAULT, false);
 	}
 
 	void brender_inject::capture_camera()
@@ -1892,7 +1989,7 @@ namespace comp
 			// batch is coming from nGlide's rasterized output instead, so these names are
 			// worth having when something looks untextured rather than absent.
 			const std::string name = model->identifier ? model->identifier : "<null>";
-			const char* reason = (model->flags & 0x20) ? "custom render callback" : "no prepared geometry";
+			const char* reason = "no prepared geometry";
 			if (m_skipped_models.try_emplace(name, reason).second) {
 				shared::common::log("BRender", std::format("skipped: '{}' - {}", name, reason),
 					shared::common::LOG_TYPE::LOG_TYPE_DEFAULT, false);
@@ -1933,6 +2030,7 @@ namespace comp
 		}
 
 		++m_scene_models;
+		++m_captures;
 
 		/*
 		 * Scenery holds one placement for as long as nothing hits it, so it can be baked
@@ -1941,22 +2039,22 @@ namespace comp
 		 * still for several frames first: baking on sight would bake every car at its
 		 * starting position and leave a ghost there the moment it drove off.
 		 */
+		const auto& optimization = shared::common::config::get().optimization;
 		dynamic_reason reason = dynamic_reason::overlay;
-		if (race_scene && shared::common::config::get().optimization.static_world && actor)
+		if (race_scene && optimization.static_world && actor)
 		{
-			reason = model->flags & 0x20
+			reason = model->flags & BR_MODF_CUSTOM
 				? dynamic_reason::callback
 				: track_static_actor(actor, model, fallback_material, model_to_world);
 
 			if (reason == dynamic_reason::chunked) {
-				return true;
+				return optimization.suppress_game_render;
 			}
 		}
 
 		++m_dynamic_reasons[static_cast<size_t>(reason)];
 
 		queued_model queued{};
-		queued.geometry = nullptr;
 		queued.world = to_d3d(model_to_world);
 		queued.model_name = model->identifier ? model->identifier : "<null>";
 
@@ -1977,21 +2075,21 @@ namespace comp
 			return false;
 		}
 
-		refresh_part_state(*geometry);
+		resolve_draw_state(dev, *geometry, fallback_material, queued);
 		geometry->queued_scene = m_scene_walks;
 		queued.geometry = geometry;
 		m_queue.push_back(queued);
 
 		/*
-		 * A sealed chunk is proof that the injection carries this geometry, so its game
-		 * render always goes. A dynamic model has no such proof: not everything a model
-		 * draws passes through this hook -- pedestrian limbs are drawn inside the ped's own
-		 * render call, and Remix composites that rasterized stream -- so dropping it can
-		 * take geometry off the screen that nothing else replaces. In a race dense enough
-		 * to drop frames the dynamics are most of what BRender still transforms on the CPU,
-		 * which is why the trade is offered rather than decided here.
+		 * The game's render of a dynamic model is the raster twin of what was just queued:
+		 * BRender's CPU transform and nGlide's draws for a car Remix already has in model
+		 * space. Remix composites whatever nGlide rasterizes after its injection point on
+		 * top of the path-traced frame, so that twin is not merely wasted work -- it is
+		 * the flat, env-mapped car window painted over the ray-traced glass whenever the
+		 * game's last draws land after the injection. Only the race view is suppressed:
+		 * the 3D HUD widgets exist solely in the game's own render.
 		 */
-		return shared::common::config::get().optimization.suppress_dynamics;
+		return race_scene && optimization.suppress_dynamics;
 	}
 
 	/*
@@ -2267,6 +2365,10 @@ namespace comp
 				? draw_pass(dev, pass_kind::opaque) + draw_pass(dev, pass_kind::blended)
 				: draw_pass(dev, pass_kind::combined))
 			+ submit_lines(dev);
+
+		if (shared::common::config::get().remix.trigger_injection) {
+			trigger_injection(dev);
+		}
 
 		m_saved_state->Apply();
 
@@ -2564,7 +2666,7 @@ namespace comp
 		for (const auto& queued : m_queue)
 		{
 			const model_geometry& geometry = *queued.geometry;
-			if (!combined && (blended ? !geometry.has_blended : !geometry.has_opaque)) {
+			if (!combined && (blended ? !queued.has_blended : !queued.has_opaque)) {
 				continue;
 			}
 
@@ -2572,24 +2674,26 @@ namespace comp
 			dev->SetStreamSource(0, geometry.vertex_buffer, 0, sizeof(ffp_vertex));
 			dev->SetIndices(geometry.index_buffer);
 
-			for (const auto& part : geometry.parts)
+			const draw_state* states = &m_draw_states[queued.state_first];
+			for (size_t i = 0; i < geometry.parts.size(); ++i)
 			{
-				const bool part_blended = part_is_blended(part);
-				if (!combined && part_blended != blended) {
+				const geometry_part& part = geometry.parts[i];
+				const draw_state& state = states[i];
+				if (!combined && state.blended != blended) {
 					continue;
 				}
 
-				bind_texture(part.texture);
-				bind_opacity(part.opacity);
+				bind_texture(state.texture);
+				bind_opacity(state.opacity);
 				if (combined) {
-					bind_blend(part_blended);
+					bind_blend(state.blended);
 				}
 
 				// Off for all but a handful of runs, so the stage state is only touched when
 				// it actually has to change.
-				if (part.texture_transform_active)
+				if (state.texture_transform_active)
 				{
-					dev->SetTransform(D3DTS_TEXTURE0, &part.texture_transform);
+					dev->SetTransform(D3DTS_TEXTURE0, &state.texture_transform);
 					dev->SetTextureStageState(0, D3DTSS_TEXTURETRANSFORMFLAGS, D3DTTFF_COUNT2);
 					transform_active = true;
 				}
@@ -2612,6 +2716,41 @@ namespace comp
 		}
 
 		return draws;
+	}
+
+	/*
+	 * Pins Remix's injection point to the end of the race submit.
+	 *
+	 * Remix path-traces the geometry it has been given up to its injection point and
+	 * composites every draw after that point on top of the result; it picks the point
+	 * itself, as the first draw it classifies as UI (d3d9_rtx.cpp, isRenderingUI). Left to
+	 * that, the point falls wherever the first tagged HUD texture happens to be bound,
+	 * and whatever nGlide still had batched from the race view lands after it -- drawn
+	 * flat over the path-traced frame.
+	 *
+	 * A draw is UI to Remix when its projection is orthographic and depth writes are off,
+	 * so that is what this issues: one triangle outside the clip volume, which rasterizes
+	 * nothing, under an orthographic projection. From here on everything is HUD.
+	 */
+	void brender_inject::trigger_injection(IDirect3DDevice9* dev)
+	{
+		D3DMATRIX orthographic = IDENTITY_MATRIX;
+		dev->SetTransform(D3DTS_PROJECTION, &orthographic);
+		dev->SetTransform(D3DTS_WORLD, &IDENTITY_MATRIX);
+		dev->SetTransform(D3DTS_VIEW, &IDENTITY_MATRIX);
+		dev->SetRenderState(D3DRS_ZWRITEENABLE, FALSE);
+		dev->SetRenderState(D3DRS_ALPHABLENDENABLE, FALSE);
+		dev->SetRenderState(D3DRS_ALPHATESTENABLE, FALSE);
+		dev->SetTextureStageState(0, D3DTSS_TEXTURETRANSFORMFLAGS, D3DTTFF_DISABLE);
+		dev->SetTexture(0, m_white_texture);
+
+		// Entirely beyond x = 1, so it is clipped before it reaches a pixel.
+		const ffp_vertex marker[3] = {
+			{ 2.0f, 2.0f, 0.5f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f },
+			{ 3.0f, 2.0f, 0.5f, 0.0f, 0.0f, 1.0f, 1.0f, 0.0f },
+			{ 2.0f, 3.0f, 0.5f, 0.0f, 0.0f, 1.0f, 0.0f, 1.0f },
+		};
+		dev->DrawPrimitiveUP(D3DPT_TRIANGLELIST, 1, marker, sizeof(ffp_vertex));
 	}
 
 	/*

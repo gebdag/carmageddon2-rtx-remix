@@ -1766,3 +1766,376 @@ even 0.2 cost the weakest channel ~96% of the sky. `enableFogColorRemap` must st
 rtx.conf: it would overwrite the pushed transmittance with the raw fade colour and
 reintroduce the section 23 blackout.
 
+
+---
+
+## 25. Sprite particles: one model, many textures (2026-09-02)
+
+Three symptoms, one cause: **every sprite system in this game keeps its geometry
+constant and animates by rewriting `br_material::colour_map`**. A cache that resolves a
+group's texture once, when the geometry for a `br_model` is built, therefore freezes the
+first frame it ever saw and hands it to every later draw of that model.
+
+None of the systems below calls `BrModelUpdate`. None of them touches `map_transform`.
+None of them rewrites pixel data. The only per-particle appearance channels are
+`material->colour_map`, `actor->material`, and (smoke only) `actor->model` and the vertex
+colours. Everything else -- size, spin, billboard orientation -- is in the actor transform.
+
+### 25.1 The shared 50-slot sprite pool: explosion fire, sparkle, blood
+
+`InitSpriteParticlePool` @ **0x004EA880** (documented in section 6.6 as
+`InitImpactDecals`, which is wrong -- it is not a decal pool) builds **50 slots** at
+`g_sprite_particles` **0x006A55C8**, stride `0x78`. Each slot gets its **own**
+`br_actor` (type MODEL, `render_style = FACES`), its **own** `BrModelAllocate(NULL, 4, 2)`
+-- a unit XY quad, `x,y in -0.5..0.5` -- and its **own** `BrMaterialAllocate("BANG!")`
+whose `colour_map` starts as `g_bang_pixelmap` (0x0074D360) and whose flags are
+`&= ~BR_MATF_LIGHT` then `|= 0x800`. `slot[0x0A] = 1` marks the slot free.
+
+Every data-driven sprite effect in the game draws from this one pool:
+
+| effect | emitter list | frames | spawned from |
+|---|---|---|---|
+| car "wasted" explosion | `0x006A550C` (block `0x006A52D0` + 0x23C) | `ex00001..ex00007` | GENERAL.TXT, "Wasted explosion settings" |
+| powerup collect | `0x006A7F1C` | `BING1..6`, `TWINK1..4` | GENERAL.TXT, "Powerup connotations" |
+| powerup respawn | block `0x006A3660` | `TWINK1..4` | GENERAL.TXT, "Powerup respawn connotations" |
+| ped blood clouds | `0x00694478`, `0x0069BC28` | `BIGBL01..05` | PEDS/SETTINGS.TXT, "SMALL/MED/LARGE BLOOD CLOUD SPEC" |
+| car impacts | `0x007620F8` | per-track | track TXT |
+
+`ParseSpriteEmitterList` @ **0x004EE780** reads one "explosion group" block into a
+`0x44`-byte `br_sprite_emitter`. Frames are a heap array of `{float, br_pixelmap*}`
+pairs at `emitter+0x40`, `emitter+0x04` frames long:
+
+```
+0x004EE8C9  frames = BrMemAllocate(nframes * 8, 0xFC)
+0x004EE8D3  emitter->frames = frames
+0x004EE8DE  ParseFloat()                            ; the authored opacity ("50", "75", "100")
+0x004EE8E8  fstp [frames + i*8]
+0x004EE8F2  mov  dword [frames + i*8], 0x42C80000   ; ... immediately overwritten with 100.0f
+0x004EE902  frames[i].map = BrMapFind(name)         ; error 0x77 "can't find pixelmap"
+```
+
+so **the per-frame opacity in the data files is dead** -- only the pixelmap pointer
+survives. The frames are separate `br_pixelmap` objects found by name, never one
+pixelmap whose pixels get rewritten.
+
+`SpawnSpriteParticles` @ **0x004EAD00** (`ecx` = `{count, br_sprite_emitter*}`,
+`edx` = owner, arg0 = `&model->bmin`, arg1 = optional world origin) claims a free slot by
+linear scan, and if none is free steals the next one round-robin from
+`g_sprite_particle_next` (0x006A82A0). It then **copies the emitter's whole frame table
+into the slot** at `slot+0x28` (`nframes * 2` dwords) and stores `nframes` at `slot+0x09`.
+The owning effect is only remembered as an opaque pointer at `slot+0x0C`.
+
+`AnimateSpriteParticles` @ **0x004EAAF0** (called once per frame from 0x00493A4E) is
+where the appearance changes:
+
+```
+0x004EABA6  if (frame_index != (char)slot[0x08])                 ; frame changed this tick
+0x004EABB2      actor->material->colour_map = slot->frames[frame_index].map
+0x004EABBF      BrMaterialUpdate(actor->material, 0x7FFF)
+0x004EABE1  memcpy(&actor->t, &g_effects_camera_actor->t, 48)    ; billboard
+0x004EAC1B  actor->t.translate = owner->t.translate + offset
+0x004EAC71  scale(&actor->t, map->width * seed / 128, map->height * seed / 128, 1)
+0x004EAC85  rotateZ(&actor->t, slot->angle)
+```
+
+`frame_index = (now - slot->death_time) / slot->frame_period`; when it reaches
+`slot[0x09]` the actor is `BrActorRemove`d and the slot is freed. The actor is
+`BrActorAdd`ed to `g_effects_parent_actor` (0x007634B8) and rendered by the ordinary
+scene walk -- **not** `BrZbSceneRenderAdd`.
+
+**Why blood shows the sparkle texture.** A slot's `br_model` is allocated once at startup
+and never freed, but its `br_material->colour_map` is rewritten by whatever effect owns
+the slot at the moment. A cache keyed on `br_model` that resolves the texture at build
+time captures the pixelmap that slot happened to be showing the first time it was drawn --
+`TWINK3`, say -- and keeps handing it back after the slot is recycled for a blood cloud.
+The 50 quads are also geometrically identical, so nothing in the geometry distinguishes
+them.
+
+### 25.2 Car flames: 30 sprites, one model
+
+`InitFlames` @ **0x004FC3A0**:
+
+```
+0x004FC3CF  g_flame_model = BrModelAllocate("Lollipop", 4, 2)             ; 0x006AA380
+0x004FC421  LoadPixelmapMany("FLAMES.PIX", g_flame_pixelmaps, 20) -> 20   ; 0x006A8638
+0x004FC442  BrMapAddMany(g_flame_pixelmaps, 20)
+            for slot in 0..9:                                             ; 0x006A96AC, stride 0x7C
+0x004FC453    slot->root = BrActorAllocate(BR_ACTOR_NONE, NULL)
+              for child in 0..2:
+0x004FC469      child = BrActorAllocate(BR_ACTOR_MODEL, NULL)
+0x004FC475      mat   = BrMaterialAllocate(NULL)
+0x004FC492      child->model    = g_flame_model                           ; SHARED
+0x004FC499      child->material = mat                                     ; per child
+0x004FC4A5      mat->flags &= ~BR_MATF_LIGHT;  mat->flags |= 0x800
+0x004FC4C5      mat->colour_map = g_flame_pixelmaps[0]
+```
+
+The quad is `x -0.5..0.5, y 0..1` with UVs 0..1 -- anchored at the bottom edge, so a flame
+grows upward from its origin. `FLAMES.PIX` is a container holding `FLM01..FLM20`
+(DATA/COMMON/flames/PIX16); a byte table of the 20 source sizes lives at
+`g_flame_frame_size` **0x00660118** (`{20,25} {24,32} {24,34} {28,44} ...`).
+
+`UpdateFlameSlot` @ **0x004FBDD0** advances all three children each tick:
+
+```
+0x004FBDF6  root->t.translate = pos
+0x004FC020  frame = ++slot->frame[i]        ; re-randomised when it passes 19
+0x004FC059  child->material->colour_map = g_flame_pixelmaps[frame]
+0x004FC066  BrMaterialUpdate(child->material, 0x7FFF)
+0x004FC08x  scale(&child->t, size_w * sx, size_h * sy, 1.0)
+0x004FC0Ax  child->t.translate.x = ...;  child->t.translate.z = ...
+0x004FC0B4  child = child->next
+```
+
+**Why every explosion flame shows the same frame.** All 30 flame sprites (10 burning cars
+x 3) point at the one `"Lollipop"` `br_model`. A per-`br_model` geometry cache has exactly
+one entry for them and therefore exactly one texture, so the whole fire animates as a
+single frame instead of 30 independent ones. This is the same class of bug section 12.5
+already fixed for the smoke quad -- but there the tell was vertex colour; here it is the
+texture, which the cache still resolves only once.
+
+`StartCarFire` @ 0x004FCAB0, `IsCarOnFire` @ 0x004FED90, `RemoveAllFlameActors` @
+0x004FC9E0, `ShutdownFlames` @ 0x004FC2E0. `g_flame_slot_mask` (0x006AA59C) has a bit per
+live slot.
+
+### 25.3 Splashes: one model, one material per frame, fixed per actor
+
+`InitSplashes` @ **0x004FDDE0** builds `g_splash_model` (`"Splash"`, 0x006A8758) -- the
+same quad as Lollipop -- loads up to 20 pixelmaps (`SPLSHBLU.PIX` by default, or a name
+list when `ecx != 0`), and then does something the other systems do not: it allocates
+**one `br_material` per animation frame** into `g_splash_frame_materials` (0x006A9130,
+count in 0x006AA5A4), each with `colour_map` fixed to that frame's pixelmap. 32 actors at
+`g_splash_slots` (0x006A82B8, stride 0x1C) each get `model = g_splash_model` and
+`material = g_splash_frame_materials[rand()]` -- **chosen once at startup and never
+changed**.
+
+`SpawnSplash` @ **0x004FD530** only sets position, size and the alive bit and
+`BrActorAdd`s the actor; `EffectsTick` @ **0x004F9790** only writes the transform. So a
+splash never animates: its texture is whatever material it drew at init. Same shared model
+for all 32, so a per-`br_model` cache collapses them onto one texture.
+
+### 25.4 Smoke: the one system that swaps the model too
+
+Correcting and completing section 12.1 -- `DrawSmokeParticles` @ 0x004FB1B0 changes three
+things per particle, and the model is one of them:
+
+```
+0x004FB236  gBlend_actor->material = record[0x1C]          ; one of the 35 "some smoke"
+0x004FB258  material->extra[1].value = alpha*150*65536     ; OPACITY_X
+0x004FB25F  BrMaterialUpdate(material, 0x40)               ; BR_MATU_EXTRA
+0x004FB26F  esi = record[0x20]                             ; gBlend_model OR gBlend_model2
+0x004FB285  vertex[i].red/green/blue = record[0x14]
+0x004FB2AF  BrModelUpdate(esi, 2)                          ; BR_MODU_VERTEX_COLOURS
+0x004FB2BD  gBlend_actor->model = esi                      ; model swapped per particle
+0x004FB2C7  BrZbSceneRenderAdd(gBlend_actor)
+```
+
+`gBlend_model2` (6 verts / 4 faces, 0x0074CF94) is picked at spawn time by the emitters at
+0x004FAA89 / 0x004FAC08 / 0x004FACA8 / 0x004FAF70 / 0x004FB010. Smoke is the only sprite
+system that uses `BrZbSceneRenderAdd` and the only one that calls `BrModelUpdate`.
+
+### 25.5 What BrZbModelRender actually receives
+
+`BrZbActorRender` @ 0x005221E0 resolves the model/material/env before dispatching:
+
+```
+0x005221FE  mat   = actor->material;  if (mat == NULL)   mat   = inherited
+0x00522209  model = actor->model;     if (model == NULL) model = inherited
+```
+
+and passes `mat` as `BrZbModelRender`'s **3rd argument**. Every sprite model above is
+built with `BrModelAllocate` and its faces' `material` field left NULL, so the material a
+hook sees is always `actor->material` -- the object whose `colour_map` the game mutates.
+
+### 25.6 What varies per particle
+
+| system | model | actor->material | material->colour_map | pixel contents | map_transform | vertex colours |
+|---|---|---|---|---|---|---|
+| sprite pool (explosion fire, sparkle, blood, BANG) | per slot, constant | per slot, constant | **rewritten every frame** | never | never | never |
+| car flames | **one shared model for all 30** | per child, constant | **rewritten every tick** | never | never | never |
+| splashes | one shared model for all 32 | per actor, fixed at init (random frame) | never after init | never | never | never |
+| smoke | **swapped per particle** (2 models) | **swapped per particle** (35 materials) | never | never | never | **rewritten per particle** |
+| sparks (sections 6.2 / 6.5) | one shared line model | constant | n/a (untextured) | never | never | **rewritten per spark** |
+
+For the proxy the consequence is the same in every row: **`br_model` alone is not a cache
+identity for sprite geometry.** The identity has to include the resolved texture -- i.e.
+`material->colour_map` -- and it has to be re-read per draw rather than at build time,
+because `BrMaterialUpdate` is called with `0x7FFF` (which includes `BR_MATU_COLOUR_MAP`)
+between draws of the same model. Treating a `BrMaterialUpdate` that carries
+`BR_MATU_COLOUR_MAP` the way section 12.5 treats a mid-scene `BrModelUpdate` -- demote to
+a transient per-scene entry -- covers all five systems, since a sprite model is never
+static.
+
+---
+
+## 26. Sprites, glass and the raster twin: three fixes in the proxy (2026-09-02)
+
+Three reported symptoms -- sprite textures mixed up (fire showing one frame for every
+particle, blood wearing the pickup sparkle), car windows "painting" instead of reflecting
+once given a translucent material, and raster gameplay bleeding through -- come down to
+two defects in the proxy.
+
+### 26.1 Material state was cached with the geometry
+
+Section 25 established that every sprite system draws one shared quad model per particle
+and animates it by rewriting `actor->material->colour_map`, which reaches the hook as
+BrZbModelRender's material argument. The proxy resolved a group's texture once, when the
+`br_model`'s geometry was built, and `refresh_part_state` re-read only `map_transform` and
+opacity into that same shared entry. Two consequences: the texture froze at whatever the
+model first drew with (blood in a slot that last showed `TWINK3`), and every capture of the
+same model in one scene overwrote the state the earlier captures were queued against, so
+the last particle's frame was drawn thirty times (the flames).
+
+What a draw looks like is now separate from what it is made of. `geometry_part` keeps only
+the index range, the material the run was built against and whether that run inherits the
+render call's material (`material_token == 0`, i.e. faces authored without one, which is
+every sprite quad). `resolve_draw_state` runs per capture and appends one `draw_state`
+per part to a per-scene pool: the material re-resolved through the inheritance, the
+texture re-read from that material's current `colour_map` (`texture_for` already
+re-checks the pixelmap identity), `MaterialNeedsAlpha`, the UV transform and the opacity.
+`queued_model` records where its states start; `draw_pass` reads them from there. The
+static chunks keep using the build-time part state, which is what they bake.
+
+### 26.2 The game's raster twin of every dynamic model was composited over Remix
+
+dxvk-remix path-traces what it has been given up to its injection point and composites
+every draw after that point on top of the result. It picks the point itself: the first
+draw that `isRenderingUI()` accepts -- a bound texture tagged in `rtx.uiTextures`, or an
+orthographic projection with depth writes off (d3d9_rtx.cpp `makeDrawCallType`). nGlide's
+pre-transformed draws are otherwise `Rasterized, false`: drawn into the back buffer, then
+overwritten wholesale when `injectRTX` blits the path-traced image over the target.
+
+With `SuppressDynamics=0` every dynamic model was rendered twice: once in model space by
+the proxy, once by BRender + nGlide in screen space. Whenever the game's draws landed after
+the injection point -- nGlide holds its last batch until the next state change, and the
+translucent bucket BRender draws last is exactly the car windows and sprites -- that twin
+was painted flat over the path-traced frame. For a window that twin is BRender's
+env-mapped glass, a static painted reflection: the "paints rather than reflects" look.
+Water never showed it because it is chunk-covered and already suppressed.
+
+Two changes:
+
+* **Suppression rewrites the render style instead of skipping the call.** `hk_model_render`
+  forwards `BR_RSTYLE_NONE` for a captured model, so BrZbModelRender still publishes its
+  state and still dispatches a custom callback, but the style thunk it lands on is a bare
+  return: no software T&L, nothing to nGlide. Skipping the call was why SuppressDynamics
+  could not be defaulted on -- it also skipped `model->custom`, which is how the powerup
+  icons draw (PowerupModelCustomCB ends in BrZbModelRender via 0x00523070). A model with a
+  callback is now left to that nested call for its capture, and captured after the fact only
+  if the callback rendered nothing through the hook. `SuppressDynamics` defaults on and is
+  scoped to the race camera; the 3D HUD widgets keep their game render.
+* **The injection point is pinned.** `trigger_injection` issues one triangle outside the
+  clip volume under an orthographic projection with depth writes off at the end of every
+  race submit. Remix classifies it as UI and injects there, so the path-traced frame is
+  complete when it is composited and everything nGlide draws afterwards -- the HUD, and any
+  batch it still held -- lands on top. `[Remix] TriggerInjection` switches it off.
+
+### 26.3 The 50-slot pool at 0x006A55C8 is sprites, not decals
+
+Section 6.6 called it the impact decal pool. Section 25.1 shows it is the shared sprite
+billboard pool (fire, sparkle, blood, "BANG!"). The proxy no longer lifts those quads along
+their normals; they stay in `vanishes_outright`, since they are re-placed rather than moved.
+
+---
+
+## 27. The race frame in order, and how it reaches Glide (2026-09-02)
+
+Static only (Ghidra project, program `CARMA2_HW.EXE`; the file on disk is now
+`CARMA2_HW0.EXE`, byte-identical, renamed by the Remix launcher). Confidence: **[C]**
+confirmed from disassembly, **[H]** one inference, **[?]** unresolved.
+
+### 27.1 Where the Glide code lives
+
+**[C]** The EXE has no `glide2x.dll` import and no `gr*` thunk. Every Glide entry point is
+imported by **`3dfx_win.bdd`** (base 0x10000000, single export `BrDrv1Begin`), which BRender
+maps with its **own PE loader** (`BrDLLLoad` 0x0052FFA0 -> `FUN_00530E70`: checks MZ/PE,
+maps sections, resolves imports itself, falls back to `LoadLibraryA`). Its
+`BRCORE1/BRHOST1/BRPMAP1` imports resolve against the statically linked BRender; only its
+`glide2x.dll` import goes through the OS loader, which is how nGlide enters the process.
+`PDAllocateScreenAndBack` @ **0x0051C300** then `strcmp`s the screen pixelmap identifier
+against `"Voodoo Graphics"`.
+
+Pixelmaps it creates:
+
+| global | what |
+|---|---|
+| `0x0074D3E0` | screen pixelmap, 640x480x16 (`BrDevBeginVar("3DFX_WIN", ...)`) |
+| `0x0074D360` | **back buffer** (`screen->_match(screen, 0)`) |
+| `0x0068B8A4` | **depth buffer** (`_match(back, 1)` @ 0x004E4940) |
+| `0x00762128` | **race view colour target**, a sub-pixelmap of the back buffer (0x004E49B7) |
+| `0x0068B8A8` | second-view (mirror) colour target, another sub-pixelmap; shares the depth buffer |
+| `0x006A22BC` | 64x64 reflection render target (0x004E4B28) |
+
+Glide pixelmap dispatch (bdd, table at 0x1000E480): `_fill` 0x100026C0 -> `grBufferClear`;
+`_doubleBuffer` 0x100028F0 -> `grBufferNumPending` x2 + **`grBufferSwap`** (the only swap
+site, 0x10002932); `_rectangleCopy` 0x10002A30 -> `grLfbWriteRegion`; `_rectangleFill`
+0x10002580 -> `grLfbLock`/write/`grLfbUnlock`; `_line`, `_text`, `_copyBits` are **stubs**.
+Triangles: 8 `grDrawTriangle` sites (0x10003BFE..0x10004901) with `grTexSource`,
+`grTexCombineFunction`, `guColorCombineFunction`, `grConstantColorValue4`, `grHints` per
+batch. Textures go up via `grTexDownloadMipMap` (0x100010E4).
+
+**[C] `grSstIdle` is never called and not even imported** (nor `grSstIdleN`, `grFinish`,
+`grFlush`). The only synchronisation is the `grBufferNumPending` pair before the swap.
+**There is no flush between the 3D scene and the overlay.**
+
+### 27.2 One race frame
+
+`RaceFrameTick` 0x004939EA -> `RenderAFrame` = **FUN_004E4E40** (called at 0x00493AEA):
+
+| # | address | what | Glide |
+|---|---|---|---|
+| 1 | 0x004E4E7x | frees last frame's HUD glyph actors (`[0x0074CAE0]`) | -- |
+| 2-3 | 0x004E50AB / 0x004E51CE | camera shake | -- |
+| 4 | **0x004E52A4..533F** | four letterbox `_rectangleFill`s on the **back buffer**, colour 0, only when `[0x0068BE38]!=0 && [0x0075B9A4]!=2` | `grLfbLock`/write/`grLfbUnlock`, before any 3D |
+| 5 | **0x004E5371** | `RenderView(cam=[0x74D35C], colour=[0x762128], depth=[0x68B8A4])` ECX=0 -- **the main race view** (27.3) | `grBufferClear` + `grDrawTriangle` |
+| 6 | 0x004E5383 | restores the shaken camera | -- |
+| 7 | **0x004E53B4** | `RenderView(cam=[0x75B940], colour=[0x68B8A8], depth=[0x75B93C])` ECX=1, only if `[0x00704E40]!=0` -- **second view (mirror/PiP)**, no reflections/shadows/particles | same |
+| 8 | **0x004E53CD** | `TintPolySceneRender` 0x004D8290: `BrZbSceneRender(world=cam=[0x006A0430], colour=[0x0074D360] back buffer, depth)` | `grDrawTriangle` |
+| 9 | 0x004E53DA | HUD quad via `FUN_0047CAD0`: rebuild `[0x0074CA70]`, `BrModelUpdate`, own `BrZbSceneRender(world=cam=[0x0074CAC4], colour=back, depth)` @ 0x0047CB9C | `grDrawTriangle` |
+| 10 | 0x004E53E5 | CPU sprite blit (`FUN_0047BA80`) into a memory pixelmap | -- |
+| 11 | 0x004E53FE | race info text (`FUN_00464E40`, 27.4) | `grDrawTriangle` |
+| 12 | 0x004E5405 | dashboard/cockpit: `BrPixelmapRectangleCopy` + CPU blits into memory pixelmap `[0x0074CA1C]`; map via 11x `BrPixelmapLine` (memory) | -- |
+| 13-17 | 0x004E541E..5455 | more HUD; `FUN_0044B6A0` uploads the composited 2D pixelmaps as textures (`FUN_00523160` x2 + `BrMaterialUpdate`) then queues 20+ HUD actors (`HudQueueActor` 0x004E5AD0) | `grTexDownloadMipMap`, `grDrawTriangle` |
+| 18 | 0x004E546F/5486 | replay overlays (`[0x00676914]!=0`) | -- |
+| 19 | **0x004E548B** | **`HudFlush` 0x004E5B00**: adds glyph root `[0x0074CF10]` + queued HUD actors `[0x00704E60]` to HUD root `[0x0074CA00]`, then `BrZbSceneAddActorIncremental(world=[0x0074CA00], camera=[0x0074CF74], colour=[0x00762128], depth)` | `grDrawTriangle` |
+| 20 | 0x004E54A0/5499 | frame limiter | -- |
+| 21 | **0x004E54D1** | `FUN_0051C520` -> `_doubleBuffer(screen, back)` -- **the buffer swap** | `grBufferNumPending` x2, `grBufferSwap` |
+| 22 | 0x004E54DF | replay-only tail | -- |
+
+### 27.3 `RenderView` = FUN_004E54F0 and `RenderScene` = FUN_004E5680
+
+```c
+if (view == 0)                                       // reflections first, into the 64x64 texture
+  for (i = 0; i < [0x006A22C0]; i++) {               // queue filled by FUN_004E5CC0, reset by FUN_004E5CB0
+     RenderScene([0x006A22BC], [0x0068B8A4], 1.0f, 0, 0, 0);   // a full scene, own Begin/End
+     BrMaterialUpdate(entry.material, BR_MATU_COLOUR_MAP);
+  }
+RenderScene(colour, depth, 1.0f, view==0, view==0, view==0); // the view itself
+```
+
+`RenderScene` (EDX = camera, ECX = owning car, `ret 0x18`):
+
+1. `camera->yon_z *= yon_scale`.
+2. **depth clear**: `_fill(depth, 0xFFFFFFFF)` -> `grBufferClear`.
+3. *(non-default mode only, `[0x0074D3DC]==0 && [0x0068B918]!=0 && [0x0074B784+0x74] in {6,7}`)* car bodies drawn in their own Begin/Add/End with a tint poly between -- **[?]** mode unidentified, does not run in a plain race.
+4. Colour clear **or** sky, never both (0x004E5882): with `g_fogShadeTable` (`[0x0075D778]`) zero -> `_fill(target, colour)`; otherwise **`BrZbSceneRenderBegin` @ 0x004E5919, `DrawHorizon` (FUN_00445CB0) @ 0x004E592B, `BrZbSceneRenderEnd` @ 0x004E5930** -- **the horizon is its own one-model scene, immediately before the race scene, and no colour clear happens.** `DrawHorizon` rotates the horizon actor to the camera yaw, pins it to the camera position, writes a scrolling `map_transform` into HORIZON.MAT (`m[2][0] = -(yaw / fov)`, 0x00445D76..), `BrMaterialUpdate(mat, 0x7FFF)`, sets `render_style = FACES`, `BrZbSceneRenderAdd`, restores `render_style = NONE`.
+5. depth-cue bookkeeping (`FUN_00446340`), shadow/skid geometry (`FUN_004E74D0`, actors not draws).
+6. **`BrZbSceneRenderBegin([0x0074D44C], camera, colour, depth)` @ 0x004E5961** -- the race scene: four backdrop actors `[0x0074D650]`, `[0x0074D64C]`, `[0x0074D644]` each under a screen-space depth bias from `FUN_00540560(n)` (table `{0, -1.5, -3, ...}` at 0x00670530, written to `[0x0079FEB4]`); `FUN_00506E50`; **`BrZbSceneRenderAdd([0x007634B8])` = the track/world content** @ 0x004E59BE; the "Limbs_actor" pool (`FUN_004D3610`); particles (`FUN_004F7450`, `FUN_004FA910`, `FUN_004D5D60`) when `do_particles`; **`BrZbSceneRenderEnd` @ 0x004E5A1B** -- the bucket sort and rasterization, where nearly all `grDrawTriangle` traffic originates.
+
+### 27.4 How the 2D overlay reaches the card
+
+**[C] Almost the entire HUD is textured triangles, not LFB writes.**
+
+* Text: `HudDrawText3D` FUN_00464E40 takes glyph actors from the pool `[0x0074CAE0]`, sets model/material, `BrActorAdd`s to `[0x0074CF10]`, and (when flushed) forces the colour pixelmap's base/origin to 0 and size to 640x480, then `BrZbSceneAddActorIncremental(world=[0x0074CA00], camera=[0x0074CF74], colour, depth)`.
+* **`BrZbSceneAddActorIncremental` @ 0x005226D0 is not an add**: it is a complete miniature scene render -- publishes the colour/depth pixelmaps, computes screen scale/offset, `SceneSetupCameraMatrices`, walks the world's children through `BrZbActorRender` (so through the BrZbModelRender hook), then `renderer->flush`. Four args `(world, camera, colour, depth)`. It never calls `BrZbSceneRenderBegin`, so the proxy's capture flag is off while it runs.
+* HUD widgets: `HudQueueActor` (max 128, "Not enough HUD actor storage") and `HudFlush` render the queue with one `BrZbSceneAddActorIncremental` into the race view pixelmap.
+* Dashboard, cockpit and map are composited CPU-side into memory pixelmaps (`FUN_0047BA80` 16-bit blitter, `BrPixelmapLine`), uploaded as textures by `FUN_00523160`, drawn as quads.
+
+The only per-frame 2D ops touching the Glide framebuffer are the letterbox fills (start of frame) and the `_fill` clears. `BrPixelmapText`/`BrPixelmapLine` are stubs on this device. **`grLfbWriteRegion` should not appear in a normal race frame at all.**
+
+### 27.5 What this means for the proxy
+
+* The race view is the scene opened on colour pixelmap `[0x00762128]`. The horizon scene, the mirror view (`[0x0068B8A8]`) and the reflection passes (`[0x006A22BC]`) all come through the same Begin/End hooks; the proxy currently tells them apart by model count and race camera, and now logs each distinct (camera, colour target) pair once (`scene target:` line) so a run shows whether a second camera ever reaches the submit.
+* Nothing at the Glide layer separates 3D from 2D: no idle, no flush, same triangle path. The BRender hooks are the only clean boundary, which is why the injection point is pinned from the proxy (section 26.2) rather than inferred from the draw stream.
+* The horizon actor is captured in its own scene (one model, never submitted) and, with `SuppressDynamics`, is no longer rasterized by the game. That raster was pre-injection and overwritten by Remix's blit in any case; the sky Remix shows comes from its own sky handling.
+* kb.h corrected: the `.bdd` drivers are loadable (by BRender's loader); `BrZbSceneAddActorIncremental` takes four arguments; `0x0074D360` is the back buffer, not a "BANG!" pixelmap.

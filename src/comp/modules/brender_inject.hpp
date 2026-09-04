@@ -30,15 +30,19 @@ namespace comp
 		static inline brender_inject* p_this = nullptr;
 		static brender_inject* get() { return p_this; }
 
-		void begin_scene(game::br_actor* world, game::br_actor* camera);
+		void begin_scene(game::br_actor* world, game::br_actor* camera, game::br_pixelmap* colour);
 		void capture_camera();
-		// True when the game's own render of this model is provably redundant: it is drawn
-		// from a live sealed chunk, or it is a spark line the billboards replace. Dynamic
-		// models return false even when injected -- not everything a model draws passes
-		// through this hook (pedestrian limbs are drawn inside the ped's render call), so
-		// their rasterized stream must keep running.
+		// Captures one BrZbModelRender call of the race view. Returns true when the game's
+		// own render of it is redundant and should be skipped: the model is drawn from a
+		// live sealed chunk, it is a spark line the billboards replace, or it was injected
+		// and the dynamics are suppressed. Models under any other camera -- the 3D HUD
+		// widgets -- are never suppressed, since Remix never sees them.
 		bool capture_model(game::br_actor* actor, game::br_model* model,
 		                   game::br_material* fallback_material, uint32_t style);
+
+		// Captures made this scene, so a caller can tell whether a custom render callback
+		// rendered anything through the hook.
+		uint32_t captures_this_scene() const { return m_captures; }
 		void end_scene();
 
 		// Called from the BrModelUpdate detour while the authored face array is still alive.
@@ -108,9 +112,14 @@ namespace comp
 			uint32_t diffuse = 0xFFFFFFFFu;
 		};
 
-		// One draw's worth of a model: the run of indices sharing a single material.
-		// The texture is resolved when the geometry is built rather than per draw, so
-		// submit never dereferences a br_material that the game may since have freed.
+		/*
+		 * One draw's worth of a model: the run of indices sharing a single material, as
+		 * the model was when its geometry was built.
+		 *
+		 * The material state recorded here is what the static chunks bake: a chunk is
+		 * copied once and never re-read. Dynamic draws do not trust it -- what a material
+		 * looks like at the moment of a draw is resolved into a draw_state per capture.
+		 */
 		struct geometry_part
 		{
 			IDirect3DTexture9* texture;
@@ -120,28 +129,40 @@ namespace comp
 			// Translucent runs are drawn in a later pass and their vertices carry a lift off
 			// whatever surface they overlay, so this belongs to the geometry as built.
 			bool has_alpha;
+			uint8_t opacity;
 
 			// Identity of the material this run came from. Only ever dereferenced from
-			// refresh_part_state, which runs inside the game's own render call while the
-			// material is still alive; submit works purely off the resolved state below.
+			// resolve_draw_state, which runs inside the game's own render call while the
+			// material is still alive; submit works purely off the resolved state.
 			game::br_material* material;
 
-			// Resolved afresh every time the model is captured -- the funkotronic system
-			// animates br_material::map_transform while a race is running.
-			bool texture_transform_active;
-			D3DMATRIX texture_transform;
-
-			// br_material::opacity, or whatever its extra token list overrides it with,
-			// as the 0..255 byte BrMaterialUpdate publishes. Also resolved per capture:
-			// the smoke system rewrites it between every particle it draws.
-			uint8_t opacity;
+			// The faces of this run carry no material of their own and take whatever
+			// BrZbModelRender is handed, which is how the game re-skins one shared sprite
+			// quad per particle: the material argument changes, the model does not.
+			bool inherits_material;
 		};
 
-		// Whether a run belongs in the translucent pass. A material carries alpha, or the
-		// game has faded it -- BRender turns blending on for anything below full opacity.
-		static bool part_is_blended(const geometry_part& part) {
-			return part.has_alpha || part.opacity < 255;
-		}
+		/*
+		 * How one run looks in one particular draw.
+		 *
+		 * Everything here the game rewrites between draws of the same model without
+		 * touching its geometry: the material handed to the render call, the pixelmap
+		 * behind that material, its opacity and its UV transform. Sprite systems draw
+		 * dozens of instances of one quad per scene, each with its own frame, so this
+		 * cannot live on the geometry -- it is appended per capture and read by submit.
+		 */
+		struct draw_state
+		{
+			IDirect3DTexture9* texture;
+			uint8_t opacity;
+
+			// Belongs in the translucent pass: the material carries alpha, or the game has
+			// faded it -- BRender turns blending on for anything below full opacity.
+			bool blended;
+
+			bool texture_transform_active;
+			D3DMATRIX texture_transform;
+		};
 
 		/*
 		 * What a game object was when we cached something built from it.
@@ -195,11 +216,6 @@ namespace comp
 			uint32_t vertex_bytes;
 			uint32_t index_bytes;
 
-			// Which submission passes have anything to do for this model, so the blended
-			// pass can skip the overwhelming majority of models outright.
-			bool has_opaque;
-			bool has_blended;
-
 			// BrModelUpdate can fire mid-scene, after this geometry is already queued for
 			// submission. Marking instead of erasing keeps queued pointers valid; the
 			// rebuild happens the next time the model is captured.
@@ -230,6 +246,15 @@ namespace comp
 			const model_geometry* geometry;
 			D3DMATRIX world;
 			const char* model_name;
+
+			// This draw's state for each of the geometry's parts, in order, starting at
+			// m_draw_states[state_first].
+			uint32_t state_first;
+
+			// Which submission passes have anything to do for this draw, so the blended
+			// pass can skip the overwhelming majority of models outright.
+			bool has_opaque;
+			bool has_blended;
 		};
 
 		/*
@@ -339,6 +364,9 @@ namespace comp
 		// it. Returns the number of draws issued.
 		uint32_t draw_pass(IDirect3DDevice9* dev, pass_kind kind);
 
+		// Issues the one draw that tells Remix the path-traced scene is complete.
+		void trigger_injection(IDirect3DDevice9* dev);
+
 		void capture_lines(const game::br_model* model, const game::br_matrix34& model_to_world);
 		uint32_t submit_lines(IDirect3DDevice9* dev);
 		void log_spark_geometry(const float camera[3]);
@@ -349,9 +377,11 @@ namespace comp
 		// of debris along.
 		IDirect3DTexture9* spark_texture(IDirect3DDevice9* dev, uint32_t rgb_a, uint32_t rgb_b);
 
-		// Re-resolves the material state that the game animates: translucency and the UV
-		// transform that picks a cell out of a texture atlas.
-		void refresh_part_state(model_geometry& geometry) const;
+		// Resolves how each part of a model looks for the draw being captured -- the
+		// material it inherits, the pixelmap behind it, its opacity and UV transform --
+		// into this scene's draw_state pool, and records where in the queued entry.
+		void resolve_draw_state(IDirect3DDevice9* dev, const model_geometry& geometry,
+		                        game::br_material* fallback_material, queued_model& queued);
 
 		bool build_projection(D3DMATRIX& out) const;
 		model_geometry* geometry_for(IDirect3DDevice9* dev, game::br_model* model,
@@ -465,6 +495,8 @@ namespace comp
 		// the two things that can change how already-working geometry looks.
 		void note_shaded_material(const game::br_material* material, bool prelit, uint8_t opacity);
 		void note_unsupported_style(const game::br_model* model, uint32_t style);
+		void note_scene_target(const game::br_actor* camera, const game::br_pixelmap* colour);
+		std::set<std::pair<const game::br_actor*, const game::br_pixelmap*>> m_scene_targets;
 
 		// Geometry that reached the capture but did not make it to Remix, and is therefore
 		// only ever rasterized by the game. This is the injection's coverage gap.
@@ -480,6 +512,7 @@ namespace comp
 		IDirect3DTexture9* upload_pixelmap(IDirect3DDevice9* dev, const game::br_pixelmap* pm);
 
 		std::vector<queued_model> m_queue;
+		std::vector<draw_state> m_draw_states;
 		std::vector<line_segment> m_lines;
 		std::vector<ffp_vertex> m_line_vertices;
 		std::unordered_map<game::br_model*, model_geometry> m_geometry;
@@ -555,6 +588,7 @@ std::vector<static_chunk> m_chunks;
 		// Actors promoted after an earlier demotion -- scenery that came to rest.
 		uint32_t m_repromotions = 0;
 		uint32_t m_scene_models = 0;
+		uint32_t m_captures = 0;
 
 		// The camera whose scene last submitted, i.e. the race view. Models seen under any
 		// other camera belong to 3D HUD widgets: they are never suppressed and never enter

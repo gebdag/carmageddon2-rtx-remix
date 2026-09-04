@@ -80,23 +80,29 @@ namespace comp::game
 		return fn(material) != 0;
 	}
 
-	// The game owns exactly two pools of decal objects, both built once at startup and
-	// recycled for the rest of the session. Membership of these is what "is a decal" means
-	// here -- nothing else in the game lays a quad flat onto another surface -- so they are
-	// the authority on which geometry needs lifting clear of what it overlays.
-	//
-	// Each pool entry begins with a br_actor*, whose model is the quad.
-	// InitSpillsAndSkids  @ 0x004E9C40 -- tyre tracks, oil spills, smears, car shadows.
-	// InitImpactDecals    @ 0x004EA880 -- the "BANG!" marks.
-	struct decal_pool
+	// Two pools of pooled quad actors, both built once at startup and recycled for the
+	// rest of the session. Each entry holds a br_actor* whose model is the quad.
+	struct quad_pool
 	{
 		uint32_t address;
 		uint32_t stride;
 		uint32_t count;
 	};
 
-	constexpr decal_pool GROUND_DECAL_POOL{ 0x006A27F0u, 0x1Cu, 100u };
-	constexpr decal_pool IMPACT_DECAL_POOL{ 0x006A55D8u, 0x78u, 50u };
+	// InitSpillsAndSkids @ 0x004E9C40 -- tyre tracks, oil spills, smears, car shadows.
+	// Membership here is what "is a decal" means: nothing else in the game lays a quad
+	// flat onto another surface, so this pool is the authority on which geometry needs
+	// lifting clear of what it overlays.
+	constexpr quad_pool GROUND_DECAL_POOL{ 0x006A27F0u, 0x1Cu, 100u };
+
+	// InitSpriteParticlePool @ 0x004EA880 -- the camera-facing sprite billboards: explosion
+	// fire, powerup sparkle, blood clouds, impact "BANG!" marks. One shared pool for every
+	// data-driven sprite effect, recycled round-robin across effect types, animated by
+	// swapping the slot material's colour_map between frames (AnimateSpriteParticles
+	// @ 0x004EAAF0). Never lifted -- a billboard overlays nothing -- but, like the decals,
+	// re-placed rather than moved, so never baked. The slots start at 0x006A55C8; the
+	// address here is where slot 0 keeps its br_actor*.
+	constexpr quad_pool SPRITE_PARTICLE_POOL{ 0x006A55D8u, 0x78u, 50u };
 
 	typedef void(__cdecl* BrZbSceneRender_t)(br_actor* world, br_actor* camera, void* colour, void* depth);
 	typedef void(__cdecl* BrZbSceneRenderEnd_t)();
@@ -125,6 +131,12 @@ namespace comp::game
 
 	// br_renderer* — set by BrRendererBegin (0x005259B0).
 	constexpr uint32_t ADDR_g_pRenderer = 0x0079EFECu;
+
+	// br_pixelmap* — the race view's colour target, a sub-pixelmap of the back buffer
+	// (created at 0x004E49B7). RenderView (0x004E54F0) opens the main scene on it; the
+	// second view (mirror) draws to 0x0068B8A8 and the reflection passes to the 64x64
+	// texture at 0x006A22BC, all through the same BrZbSceneRenderBegin.
+	constexpr uint32_t ADDR_g_race_view_pixelmap = 0x00762128u;
 
 	inline void* get_renderer() {
 		return *reinterpret_cast<void**>(rebase(ADDR_g_pRenderer));

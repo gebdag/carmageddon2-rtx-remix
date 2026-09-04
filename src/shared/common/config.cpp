@@ -59,6 +59,7 @@ namespace shared::common
 		// [Remix]
 		remix.enabled = get_bool("Remix", "Enabled", true);
 		remix.dll_name = get_string("Remix", "DLLName", "d3d9_remix.dll");
+		remix.trigger_injection = get_bool("Remix", "TriggerInjection", true);
 
 		// [Chain]
 		chain.preload = get_string("Chain", "PreLoad", "");
@@ -97,7 +98,7 @@ namespace shared::common
 		// [Optimization]
 		optimization.static_world = get_bool("Optimization", "StaticWorld", true);
 		optimization.suppress_game_render = get_bool("Optimization", "SuppressGameRender", true);
-		optimization.suppress_dynamics = get_bool("Optimization", "SuppressDynamics", false);
+		optimization.suppress_dynamics = get_bool("Optimization", "SuppressDynamics", true);
 
 		// [Effects]
 		effects.translucent_pass = get_bool("Effects", "TranslucentPass", true);

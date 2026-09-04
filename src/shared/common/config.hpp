@@ -46,6 +46,14 @@ namespace shared::common
 		{
 			bool enabled = true;
 			std::string dll_name = "d3d9_remix.dll";
+
+			// Marks the end of the race submit as Remix's injection point with one
+			// off-screen draw it classifies as UI. Remix otherwise injects at the first
+			// draw that binds a texture tagged as UI, and composites every draw after
+			// that point on top of the path-traced frame -- so where the game's own
+			// raster stream ends up depends on which textures have been tagged and on
+			// how nGlide batches. Pinning the point makes it independent of both.
+			bool trigger_injection = true;
 		} remix;
 
 		struct chain_settings
@@ -69,17 +77,17 @@ namespace shared::common
 
 			// Drops the game's own render of every model drawn from a live sealed chunk.
 			// BRender transforms and lights those on the CPU and nGlide rasterizes the
-			// result, all redundantly once the chunks carry them. Dynamic models are never
-			// suppressed: pedestrian limbs and other callback-drawn extras only exist in
-			// the game's own render stream. Turn off when running without Remix.
+			// result, all redundantly once the chunks carry them. Turn off when running
+			// without Remix.
 			bool suppress_game_render = true;
 
-			// Extends that suppression to every model the injection captured, not just the
-			// ones a sealed chunk covers. In a busy race the dynamics are most of the
-			// remaining CPU render cost. Off by default because the injection's coverage is
-			// not provably complete for them: whatever a model draws outside the
-			// BrZbModelRender hook exists only in the game's rasterized stream.
-			bool suppress_dynamics = false;
+			// Extends that suppression to every model the injection captured in the race
+			// view. Remix composites whatever nGlide draws after its injection point over
+			// the path-traced frame, so a dynamic model's raster twin is not only wasted
+			// CPU: it is the flat, env-mapped car window painted over the ray-traced glass.
+			// Suppression rewrites the render style rather than skipping the render call,
+			// so custom render callbacks still run and their draws are still captured.
+			bool suppress_dynamics = true;
 		} optimization;
 
 		struct culling_settings

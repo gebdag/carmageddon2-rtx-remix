@@ -2,9 +2,10 @@
  *
  * Binary:  CARMA2_HW.EXE  (x86 PE, image base 0x00400000, 3734 functions)
  * Engine:  BRender 1.3.x (Argonaut) — statically linked into the EXE.
- *          The *.bdd device drivers on disk are NOT loadable in this release
- *          (they import BRCORE1.dll / BRHOST1.dll / BRPMAP1.dll, none of which ship).
- *          Both the Glide and the Direct3D device drivers are compiled into the EXE.
+ *          The Glide device driver is 3dfx_win.bdd, mapped by BRender's own PE loader
+ *          (FUN_00530E70, via BrDLLLoad 0x0052FFA0) -- its BRCORE1/BRHOST1/BRPMAP1 imports
+ *          resolve against the statically linked BRender; only glide2x.dll (nGlide) goes
+ *          through the OS loader. The EXE itself has no glide2x import.
  *
  * Renderer selection (from carma2.exe launcher, reg key Software\SCI\Carmageddon2):
  *          carma2_hw.exe                 -> 3dfx / Glide  (glide2x.dll, nGlide on GOG)
@@ -276,12 +277,13 @@ enum br_matrix_token {
 @ 0x0047e610 void InitLineAndSmokeStuff(void);       /* builds gLine_model / gLine_material / gLine_actor */
 @ 0x004f7cb0 void SetLineColour(char white /*cl*/);  /* white: both verts ffffff. else v0=ff0000, v1=ffff00 (spark) */
 @ 0x004e9c40 void InitSpillsAndSkids(void);          /* shadow materials + the 100-quad ground decal ring */
-@ 0x004ea880 void InitImpactDecals(void);            /* the 50-quad "BANG!" decal pool */
+/* 0x004EA880 is InitSpriteParticlePool -- see section 25; it is the shared sprite
+ * particle pool, not a decal pool. */
 @ 0x00478930 void FunkApplyMapTransform(void);       /* copies a frame's br_matrix23 into material->map_transform */
 @ 0x005259b0 int  BrRendererBegin(br_device *device, br_renderer *renderer);
 @ 0x0051f950 void BrModelUpdate(br_model *model, unsigned short flags);
 @ 0x00522eb0 void BrZbBucketFlushAndSwap(void);
-@ 0x005226d0 void BrZbSceneAddActorIncremental(br_actor *actor, ...);
+@ 0x005226d0 void BrZbSceneAddActorIncremental(br_actor *world, br_actor *camera, br_pixelmap *colour, br_pixelmap *depth); /* a self-contained scene render (setup camera, walk children, flush), not an add; the HUD text/flush path */
 @ 0x0051f630 int  __stdcall MaterialNeedsAlpha(br_material *material);  /* callee-cleans: both exits are `ret 4` */
 @ 0x00531870 void BrTransformToMatrix34(br_matrix34 *dest, br_transform *t);
 @ 0x00532620 void BrMatrix34Mul(br_matrix34 *dest, br_matrix34 *a, br_matrix34 *b);
@@ -304,7 +306,7 @@ $ 0x0074ca34 void*  g_line_actor           /* br_actor*, render_style = BR_RSTYL
 $ 0x0074cf68 int    g_lines_as_3d_models   /* non-zero: lines go through gLine_model instead of a 2D blit */
 $ 0x006a27f0 void*  g_ground_decal_ring    /* 100 entries, stride 0x1C, [0] = br_actor*; unit XZ quad at y=0 */
 $ 0x006a27e8 short  g_ground_decal_next    /* ring index, wraps at 100 */
-$ 0x006a55d8 void*  g_impact_decal_pool    /* 50 entries, stride 0x78, [0] = br_actor*; unit XY quad, "BANG!" material */
+/* 0x006A55D8 is g_sprite_particles + 0x10 (the actor field), NOT a pool base. */
 
 /* --- Powerup pickups (see findings.md section 10) ---
  * Pickups are track-hierarchy br_actors named "&\xA3NN..."; NN = index into the POWERUP.TXT
@@ -455,3 +457,228 @@ $ 0x0079ec24 void*  g_pmAcidFogTab          /* ACIDFOG.TAB */
 $ 0x0079ec28 void*  g_pmBlueGitTab          /* BLUEGIT.TAB */
 $ 0x00660e90 void*  g_depthCueModeNames     /* {"dark","fog","colour"} */
 
+
+/* --- Billboard sprite particle systems (see findings.md section 25) ---------------
+ * Three independent systems, all drawing camera-facing textured quads. None of them
+ * ever calls BrModelUpdate: the geometry is a constant unit quad and everything that
+ * makes one particle look different from the next lives in the material's colour_map
+ * or in the actor transform. All three are rendered by the ordinary scene walk (the
+ * actors are BrActorAdd'ed into g_effects_parent_actor), so BrZbModelRender receives
+ * actor->material as its 3rd argument -- the model faces carry no material. */
+
+/* One animation frame. Parsed from the effect text blocks; the authored opacity is
+ * stored and then immediately overwritten with 100.0f at 0x004EE8F2, so only `map`
+ * survives into the game. */
+struct br_sprite_frame {
+    float opacity;                  /* 0x00  always 100.0f -- authored value discarded */
+    struct br_pixelmap *map;        /* 0x04  BrMapFind(name) */
+};                                  /* 0x08 */
+
+/* One "explosion group" from the text spec. Array allocated by ParseSpriteEmitterList. */
+struct br_sprite_emitter {          /* 0x44 */
+    short count_min, count_max;     /* 0x00 0x02 */
+    short nframes;                  /* 0x04 */
+    short delay_min, delay_max;     /* 0x06 0x08 */
+    short rate_min, rate_max;       /* 0x0A 0x0C */
+    float scale_min, scale_max;     /* 0x10 0x14 */
+    unsigned char pad18[0x06];
+    float vel_x_min, vel_x_max;     /* 0x18 0x1C */
+    float vel_y_min, vel_y_max;     /* 0x20 0x24 */
+    float vel_z_min, vel_z_max;     /* 0x28 0x2C */
+    struct br_vector3 offset;       /* 0x30 */
+    int rotate_mode;                /* 0x3C  0 = norotate, else randomrotate */
+    struct br_sprite_frame *frames; /* 0x40  nframes entries */
+};
+
+/* Header the spawner takes in ecx: { count, br_sprite_emitter* }. */
+struct br_sprite_emitter_list { int count; struct br_sprite_emitter *emitters; };
+
+/* The single 50-slot pool every data-driven sprite effect draws from -- explosion
+ * fire, powerup sparkle, blood clouds, "BANG!" marks. Slots are handed out
+ * round-robin, so a slot actor/model/material triple is recycled ACROSS EFFECT
+ * TYPES: nothing about a slot identifies which effect currently owns it. */
+struct sprite_particle {            /* 0x78 */
+    int death_time;                 /* 0x00  0 = never used; ms */
+    int size_seed;                  /* 0x04 */
+    unsigned char opacity;          /* 0x08  written 0xFF at spawn */
+    unsigned char nframes;          /* 0x09 */
+    unsigned char free;             /* 0x0A  0 = live, 1 = free */
+    unsigned char pad0B;
+    void *owner;                    /* 0x0C  emitter descriptor / owning actor */
+    struct br_actor *actor;         /* 0x10  own br_actor, own br_model, own br_material */
+    int frame_period;               /* 0x14 */
+    short angle;                    /* 0x18  random Z rotation when rotate_mode != 0 */
+    short pad1A;
+    struct br_vector3 origin;       /* 0x1C */
+    struct br_sprite_frame frames[1]; /* 0x28  nframes entries, COPIED from the emitter */
+};
+
+/* One burning car. Root actor + exactly 3 child sprite actors; every child has its own
+ * br_material but they ALL share g_flame_model, so a per-br_model texture cache
+ * collapses all 30 flame sprites onto one animation frame. */
+struct flame_slot {                 /* 0x7C */
+    void *car;                      /* 0x00 */
+    unsigned char pad04[0x0C];
+    int timer;                      /* 0x10  set to 2000 by StartCarFire */
+    int pad14;
+    int intensity;                  /* 0x18 */
+    int pad1C;
+    struct br_actor *root;          /* 0x20  3 children, each a Lollipop sprite */
+    int frame[3];                   /* 0x24  per-child index into g_flame_pixelmaps */
+    /* 0x30.. per-child scale/offset randoms, addressed as frame[i] + 6/9/12/15 dwords */
+};
+
+@ 0x004ee780 void __fastcall ParseSpriteEmitterList(void *file /*ecx*/, struct br_sprite_emitter_list *out /*edx*/); /* frames: BrMapFind by name, error 0x77 if missing */
+@ 0x004efa00 void __fastcall ParseGeneralTxtEffectBlocks(void *file /*ecx*/); /* GENERAL.TXT: wasted-explosion / powerup-collect / powerup-respawn */
+@ 0x004ea880 void InitSpriteParticlePool(void);   /* WAS "InitImpactDecals": 50 slots, each its OWN br_actor + unit XY-quad br_model + "BANG!" br_material */
+@ 0x004ead00 void __fastcall SpawnSpriteParticles(struct br_sprite_emitter_list *emitters /*ecx*/, void *owner /*edx*/, struct br_vector3 *bbox /*arg0*/, struct br_vector3 *origin /*arg1*/);
+@ 0x004eaaf0 void AnimateSpriteParticles(void);   /* per frame: material->colour_map = frames[t].map; BrMaterialUpdate(mat, 0x7FFF) */
+@ 0x004eb020 void __fastcall KillSpriteParticlesForOwner(void *owner /*ecx*/);
+@ 0x004fdc10 void InitExplosionsAndSprites(void); /* debris models + 30 debris actors, then InitFlames + InitSplashes */
+@ 0x004fc3a0 void InitFlames(void);               /* "Lollipop" model, FLAMES.PIX x20, 10 slots x 3 child actors/materials */
+@ 0x004fc2e0 void ShutdownFlames(void);
+@ 0x004fbdd0 void __fastcall UpdateFlameSlot(int slot /*ecx*/, struct br_vector3 *pos /*edx*/, int alive); /* writes child->material->colour_map per frame */
+@ 0x004fc9e0 void RemoveAllFlameActors(void);
+@ 0x004fcab0 void __fastcall StartCarFire(void *car /*ecx*/, int seat /*edx*/, int intensity);
+@ 0x004fed90 int  __fastcall IsCarOnFire(void *car /*ecx*/);
+@ 0x004fdde0 void __fastcall InitSplashes(void *name_list /*ecx*/); /* "Splash" model, SPLSHBLU.PIX x<=20, one material PER FRAME, 32 actors */
+@ 0x004fd530 void __fastcall SpawnSplash(void *car /*ecx*/, ...);   /* round-robin over g_splash_slots; also seeds a spark */
+@ 0x004f9790 void EffectsTick(void);              /* splash + debris transforms; no material or model change */
+@ 0x00513a30 int  __fastcall LoadPixelmapMany(char *name /*ecx*/, struct br_pixelmap **out /*edx*/, int max); /* -> count loaded */
+@ 0x0051f010 void BrMapAddMany(struct br_pixelmap **maps, int count);
+@ 0x0051eff0 struct br_pixelmap *BrMapFind(char *name);
+
+$ 0x006aa380 void*  g_flame_model          /* br_model* "Lollipop", 4 verts / 2 faces, XY quad x -0.5..0.5, y 0..1 */
+$ 0x006a8638 void*  g_flame_pixelmaps      /* br_pixelmap*[20] from FLAMES.PIX (FLM01..FLM20) */
+$ 0x00660118 void*  g_flame_frame_size     /* 20 x { u8 width, u8 height } source sizes for the 20 frames */
+$ 0x006a96ac void*  g_flame_slots          /* flame_slot[10], stride 0x7C */
+$ 0x006aa59c int    g_flame_slot_mask      /* bit per live flame slot */
+$ 0x006a8758 void*  g_splash_model         /* br_model* "Splash", identical quad to Lollipop */
+$ 0x006a9130 void*  g_splash_frame_materials /* br_material*[g_splash_frame_count], ONE per animation frame */
+$ 0x006aa5a4 int    g_splash_frame_count   /* <= 20 */
+$ 0x006a82b8 void*  g_splash_slots         /* 32 entries, stride 0x1C: [0x00] actor, [0x10] alive, [0x14] size, [0x18] flip */
+$ 0x006aa570 int    g_splash_slot_mask
+$ 0x006a82ac int    g_splash_next          /* round-robin index, wraps at 32 */
+$ 0x006a55c8 void*  g_sprite_particles     /* sprite_particle[50], stride 0x78 */
+$ 0x006a82a0 int    g_sprite_particle_next /* round-robin scan start when the pool is full */
+$ 0x0074d35c void*  g_effects_camera_actor /* its br_matrix34 is copied into every particle actor -- billboarding */
+$ 0x007634b8 void*  g_effects_parent_actor /* BrActorAdd target for particle / splash / debris actors */
+$ 0x006a9180 void*  g_debris_slots         /* 30 entries, stride 0x2C; 3D chunks, not sprites */
+$ 0x006aa584 int    g_debris_slot_mask
+$ 0x006aa588 void*  g_debris_model_a       /* alternated per slot with g_debris_model_b */
+$ 0x006aa58c void*  g_debris_model_b
+$ 0x006a52d0 void*  g_fx_wasted_explosion  /* 0x2E0 GENERAL.TXT block; emitter list at +0x23C = 0x006A550C (ex00001..ex00007) */
+$ 0x006a7ce0 void*  g_fx_powerup_collect   /* 0x2E0 block; emitter list at 0x006A7F1C (BING1..6, TWINK1..4) */
+$ 0x006a3660 void*  g_fx_powerup_respawn   /* 0x2E0 block */
+$ 0x006a7f1c void*  g_fx_powerup_collect_emitters /* { count, br_sprite_emitter* } -- the sparkle */
+$ 0x00694478 void*  g_fx_ped_blood_emitters      /* PEDS/SETTINGS.TXT blood clouds (BIGBL01..05) */
+$ 0x0069bc28 void*  g_fx_ped_blood_emitters2
+$ 0x007620f8 void*  g_fx_impact_emitters         /* current car-impact effect */
+
+/* --- Race frame order, pixelmaps and the Glide route (2026-09-02) ---
+ * The Glide code is NOT in the EXE: CARMA2_HW.EXE has no glide2x import and no "gr*" string.
+ * 3dfx_win.bdd (base 0x10000000, export BrDrv1Begin @ +0x1A70) is mapped by BRender's OWN PE
+ * loader (BrDLLLoadImage 0x00530E70), which resolves its BRCORE1/BRPMAP1/BRHOST1 imports from the
+ * statically linked BRender inside the EXE; only its glide2x.dll import goes through the OS
+ * loader. That is how nGlide ends up in the process. grSstIdle is never imported or called --
+ * the only sync is grBufferNumPending immediately before grBufferSwap. */
+
+/* br_device_pixelmap dispatch offsets, as used by the EXE wrappers. The Glide dispatch struct
+ * lives at 3dfx_win.bdd+0xE470; the glide2x entry each slot reaches is noted. */
+enum br_pixelmap_dispatch {
+    PMD_isType            = 0x20,
+    PMD_match             = 0x4C, /* bdd 0x100023A0 -- makes the back buffer / depth buffer */
+    PMD_allocateSub       = 0x50, /* bdd 0x10002E60 -- viewport sub-pixelmaps */
+    PMD_copy              = 0x54,
+    PMD_copyTo            = 0x58,
+    PMD_copyFrom          = 0x5C,
+    PMD_fill              = 0x60, /* bdd 0x100026C0 -> grRenderBuffer/grColorMask/grDepthMask/grBufferClear */
+    PMD_doubleBuffer      = 0x64, /* bdd 0x100028F0 -> grBufferNumPending x2, grBufferSwap */
+    PMD_rectangle         = 0x7C,
+    PMD_rectangleCopy     = 0x84, /* bdd 0x10002A30 -> grLfbWriteRegion */
+    PMD_rectangleCopyTo   = 0x88, /* same */
+    PMD_rectangleCopyFrom = 0x8C, /* bdd 0x10002AF0 -> grLfbReadRegion */
+    PMD_rectStretchCopy   = 0x90,
+    PMD_rectangleFill     = 0x9C, /* bdd 0x10002580 -> grLfbLock / write / grLfbUnlock */
+    PMD_pixelSet          = 0xA0, /* bdd 0x10002950 -> grLfbLock / grLfbUnlock */
+    PMD_line              = 0xA4, /* STUB on the Glide device */
+    PMD_text              = 0xAC, /* STUB on the Glide device */
+    PMD_directLock        = 0xD8, /* bdd 0x10002F40 -> grLfbLock */
+    PMD_directUnlock      = 0xDC, /* bdd 0x10002FB0 -> grLfbUnlock */
+};
+
+@ 0x004e4e40 void RenderAFrame(void);          /* the whole frame; called from RaceFrameTick @0x00493AEA */
+@ 0x004e54f0 void __fastcall RenderView(int view_index /*ecx*/, br_actor *camera, br_pixelmap *colour, br_pixelmap *depth); /* view 0 also renders the reflection textures first */
+@ 0x004e5680 void RenderScene(br_pixelmap *colour, br_pixelmap *depth, float yon_scale, int do_shadows, int do_particles, int); /* edx = camera actor, ecx = owning car; ret 0x18 */
+@ 0x00445cb0 void DrawHorizon(br_actor *camera /*edx*/, void *ctx /*ecx*/); /* scrolls g_horizonMaterial.map_transform by camera yaw, then BrZbSceneRenderAdd @0x00445E05 */
+@ 0x00446340 void FrameDepthCueUpdate(void);   /* TintPolyShow/Hide + refresh the horizon shade table */
+@ 0x004e74d0 void BuildCarShadows(void);       /* -> 0x004E7650 per nearby car */
+@ 0x00540560 void SetScreenDepthBias(unsigned int level); /* [0x0079FEB4] = g_depth_bias_table[level] */
+@ 0x004d3610 void DrawSeveredLimbs(void);      /* Limbs_actor pool, added then removed each frame */
+@ 0x00506e50 void DrawPickupsAndMisc(br_actor *cam, void *car);
+@ 0x0051c300 void PDAllocateScreenAndBack(void); /* BrDevBeginVar("3DFX_WIN",640,480,16,RGB_565), _match back + third page */
+@ 0x0051c520 void PDScreenSwap(void);          /* BrPixelmapDoubleBuffer(g_pmScreen, g_pmBackBuffer) -> grBufferSwap */
+@ 0x004e4940 void AllocateDepthBuffer(void);   /* [0x0068B8A4] = back->_match(back, 1) */
+@ 0x004e4980 void __fastcall SetupRaceViewport(int x /*ecx*/, int y /*edx*/, int w, int h); /* calls PDAllocateScreenAndBack, then g_pmRaceView = sub-pixelmap of the back buffer */
+@ 0x004e5cb0 void MirrorQueueReset(void);      /* per frame, from RaceFrameTick @0x00492BC9 */
+@ 0x004e5cc0 void __fastcall MirrorQueueAdd(br_actor *camera /*ecx*/, br_material *mat /*edx*/);
+@ 0x00464e40 void HudDrawText3D(int y, int font, float align, int flush); /* ecx = string, edx = x; glyph actors -> BrZbSceneAddActorIncremental */
+@ 0x004e5ad0 void __fastcall HudQueueActor(br_actor *actor /*ecx*/); /* -> g_hud_actor_list, max 128 */
+@ 0x004e5b00 void HudFlush(void);              /* one BrZbSceneAddActorIncremental for the whole HUD queue */
+@ 0x0047cad0 void DrawOverlayQuad(int y0, int x0, int y1);  /* edx = x1; rebuilds g_overlay_quad_model, then BrZbSceneRender @0x0047CB9C */
+@ 0x0047ba80 void __fastcall BlitSprite16(short dst_y, br_pixelmap *src, short sx, short sy, short w, short h); /* ecx = dst pixelmap, edx = dst_x; raw 16-bit CPU blit, colour-keys on 0 */
+@ 0x0047c740 void DrawRaceMap(void);           /* 11x BrPixelmapLine into a MEMORY pixelmap */
+@ 0x00523160 void BrPixelmapStore(br_pixelmap *pm, unsigned int flags); /* uploads pm into the driver as a texture (renderer +0x78, token 0xA5) */
+@ 0x005382f0 void BrPixelmapFill(br_pixelmap *pm, unsigned int colour);
+@ 0x005389e0 void BrPixelmapDoubleBuffer(br_pixelmap *dst, br_pixelmap *src);
+@ 0x00538640 void BrPixelmapRectangleFill(br_pixelmap *pm, int x, int y, int w, int h, unsigned int colour);
+@ 0x00538590 void BrPixelmapRectangleCopy(br_pixelmap *dst, int dx, int dy, br_pixelmap *src, int sx, int sy, int w, int h);
+@ 0x00538990 void BrPixelmapLine(br_pixelmap *pm, int x1, int y1, int x2, int y2, unsigned int colour);
+@ 0x00538a10 void BrPixelmapText(br_pixelmap *pm, int x, int y, unsigned int colour, void *font, const char *text);
+@ 0x00538d80 br_pixelmap *BrPixelmapAllocate(unsigned char type, int w, int h, void *pixels, int flags);
+@ 0x00537e20 br_pixelmap *BrPixelmapMatch(br_pixelmap *src, int match_type);
+@ 0x00538d20 void *BrPixelmapDirectLock(br_pixelmap *pm, int);   /* -> grLfbLock */
+@ 0x00538d50 void BrPixelmapDirectUnlock(br_pixelmap *pm);       /* -> grLfbUnlock */
+@ 0x00530e70 void *BrDLLLoadImage(const char *path);  /* BRender own PE loader for .bdd drivers */
+@ 0x0052ffa0 void *BrDLLLoad(const char *name);
+@ 0x005301e0 void *BrDLLQuerySymbol(void *module, const char *name, int);
+@ 0x00528e10 int  BrDevBeginVar(void **pmap, const char *device, ...);
+@ 0x005285c0 int  BrDevFindOrLoad(void **out, const char *name, void *tokens);
+
+$ 0x0074d3e0 void*  g_pmScreen          /* front buffer; identifier "Voodoo Graphics" under Glide */
+$ 0x0074d360 void*  g_pmBackBuffer      /* g_pmScreen->_match(); every 2D/HUD/tint draw targets this. */
+$ 0x006ad47c void*  g_pmThirdPage       /* g_pmBackBuffer->_match() */
+$ 0x0068b8a4 void*  g_pmDepthBuffer     /* g_pmBackBuffer->_match(.., 1) */
+$ 0x00762128 void*  g_pmRaceView        /* sub-pixelmap of g_pmBackBuffer -- the 3D viewport */
+$ 0x0068b8a8 void*  g_pmSecondView      /* sub-pixelmap of g_pmBackBuffer -- mirror / PiP colour target */
+$ 0x0075b93c void*  g_pmSecondViewDepth /* holds g_pmDepthBuffer */
+$ 0x006a22bc void*  g_pmReflection      /* 64x64 render target for mirrors / env maps */
+$ 0x006a22c0 int    g_mirror_queue_count
+$ 0x006a22c8 void*  g_mirror_queue      /* stride 8: { br_actor* camera, br_material* target } */
+$ 0x0074d44c void*  g_world_root_actor  /* BrActorAllocate(0,0) at 0x0047DE61; the `world` argument */
+$ 0x0075b940 void*  g_second_view_camera
+$ 0x00704e40 int    g_second_view_active
+$ 0x0074b778 int    g_current_view_index /* 0 = main view, 1 = second view; read by DrawHorizon */
+$ 0x0074d644 void*  g_backdrop_actors   /* 4 entries 0x0074D644..0x0074D650 (0x0074D648 skipped), drawn first with a depth bias */
+$ 0x00670530 float* g_depth_bias_table  /* { 0, -1.5, -3, -4.5, -6, -7.5, -9 } */
+$ 0x0079feb4 float  g_screen_depth_bias /* added to screen Z by the rasterizer (0x00547A53 et al) */
+$ 0x0067c4c0 void*  g_horizon_actor_alt /* used when g_current_view_index != 0 */
+$ 0x0067c4d8 void*  g_horizon_actor     /* main view sky dome */
+$ 0x0067c4ac short  g_horizon_built_fov
+$ 0x0067c4b8 float  g_horizon_built_yon
+$ 0x0074ca00 void*  g_hud_root_actor    /* world for the HUD BrZbSceneAddActorIncremental */
+$ 0x0074cf74 void*  g_hud_camera_actor
+$ 0x0074cf10 void*  g_hud_text_root     /* parent of the glyph actors */
+$ 0x0074cae0 void*  g_hud_glyph_actors  /* actor pool, cap 0x100 */
+$ 0x00686490 int    g_hud_glyph_count
+$ 0x00704e60 void*  g_hud_actor_list    /* 128 slots; "Not enough HUD actor storage" @0x0065FB90 */
+$ 0x00703e28 int    g_hud_actor_count
+$ 0x0074cac4 void*  g_overlay_camera_actor /* world == camera for the DrawOverlayQuad BrZbSceneRender */
+$ 0x0074ca70 void*  g_overlay_quad_model
+$ 0x0074cf24 void*  g_overlay_quad_actor
+$ 0x0074ca1c void*  g_pmDashboard       /* current entry of g_dashboard_pixelmaps; CPU blit target */
+$ 0x0067fd00 void*  g_dashboard_pixelmaps /* 12 memory pixelmaps loaded by LoadPixelmap */
+$ 0x0068be38 int    g_letterbox_enabled  /* gates the 4 back-buffer rectangleFills */
+$ 0x0067c478 unsigned int g_swap_hold_ms /* PDScreenSwap is skipped until now > this + 500 */
+$ 0x0079f940 void*  g_brender_device_list /* BrDevAdd target, capacity 16, allocated at 0x00527EDF */
+$ 0x0079f934 void*  g_brender_module_list /* the BrDLLLoad internal module registry */
