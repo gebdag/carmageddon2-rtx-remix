@@ -69,6 +69,15 @@ namespace comp
 			}
 		}
 
+		// Negative when the transform mirrors, which reverses the winding of anything baked
+		// through it.
+		float determinant3(const game::br_matrix34& m)
+		{
+			return m.m[0][0] * (m.m[1][1] * m.m[2][2] - m.m[1][2] * m.m[2][1])
+			     - m.m[0][1] * (m.m[1][0] * m.m[2][2] - m.m[1][2] * m.m[2][0])
+			     + m.m[0][2] * (m.m[1][0] * m.m[2][1] - m.m[1][1] * m.m[2][0]);
+		}
+
 		// Inverts the affine transform. BRender lets actors carry scale, so this does a full
 		// 3x3 inverse rather than assuming an orthonormal basis.
 		bool invert34(const game::br_matrix34& m, game::br_matrix34& out)
@@ -1183,41 +1192,41 @@ namespace comp
 	}
 
 	/*
-	 * Names the screen-space winding of a back face, once enough triangles have been seen.
+	 * The mode that culls back faces, and the check that the assumption behind it holds.
 	 *
-	 * BRender keeps a face when the eye is on its normal's side, with the normal taken as
-	 * (v1 - v0) x (v2 - v0): a front face is wound counter-clockwise as seen from the eye.
-	 * The projection handed to Remix is right-handed with the camera down -Z, so that is
-	 * counter-clockwise in normalized device coordinates, and the viewport's downward Y
-	 * flips it to clockwise on screen -- which is D3D9's own front-face convention. The
-	 * mode that culls back faces is therefore D3DCULL_CCW, provided the order we emit
-	 * indices in is the order BRender took its normal from. That last part is the only
-	 * thing not settled by the engine, so it is measured rather than assumed; when the
-	 * measurement disagrees, both halves flip.
+	 * BRender keeps a face when the eye is on the side its normal points to, with the
+	 * normal built by BrPlaneEquation (0x00536FB0) as (v1 - v0) x (v2 - v0) over the very
+	 * index triple this module emits. A front face is therefore counter-clockwise seen
+	 * from the eye; under the right-handed projection handed to Remix that is
+	 * counter-clockwise in normalized device coordinates, and D3D's downward-Y viewport
+	 * flips it to clockwise on screen -- which is D3D9's own front-face convention
+	 * (dxvk: frontFace = VK_FRONT_FACE_CLOCKWISE, D3DCULL_CCW -> VK_CULL_MODE_BACK_BIT).
+	 * So the mode is D3DCULL_CCW by construction, not by measurement.
+	 *
+	 * The sampling is kept as the check on the one thing that construction assumes: that
+	 * the order emitted here is still the order the plane was built from. It reports the
+	 * agreement once and says so loudly when it inverts.
 	 */
 	DWORD brender_inject::resolve_cull_mode()
 	{
 		const bool apply = shared::common::config::get().effects.backface_culling;
 
-		if (m_cull_mode == D3DCULL_NONE
-			&& m_winding_agree + m_winding_disagree >= WINDING_SAMPLES)
+		if (!m_winding_reported && m_winding_agree + m_winding_disagree >= WINDING_SAMPLES)
 		{
-			// Measured and reported whether or not it is applied: the winding is a fact
-			// about the game's data, and a run that does not use it should still say what
-			// it would have been.
-			m_cull_mode = m_winding_agree >= m_winding_disagree ? D3DCULL_CCW : D3DCULL_CW;
+			m_winding_reported = true;
+			const bool outward = m_winding_agree >= m_winding_disagree;
 
 			shared::common::log("BRender", std::format(
-				"backface culling {}: {} ({} of {} sampled triangles wind outward)",
-				apply ? "on" : "measured but OFF",
-				m_cull_mode == D3DCULL_CCW ? "front faces are clockwise, culling CCW"
-				                           : "front faces are counter-clockwise, culling CW",
+				"backface culling {}: culling CCW, {} of {} sampled triangles wind outward{}",
+				apply ? "on" : "OFF",
 				std::max(m_winding_agree, m_winding_disagree),
-				m_winding_agree + m_winding_disagree),
-				shared::common::LOG_TYPE::LOG_TYPE_GREEN, true);
+				m_winding_agree + m_winding_disagree,
+				outward ? "" : " - THE EMITTED ORDER IS INVERTED, front faces will be culled"),
+				outward ? shared::common::LOG_TYPE::LOG_TYPE_GREEN
+				        : shared::common::LOG_TYPE::LOG_TYPE_ERROR, true);
 		}
 
-		return apply ? m_cull_mode : D3DCULL_NONE;
+		return apply ? DWORD{ D3DCULL_CCW } : DWORD{ D3DCULL_NONE };
 	}
 
 	bool brender_inject::extract_geometry(IDirect3DDevice9* dev, game::br_model* model,
@@ -1580,6 +1589,21 @@ namespace comp
 			v.nx = nx * world.m[0][0] + ny * world.m[1][0] + nz * world.m[2][0];
 			v.ny = nx * world.m[0][1] + ny * world.m[1][1] + nz * world.m[2][1];
 			v.nz = nx * world.m[0][2] + ny * world.m[1][2] + nz * world.m[2][2];
+		}
+
+		/*
+		 * A chunk draws with WORLD = identity, so a mirroring placement is baked into the
+		 * vertices -- and a mirror reverses their winding. The dynamic path never has to
+		 * care, because D3D9 culls after the world transform and accounts for its
+		 * handedness itself; a baked actor has no transform left to account for. The
+		 * normals were carried through the same matrix and still point outward, so
+		 * restoring the index order is what keeps the two agreeing.
+		 */
+		if (determinant3(world) < 0.0f)
+		{
+			for (size_t i = 0; i + 2 < indices.size(); i += 3) {
+				std::swap(indices[i + 1], indices[i + 2]);
+			}
 		}
 
 		record.ranges.clear();

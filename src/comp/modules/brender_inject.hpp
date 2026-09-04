@@ -405,17 +405,8 @@ namespace comp
 		// Issues the one draw that tells Remix the path-traced scene is complete.
 		void trigger_injection(IDirect3DDevice9* dev);
 
-		/*
-		 * Which screen-space winding is a back face, measured rather than assumed.
-		 *
-		 * Everything the injection submits is one engine's geometry under one projection,
-		 * so a single answer holds for the whole game -- but which answer depends on the
-		 * order BRender stores a face's vertices in relative to its outward normal, and
-		 * that is a property of the data, not of the API. `sample_winding` compares the
-		 * normal implied by the order we emit indices in against the authored vertex
-		 * normals; once enough triangles agree, `resolve_cull_mode` names the mode.
-		 * D3DCULL_NONE until then, which is what the injection did throughout.
-		 */
+		// Accumulates whether the winding this module emits agrees with the normals the
+		// game authored, which is the assumption resolve_cull_mode's answer rests on.
 		void sample_winding(const std::vector<ffp_vertex>& vertices,
 		                    const std::vector<uint32_t>& indices, size_t first_index);
 		DWORD resolve_cull_mode();
@@ -652,7 +643,7 @@ std::vector<static_chunk> m_chunks;
 		// Triangles whose emitted winding agrees (or does not) with the authored normals.
 		uint32_t m_winding_agree = 0;
 		uint32_t m_winding_disagree = 0;
-		DWORD m_cull_mode = D3DCULL_NONE;
+		bool m_winding_reported = false;
 
 		// Triangles to sample before naming the cull mode. A model's own faces can
 		// disagree -- authored geometry is not always consistent -- so the answer is the

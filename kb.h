@@ -755,3 +755,66 @@ $ 0x0079f984 void*  g_face_flags           /* stride 4, flag byte at +2: 0 culle
 $ 0x0079f988 void*  g_vertex_refcounts
 $ 0x0079f99c int    g_visible_face_count
 $ 0x0079f9b4 int    g_online_face_count
+
+/* ------------------------------------------------------------------ backface culling:
+ * where the cull mode is published, and proof the driver never culls (2026-09-05)
+ *
+ * BrMaterialUpdate 0x00520E70..0x00521459 turns the two material flag bits into the
+ * renderer's cull mode. The whole decision is 0x00521187..0x005211B8:
+ *
+ *     0x00521187  mov  eax, [esi+0x20]     ; br_material::flags
+ *     0x0052118D  test ah, 8               ; & 0x0800  BR_MATF_ALWAYS_VISIBLE
+ *     0x00521190  mov  ecx, 0xAD           ; default   BRT_ONE_SIDED (cull back faces)
+ *     0x00521195  je   0x0052119C
+ *     0x00521197  mov  ecx, 1              ; set       BRT_NONE      (no facing test)
+ *     0x0052119C  test ah, 0x10            ; & 0x1000  BR_MATF_TWO_SIDED
+ *     0x0052119F  je   0x005211A6
+ *     0x005211A1  mov  ecx, 0xAE           ; set       BRT_TWO_SIDED (tested, never culled)
+ *     0x005211AC  push 0xAC / push 0 / push 0x74 ; renderer->partSet(BRP_CULL, 0, 0xAC, ecx)
+ *
+ * TWO_SIDED is tested last, so it wins when a material carries both bits. No other flag
+ * bit, and no model or actor field, reaches the cull mode: culling is a pure function of
+ * br_material::flags & 0x1800.
+ *
+ * Sprite billboards, InitSpriteParticlePool 0x004EAA4E: `and [eax+0x20],~1` clears
+ * BR_MATF_LIGHT, then 0x004EAA5F `or dh,8` sets BR_MATF_ALWAYS_VISIBLE -- so every sprite
+ * material is 0x0800 and is never culled. gLine_material's 0x1007 carries BR_MATF_TWO_SIDED.
+ *
+ * The renderer+0x18 mode reaches two face-emit loops, picked by the same switch:
+ *     0x00542830  BRT_ONE_SIDED emit -- `test byte [edi+2], 4` at 0x0054285D skips the face
+ *                 when the cull stage cleared the visible bit
+ *     0x005428B0  every other mode -- emits unconditionally (the bit is always 4 there)
+ *     0x00543940  the clipped-path emit; same `test al, 4` gate at 0x0054398C
+ *
+ * BrZbSceneRenderEnd 0x00522EB0 does NOT cull: partSet(0x7D,0,0xF9), bucket sort
+ * (0x005267B0 / 0x00526770), renderer->flush(+0xFC). Every facing decision is already
+ * baked into g_face_flags by then.
+ *
+ * The Glide driver does not cull either, and says so explicitly. In 3dfx_win.bdd the
+ * device-open function 0x10001FB0 zeroes ESI at 0x10001FBA and never reloads it, then:
+ *     0x10002112  push esi ; call 0x10005A0A -> [0x1000B1F8] _grSstSelect@4   (0)
+ *     0x10002118  push esi ; call 0x10005A04 -> [0x1000B1FC] _grCullMode@4    (0)
+ * grCullMode(0) is GR_CULL_DISABLE, and it is the only call to it in the driver. So a
+ * proxy that replaces the rasterizer inherits no hardware cull state -- the software test
+ * at 0x005432B0 is the entire facing rule.
+ *
+ * Float constants: 0x0058C8E0 = 0.0f (the parallel test's threshold); BrPlaneEquation uses
+ * 0x0058B95C = 0.0f as its degenerate-length epsilon and 0x0058B960 = 1.0f as 1/len's
+ * numerator, leaving n = (0,0,0) and d = 0 for a zero-area face (which then fails
+ * `dot >= d` only when dot < 0, i.e. it survives as a front face).
+ */
+
+@ 0x00520e70 void BrMaterialUpdate_PublishesCull(br_material *material, unsigned short flags); /* cull decision at 0x00521187 */
+@ 0x00542830 void EmitFacesCulled(void *self, void *renderer);   /* honours g_face_flags bit 4 */
+@ 0x005428b0 void EmitFacesAll(void *self, void *renderer);      /* no facing gate */
+@ 0x00543940 void EmitFacesClipped(void *self, void *renderer);  /* clipped path, same gate */
+@ 0x005434c6 void CullDispatchOnScreenPerspective(void);         /* -> 0x005432b0 */
+@ 0x005434b6 void CullDispatchOnScreenParallel(void);            /* -> 0x00543380 */
+
+$ 0x0079fb00 float g_cull_eye_model_w      /* 1.0 perspective, 0.0 parallel (direction) */
+$ 0x0058c8e0 float g_zero_f                /* parallel cull threshold */
+
+/* 3dfx_win.bdd (base 0x10000000) -- culling is disabled at the hardware */
+@ 0x10001fb0 int  Glide_DeviceOpen(void);  /* grSstSelect(0) + grCullMode(0) at 0x10002112/18 */
+$ 0x1000b1fc void* p_grCullMode            /* IAT slot; thunk 0x10005A04, one call site */
+$ 0x1000b1f8 void* p_grSstSelect           /* IAT slot; thunk 0x10005A0A */
