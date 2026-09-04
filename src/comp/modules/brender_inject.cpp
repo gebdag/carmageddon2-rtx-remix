@@ -200,17 +200,32 @@ namespace comp
 			return id;
 		}
 
+		/*
+		 * Whether the material asks for both of its sides to be drawn.
+		 *
+		 * BRender rejects back faces, so a shell of single-layer polygons -- a car body,
+		 * and its windows with it -- is one-sided geometry. Submitting it double-sided
+		 * makes a path tracer intersect the inside of every surface as well, which for
+		 * glass means an interface where the game has none.
+		 */
+		bool material_is_two_sided(const game::br_material* material)
+		{
+			return !material
+				|| (material->flags & (game::BR_MATF_ALWAYS_VISIBLE | game::BR_MATF_TWO_SIDED)) != 0;
+		}
+
 		// Noncars get chunks of their own: a hit noncar is punched out of its chunk, and
 		// keeping that write away from the pristine world chunks is what keeps *their*
 		// geometry hashes immutable for Remix modding. Opacity joins the key because a chunk
 		// draws under one texture factor, so runs faded to different degrees cannot share it.
 		uint64_t chunk_key(const IDirect3DTexture9* texture, const bool has_alpha,
-			const bool noncar, const uint8_t opacity)
+			const bool noncar, const bool two_sided, const uint8_t opacity)
 		{
 			return reinterpret_cast<uintptr_t>(texture)
 				| (static_cast<uint64_t>(opacity) << 32)
 				| (has_alpha ? 1ull << 63 : 0ull)
-				| (noncar ? 1ull << 62 : 0ull);
+				| (noncar ? 1ull << 62 : 0ull)
+				| (two_sided ? 1ull << 61 : 0ull);
 		}
 
 		// Asks the live renderer for its current model_to_view. Mirrors the call
@@ -935,6 +950,10 @@ namespace comp
 		geometry.last_used_scene = m_scenes_submitted;
 		geometry.queued_scene = into.queued_scene;
 
+		// Pool membership is a property of the model, so it is resolved with the geometry
+		// rather than on every draw -- the pools are walked with VirtualQuery behind them.
+		geometry.solid = !is_decal_model(model) && !in_quad_pool(game::SPRITE_PARTICLE_POOL, model);
+
 		// 16-bit indices are enough for any single model this game ships; anything larger is
 		// corrupt data rather than a real mesh.
 		if (!extract_geometry(dev, model, fallback_material, vertices, parts, indices)
@@ -1032,6 +1051,34 @@ namespace comp
 	}
 
 	/*
+	 * How a translucent run reaches the device.
+	 *
+	 * Sprites and decals are composites and stay blended: their alpha says how much of
+	 * what is behind them shows through, and nothing replaces them. Solid translucency is
+	 * a surface -- glass, water -- and under a path tracer the material owns how much
+	 * light passes through it, so the draw only has to carry the cut-out. Submitting it
+	 * unblended is what lets it be single-sided, since the runtime forces every blended
+	 * draw double-sided regardless of the cull mode it was handed.
+	 *
+	 * A run the game is fading through its opacity byte keeps its blending either way:
+	 * that fade is uniform over the surface and an alpha test cannot express it.
+	 */
+	brender_inject::blend_plan brender_inject::plan_blending(const bool has_alpha,
+		const uint8_t opacity, const bool solid)
+	{
+		if (!has_alpha && opacity == 255) {
+			return { false, false, false };
+		}
+
+		if (solid && has_alpha && opacity == 255
+			&& shared::common::config::get().effects.solid_translucency) {
+			return { false, false, true };
+		}
+
+		return { true, true, true };
+	}
+
+	/*
 	 * Resolves what each part of a model looks like in the draw being captured.
 	 *
 	 * A model's geometry is built once, but what the game draws with it changes between
@@ -1059,11 +1106,13 @@ namespace comp
 			draw_state state{};
 			state.texture = part.texture;
 			state.opacity = part.opacity;
+			state.two_sided = part.two_sided;
 			bool has_alpha = part.has_alpha;
 
 			game::br_material* material = part.inherits_material ? fallback_material : part.material;
 			if (material && readable(material, sizeof(game::br_material)))
 			{
+				state.two_sided = material_is_two_sided(material);
 				IDirect3DTexture9* texture = texture_for(dev, material);
 				state.texture = texture && texture != m_white_texture
 					? texture
@@ -1082,12 +1131,87 @@ namespace comp
 				}
 			}
 
-			state.blended = has_alpha || state.opacity < 255;
+			const blend_plan plan = plan_blending(has_alpha, state.opacity, geometry.solid);
+			state.blended = plan.blended;
+			state.blend_enabled = plan.blend_enabled;
+			state.alpha_tested = plan.alpha_tested;
+
 			if (state.blended) { queued.has_blended = true; }
 			else { queued.has_opaque = true; }
 
 			m_draw_states.push_back(state);
 		}
+	}
+
+	/*
+	 * Counts triangles whose emitted winding agrees with the normals they carry.
+	 *
+	 * The geometric normal of a triangle taken in the order we emit its indices is
+	 * (b - a) x (c - a). Where that points the same way as the authored vertex normals,
+	 * the order we emit is the one BRender stores for an outward-facing face.
+	 */
+	void brender_inject::sample_winding(const std::vector<ffp_vertex>& vertices,
+		const std::vector<uint32_t>& indices, const size_t first_index)
+	{
+		for (size_t i = first_index; i + 2 < indices.size(); i += 3)
+		{
+			const ffp_vertex& a = vertices[indices[i]];
+			const ffp_vertex& b = vertices[indices[i + 1]];
+			const ffp_vertex& c = vertices[indices[i + 2]];
+
+			const float ab[3] = { b.x - a.x, b.y - a.y, b.z - a.z };
+			const float ac[3] = { c.x - a.x, c.y - a.y, c.z - a.z };
+
+			float geometric[3];
+			cross(ab, ac, geometric);
+
+			const float authored[3] = { a.nx + b.nx + c.nx, a.ny + b.ny + c.ny, a.nz + b.nz + c.nz };
+			const float agreement = geometric[0] * authored[0] + geometric[1] * authored[1]
+				+ geometric[2] * authored[2];
+
+			// A degenerate triangle or a vertex with no normal says nothing either way.
+			if (agreement > 0.0f) { ++m_winding_agree; }
+			else if (agreement < 0.0f) { ++m_winding_disagree; }
+
+			if (m_winding_agree + m_winding_disagree >= WINDING_SAMPLES) {
+				return;
+			}
+		}
+	}
+
+	/*
+	 * Names the screen-space winding of a back face, once enough triangles have been seen.
+	 *
+	 * The projection handed to Remix is right-handed with the camera down -Z, so a
+	 * triangle whose geometric normal faces the camera comes out counter-clockwise in
+	 * normalized device coordinates, and the viewport's downward Y flips that to
+	 * clockwise on screen. Front faces are therefore clockwise, and the mode that culls
+	 * back faces is D3DCULL_CCW -- provided the order we emit is the outward one, which
+	 * is exactly what the sampling measured. When it is not, both halves flip.
+	 */
+	DWORD brender_inject::resolve_cull_mode()
+	{
+		const bool apply = shared::common::config::get().effects.backface_culling;
+
+		if (m_cull_mode == D3DCULL_NONE
+			&& m_winding_agree + m_winding_disagree >= WINDING_SAMPLES)
+		{
+			// Measured and reported whether or not it is applied: the winding is a fact
+			// about the game's data, and a run that does not use it should still say what
+			// it would have been.
+			m_cull_mode = m_winding_agree >= m_winding_disagree ? D3DCULL_CCW : D3DCULL_CW;
+
+			shared::common::log("BRender", std::format(
+				"backface culling {}: {} ({} of {} sampled triangles wind outward)",
+				apply ? "on" : "measured but OFF",
+				m_cull_mode == D3DCULL_CCW ? "front faces are clockwise, culling CCW"
+				                           : "front faces are counter-clockwise, culling CW",
+				std::max(m_winding_agree, m_winding_disagree),
+				m_winding_agree + m_winding_disagree),
+				shared::common::LOG_TYPE::LOG_TYPE_GREEN, true);
+		}
+
+		return apply ? m_cull_mode : D3DCULL_NONE;
 	}
 
 	bool brender_inject::extract_geometry(IDirect3DDevice9* dev, game::br_model* model,
@@ -1252,7 +1376,14 @@ namespace comp
 			}
 
 			part.triangle_count = (static_cast<uint32_t>(indices.size()) - part.index_start) / 3u;
-			if (part.triangle_count) {
+			if (part.triangle_count)
+			{
+				part.two_sided = material_is_two_sided(material);
+
+				if (m_winding_agree + m_winding_disagree < WINDING_SAMPLES) {
+					sample_winding(vertices, indices, part.index_start);
+				}
+
 				parts.push_back(part);
 			}
 		}
@@ -1478,7 +1609,8 @@ namespace comp
 			return;
 		}
 
-		const uint64_t key = chunk_key(part.texture, part.has_alpha, record.noncar, part.opacity);
+		const uint64_t key = chunk_key(part.texture, part.has_alpha, record.noncar,
+			part.two_sided, part.opacity);
 		size_t chunk_index = SIZE_MAX;
 		if (const auto it = m_open_chunks.find(key); it != m_open_chunks.end())
 		{
@@ -1493,6 +1625,7 @@ namespace comp
 			static_chunk fresh{};
 			fresh.texture = part.texture;
 			fresh.has_alpha = part.has_alpha;
+			fresh.two_sided = part.two_sided;
 			fresh.opacity = part.opacity;
 			m_chunks.push_back(std::move(fresh));
 			chunk_index = m_chunks.size() - 1;
@@ -2588,11 +2721,9 @@ namespace comp
 		const bool combined = kind == pass_kind::combined;
 		const bool blended = kind == pass_kind::blended;
 
-		// In a combined pass blending is a property of each run, so it is set as they go.
-		if (!combined) {
-			dev->SetRenderState(D3DRS_ALPHABLENDENABLE, blended ? TRUE : FALSE);
-		}
-		dev->SetRenderState(D3DRS_ALPHATESTENABLE, blended ? TRUE : FALSE);
+		// Depth writes belong to the pass -- translucent geometry must not claim depth
+		// the surface behind it then fails against. Blending and the alpha test belong to
+		// the run, because solid translucency is submitted unblended but still cut out.
 		dev->SetRenderState(D3DRS_ZWRITEENABLE, blended ? FALSE : TRUE);
 		dev->SetTextureStageState(0, D3DTSS_TEXTURETRANSFORMFLAGS, D3DTTFF_DISABLE);
 
@@ -2605,6 +2736,7 @@ namespace comp
 		IDirect3DTexture9* bound_texture = nullptr;
 		bool texture_bound = false;
 		int bound_blend = -1;
+		int bound_alpha_test = -1;
 		int bound_opacity = -1;
 		const auto bind_texture = [&](IDirect3DTexture9* texture)
 		{
@@ -2625,6 +2757,14 @@ namespace comp
 				bound_blend = wanted;
 			}
 		};
+		const auto bind_alpha_test = [&](const bool tested)
+		{
+			if (const int wanted = tested ? 1 : 0; wanted != bound_alpha_test)
+			{
+				dev->SetRenderState(D3DRS_ALPHATESTENABLE, tested ? TRUE : FALSE);
+				bound_alpha_test = wanted;
+			}
+		};
 		const auto bind_opacity = [&](const uint8_t opacity)
 		{
 			if (opacity != bound_opacity)
@@ -2632,6 +2772,21 @@ namespace comp
 				dev->SetRenderState(D3DRS_TEXTUREFACTOR,
 					0x00FFFFFFu | (static_cast<uint32_t>(opacity) << 24));
 				bound_opacity = opacity;
+			}
+		};
+
+		// BRender rejects back faces, so submitting everything double-sided gives a path
+		// tracer an interface the game does not have -- on a car's glass, the inside of
+		// the same pane. Materials that ask to be seen from both sides keep CULL_NONE.
+		const DWORD cull_back = resolve_cull_mode();
+		DWORD bound_cull = 0xFFFFFFFFu;
+		const auto bind_cull = [&](const bool two_sided)
+		{
+			if (const DWORD wanted = two_sided ? DWORD{ D3DCULL_NONE } : cull_back;
+				wanted != bound_cull)
+			{
+				dev->SetRenderState(D3DRS_CULLMODE, wanted);
+				bound_cull = wanted;
 			}
 		};
 
@@ -2643,8 +2798,8 @@ namespace comp
 				continue;
 			}
 
-			const bool chunk_blended = chunk.has_alpha || chunk.opacity < 255;
-			if (!combined && chunk_blended != blended) {
+			const blend_plan plan = plan_blending(chunk);
+			if (!combined && plan.blended != blended) {
 				continue;
 			}
 
@@ -2652,9 +2807,9 @@ namespace comp
 			dev->SetIndices(chunk.index_buffer);
 			bind_texture(chunk.texture);
 			bind_opacity(chunk.opacity);
-			if (combined) {
-				bind_blend(chunk_blended);
-			}
+			bind_cull(chunk.two_sided);
+			bind_blend(plan.blend_enabled);
+			bind_alpha_test(plan.alpha_tested);
 
 			if (SUCCEEDED(dev->DrawIndexedPrimitive(D3DPT_TRIANGLELIST, 0, 0,
 				chunk.vertex_count, 0, chunk.triangle_count)))
@@ -2685,9 +2840,9 @@ namespace comp
 
 				bind_texture(state.texture);
 				bind_opacity(state.opacity);
-				if (combined) {
-					bind_blend(state.blended);
-				}
+				bind_cull(state.two_sided);
+				bind_blend(state.blend_enabled);
+				bind_alpha_test(state.alpha_tested);
 
 				// Off for all but a handful of runs, so the stage state is only touched when
 				// it actually has to change.
@@ -2792,8 +2947,10 @@ namespace comp
 		dev->SetRenderState(D3DRS_ZWRITEENABLE, FALSE);
 
 		// A streak's brightness is the texture's alone; the last material's opacity must not
-		// carry over into it.
+		// carry over into it. The quads are built facing the camera with no meaningful
+		// winding, so they are never culled.
 		dev->SetRenderState(D3DRS_TEXTUREFACTOR, 0xFFFFFFFFu);
+		dev->SetRenderState(D3DRS_CULLMODE, D3DCULL_NONE);
 		dev->SetTextureStageState(0, D3DTSS_TEXTURETRANSFORMFLAGS, D3DTTFF_DISABLE);
 		dev->SetTransform(D3DTS_WORLD, &IDENTITY_MATRIX);
 

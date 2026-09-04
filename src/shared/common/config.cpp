@@ -106,6 +106,8 @@ namespace shared::common
 		effects.sparks = get_bool("Effects", "Sparks", true);
 		effects.vertex_colour = get_bool("Effects", "VertexColour", true);
 		effects.material_opacity = get_bool("Effects", "MaterialOpacity", true);
+		effects.backface_culling = get_bool("Effects", "BackfaceCulling", true);
+		effects.solid_translucency = get_bool("Effects", "SolidTranslucency", true);
 		effects.fog = get_bool("Effects", "Fog", true);
 		effects.fog_volumetrics = get_bool("Effects", "FogVolumetrics", true);
 		effects.fog_tint = get_float("Effects", "FogTint", 0.08f);

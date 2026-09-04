@@ -168,6 +168,14 @@ namespace comp::game
 		// per particle (0x004FB289) and the spark emitter does the same (0x004F7CB0).
 		BR_MATF_PRELIT = 0x0002,
 
+		// The two bits the game sets on geometry that must not be backface culled: the
+		// sprite billboards carry 0x0800 (InitSpriteParticlePool 0x004EA880) and the spark
+		// line material carries 0x1000 (flags 0x1007). Both are treated as "draw both
+		// sides", which is the conservative reading -- a surface wrongly kept double-sided
+		// only renders as it does today.
+		BR_MATF_ALWAYS_VISIBLE = 0x0800,
+		BR_MATF_TWO_SIDED = 0x1000,
+
 		// This material is fogged with its fog_min/fog_max/fog_colour fields.
 		// BrMaterialUpdate publishes them as BRT_FOG_* tokens only when this is set
 		// (0x005210FE); the sky's HORIZON.MAT deliberately never carries it.

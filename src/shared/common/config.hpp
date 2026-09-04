@@ -137,6 +137,23 @@ namespace shared::common
 			// and how overlay polys stay see-through. Off draws every surface fully opaque.
 			bool material_opacity = true;
 
+			// Submit the game's own facing rule instead of drawing everything
+			// double-sided. BRender rejects back faces, so a car body -- and the glass in
+			// it -- is a shell of one-sided polygons; handing a path tracer both sides
+			// gives it an interface the game does not have, which is where ray-traced
+			// glass turns to noise. Materials flagged to be seen from both sides, and the
+			// spark billboards, stay double-sided.
+			bool backface_culling = true;
+
+			// Submit solid translucent surfaces -- glass, water, anything whose texture
+			// carries alpha and that is not a sprite or a decal -- as ordinary geometry
+			// with an alpha test rather than as blended draws. Remix forces every blended
+			// draw double-sided whatever cull mode it was given, and a replaced
+			// translucent material owns how much light passes through anyway, so the
+			// blending buys nothing and costs single-sidedness. Sprites and decals, which
+			// nothing replaces, keep their blending.
+			bool solid_translucency = true;
+
 			// Publish the race's depth-cue state as D3D9 fixed-function fog render
 			// states on the injected draws. Remix's legacy fog remapping reads exactly
 			// these (D3DRS_FOGENABLE / FOGCOLOR / FOGSTART / FOGEND) to derive its

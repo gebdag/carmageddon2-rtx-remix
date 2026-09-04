@@ -140,6 +140,10 @@ namespace comp
 			// BrZbModelRender is handed, which is how the game re-skins one shared sprite
 			// quad per particle: the material argument changes, the model does not.
 			bool inherits_material;
+
+			// The material asks for both sides to be drawn. Recorded here as well as in
+			// the per-draw state because a sealed chunk draws under one cull mode.
+			bool two_sided;
 		};
 
 		/*
@@ -162,7 +166,36 @@ namespace comp
 
 			bool texture_transform_active;
 			D3DMATRIX texture_transform;
+
+			// The material asks for both sides to be drawn, so this run is exempt from
+			// backface culling.
+			bool two_sided;
+
+			// Alpha blending on this run. Separate from `blended` because solid
+			// translucency is submitted unblended but still cut out by its alpha.
+			bool blend_enabled;
+			bool alpha_tested;
 		};
+
+		/*
+		 * How a translucent run is submitted.
+		 *
+		 * BRender's translucency is a rasterizer instruction -- composite this surface
+		 * over what is behind it -- and for sprites and decals that is still what it
+		 * means. For solid geometry it is not: a car window or a water plane gets its
+		 * transparency from the material Remix draws it with, and submitting the draw
+		 * alpha-blended only costs it, because the runtime forces every blended draw to
+		 * be double-sided (rtx_instance_manager.cpp:91) whatever cull mode it was given.
+		 * A path tracer then finds an interface where the game has none.
+		 */
+		struct blend_plan
+		{
+			bool blended;       // drawn in the translucent pass, depth writes off
+			bool blend_enabled;
+			bool alpha_tested;
+		};
+
+		static blend_plan plan_blending(bool has_alpha, uint8_t opacity, bool solid);
 
 		/*
 		 * What a game object was when we cached something built from it.
@@ -215,6 +248,10 @@ namespace comp
 			// refills them in place instead of trading them for an identical pair.
 			uint32_t vertex_bytes;
 			uint32_t index_bytes;
+
+			// Geometry that is not one of the pooled sprite billboards or decal quads, so
+			// its translucency describes a surface rather than a composite.
+			bool solid;
 
 			// BrModelUpdate can fire mid-scene, after this geometry is already queued for
 			// submission. Marking instead of erasing keeps queued pointers valid; the
@@ -271,6 +308,7 @@ namespace comp
 		{
 			IDirect3DTexture9* texture;
 			bool has_alpha;
+			bool two_sided;
 			uint8_t opacity;
 			bool sealed;
 			std::vector<ffp_vertex> vertices;   // emptied on seal
@@ -367,6 +405,21 @@ namespace comp
 		// Issues the one draw that tells Remix the path-traced scene is complete.
 		void trigger_injection(IDirect3DDevice9* dev);
 
+		/*
+		 * Which screen-space winding is a back face, measured rather than assumed.
+		 *
+		 * Everything the injection submits is one engine's geometry under one projection,
+		 * so a single answer holds for the whole game -- but which answer depends on the
+		 * order BRender stores a face's vertices in relative to its outward normal, and
+		 * that is a property of the data, not of the API. `sample_winding` compares the
+		 * normal implied by the order we emit indices in against the authored vertex
+		 * normals; once enough triangles agree, `resolve_cull_mode` names the mode.
+		 * D3DCULL_NONE until then, which is what the injection did throughout.
+		 */
+		void sample_winding(const std::vector<ffp_vertex>& vertices,
+		                    const std::vector<uint32_t>& indices, size_t first_index);
+		DWORD resolve_cull_mode();
+
 		void capture_lines(const game::br_model* model, const game::br_matrix34& model_to_world);
 		uint32_t submit_lines(IDirect3DDevice9* dev);
 		void log_spark_geometry(const float camera[3]);
@@ -382,6 +435,12 @@ namespace comp
 		// into this scene's draw_state pool, and records where in the queued entry.
 		void resolve_draw_state(IDirect3DDevice9* dev, const model_geometry& geometry,
 		                        game::br_material* fallback_material, queued_model& queued);
+
+		// Chunks only ever hold solid geometry -- anything the game re-places or deletes
+		// is barred from baking -- so their blending follows from the chunk alone.
+		static blend_plan plan_blending(const static_chunk& chunk) {
+			return plan_blending(chunk.has_alpha, chunk.opacity, true);
+		}
 
 		bool build_projection(D3DMATRIX& out) const;
 		model_geometry* geometry_for(IDirect3DDevice9* dev, game::br_model* model,
@@ -589,6 +648,16 @@ std::vector<static_chunk> m_chunks;
 		uint32_t m_repromotions = 0;
 		uint32_t m_scene_models = 0;
 		uint32_t m_captures = 0;
+
+		// Triangles whose emitted winding agrees (or does not) with the authored normals.
+		uint32_t m_winding_agree = 0;
+		uint32_t m_winding_disagree = 0;
+		DWORD m_cull_mode = D3DCULL_NONE;
+
+		// Triangles to sample before naming the cull mode. A model's own faces can
+		// disagree -- authored geometry is not always consistent -- so the answer is the
+		// majority over many models rather than the first one seen.
+		static constexpr uint32_t WINDING_SAMPLES = 4096;
 
 		// The camera whose scene last submitted, i.e. the race view. Models seen under any
 		// other camera belong to 3D HUD widgets: they are never suppressed and never enter

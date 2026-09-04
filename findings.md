@@ -2139,3 +2139,208 @@ The only per-frame 2D ops touching the Glide framebuffer are the letterbox fills
 * Nothing at the Glide layer separates 3D from 2D: no idle, no flush, same triangle path. The BRender hooks are the only clean boundary, which is why the injection point is pinned from the proxy (section 26.2) rather than inferred from the draw stream.
 * The horizon actor is captured in its own scene (one model, never submitted) and, with `SuppressDynamics`, is no longer rasterized by the game. That raster was pre-injection and overwritten by Remix's blit in any case; the sky Remix shows comes from its own sky handling.
 * kb.h corrected: the `.bdd` drivers are loadable (by BRender's loader); `BrZbSceneAddActorIncremental` takes four arguments; `0x0074D360` is the back buffer, not a "BANG!" pixelmap.
+
+---
+
+## 28. Glass: what carries a surface's history in Remix (2026-09-05)
+
+Source read of dxvk-remix (dxvk-remix). This section records the
+mechanism; the proxy-side change and the verdict are in the section that follows it.
+
+### 28.1 A draw keeps its temporal history through DrawCallTracker
+
+`DrawCallTracker::findOrCreateReplacementInstance` (rtx_draw_call_tracker.cpp:170-270)
+matches this frame's draw against a previous frame's `ReplacementInstance` in three levels.
+The key is built at :271:
+
+```cpp
+const ReplacementInstance::LookupKey key {
+  computeIdentityHash(drawCallState, overrideMaterialData),   // L1
+  hashes.getHashForRule<rules::TopologicalHash>(),            // spatialMapHash: the L2 bucket
+  drawCallState.getMaterialData().getHash(),                  // materialHash
+  hashes[HashComponents::VertexPosition],
+  drawCallState.getGeometryData().boundingBox.getTransformedCentroid(objectToWorld),
+  objectToWorld, ...
+};
+```
+
+* **L1** -- exact `identityHash`, which covers the transform, the material and the vertex
+  hashes. A surface that has not moved and has not changed matches here every frame.
+* **L2** -- within the topological-hash bucket: first an exact transform + vertex-position
+  match, then a **nearest-neighbour search bounded by `rtx.uniqueObjectDistance`**, filtered
+  to candidates that were not already matched this frame and whose `materialHash` is equal.
+* **L3** -- no match: a new instance, with no history at all.
+
+`LegacyMaterialData::computeIdentityHash` (rtx_materials.cpp) covers the colour texture
+hashes, the sampler hashes, the alpha test op and reference, **`tFactor`**, the whole blend
+mode, and the texture stage colour/alpha argument sources and operations. So anything the
+injection changes per draw -- the texture factor carrying material opacity, the texture
+itself -- is part of the identity, and changing it breaks the L2 filter as well.
+
+### 28.2 Static geometry matches at L1; anything that moves does not
+
+This is the asymmetry behind "the water is fine and the car windows are not". The water is
+a sealed chunk: identity transform, immutable buffers, unchanged material, so it matches at
+L1 on every frame and its reflection accumulates cleanly. A car moves, so its glass fails
+L1 by construction and is re-associated through the L2 nearest-neighbour search every
+frame. Every frame that search misses is a frame the surface starts from nothing.
+
+`rtx.uniqueObjectDistance` defaults to **300** game units and is not set in this port's
+`rtx.conf`. The whole visible world here is 250 units (`[Culling] FarPlane`), track pieces
+sit ~60 units apart and a car is a few units long, so the search radius spans the entire
+level: every instance sharing a topology and a material is a matching candidate for every
+other one. Repeated parts -- four wheels off one mesh, two opponents in the same car --
+can take each other's history.
+
+### 28.3 Blended draws are forced double-sided
+
+`rtx_instance_manager.cpp:91`:
+
+```cpp
+if (drawCall.getMaterialData().blendMode.enableBlending && !surface.alphaState.isDecal
+    && !drawCall.getGeometryData().forceCullBit)
+  flags |= VK_GEOMETRY_INSTANCE_TRIANGLE_FACING_CULL_DISABLE_BIT_KHR;
+```
+
+so for any alpha-blended draw the game's cull mode is discarded and the geometry goes into
+the BLAS double-sided. `forceCullBit` is only ever set from a USD replacement
+(rtx_mod_usd.cpp:1576). The injection submits every draw with `D3DCULL_NONE` anyway, so
+the whole world is currently double-sided regardless.
+
+### 28.4 A translucent replacement bypasses the decal and particle classification
+
+`InstanceManager::calculateAlphaState` (rtx_instance_manager.cpp:658) returns immediately
+for `MaterialDataType::Translucent`, leaving `isParticle`, `isDecal` and `emissiveBlend`
+false and `isBlendingDisabled` true. The instance then falls through the mask ladder at
+:1205-1250 to `OBJECT_MASK_TRANSLUCENT` in the primary TLAS. So glass with a translucent
+replacement is *not* at risk of being shunted into the unordered TLAS, whatever the game's
+blend state or the decal texture tags say -- that hypothesis is dead.
+
+### 28.5 What the mod authors
+
+`rtxmod/mod.usda` binds `AperturePBR_Translucent` to three materials: one thick
+(`mat_207656C26F8A30D3`, ior 1.01, a subsurface transmittance texture, measurement
+distance 0.88) and two thin-walled (`mat_A5D9906FE099EB7F` ior 1.02, `mat_A625862AD1FEF1CD`)
+-- the car glass. Neither of the thin-walled ones sets `doubleSided`, so nothing on the mod
+side restores culling either.
+
+---
+
+## 29. PSR does not know the mirror moved, and the glass was double-sided (2026-09-05)
+
+Source read of dxvk-remix (dxvk-remix), following section 28.
+
+### 29.1 The root cause: virtual motion vectors ignore the reflector's own motion
+
+A translucent primary surface is replaced by what is seen in or through it -- Primary
+Surface Replacement -- and the denoiser then works on that *virtual* surface. Its
+reprojection is built in `geometry_resolver.slangh:264-266` and `:311-338`:
+
+```
+virtualHitPosition = camera ray evaluated at the accumulated hit distance
+virtualMotion      = quaternionTransformVector(accumulatedRotation, surfaceInteraction.motion)
+prevWorldPosition  = virtualHitPosition + virtualMotion
+```
+
+`accumulatedRotation` is composed only of this frame's reflection and refraction
+quaternions (`:117` identity, `:2214`, `:2822`, and `getReflectionQuaternion` in
+`translucent_surface_material_interaction.slangh:868`), and `surfaceInteraction.motion` is
+the motion of the surface being *reflected*. **No term anywhere accounts for the reflector
+itself having moved or rotated.** The model is a virtual image in a static mirror.
+
+That is precisely the difference between the two surfaces this port has:
+
+* **Water** -- a static reflector. The virtual motion is correct, history reprojects, the
+  reflection converges. It also matches at L1 every frame (section 28.2), so nothing
+  disturbs it. This is why it always looked right.
+* **A car window** -- the reflector translates and rotates every frame. The virtual image
+  should sweep across the screen as the car turns; Remix reports that it barely moved, so
+  the denoiser fetches history from the wrong pixels and keeps it. That is "the
+  reflections paint rather than reflect", and the retained wrong history is the white
+  noisy residue that builds up and smears when the camera turns.
+
+Two details make it worse. DLSS-RR's motion-vector fix-up covers *transmission* PSR only
+(`geometry_resolver.slangh:2874`), so reflection PSR gets the uncorrected virtual vector.
+And `rtx.psrrNormalDetailThreshold` defaults to 0, which flags every glass pixel for NRD's
+relaxed disocclusion threshold (0.1 instead of 0.01, `rtx_nrd_settings.cpp:206-210`) --
+ten times more willing to keep history that is wrong. That knob is inert while DLSS-RR is
+on, which it is by default.
+
+**Nothing in the proxy can fix this.** What the proxy can do is stop feeding it the two
+conditions that make it far worse.
+
+### 29.2 The glass was double-sided, twice over
+
+`determineInstanceFlags` (`rtx_instance_manager.cpp:66-119`) has two independent paths to
+`VK_GEOMETRY_INSTANCE_TRIANGLE_FACING_CULL_DISABLE_BIT_KHR`, and the injection tripped
+both: `D3DCULL_NONE` on every draw (`:101-104`) and alpha blending on the translucent pass
+(`:91-92`). That bit **overrides `RAY_FLAG_CULL_BACK_FACING_TRIANGLES`**, which the
+translucent path relies on in all three of its trace sites -- each carrying a comment that
+back faces are only to be counted when the ray is inside a medium
+(`geometry_resolver.slangh:3077`, `:3016`, `integrator_indirect.slangh:1449`).
+
+With the invariant void, every wall of a car's glass shell is hit from both sides. The
+shading normal is unconditionally flipped toward the viewer first
+(`surface_interaction.slangh:360-362`), so a back-face hit is indistinguishable from a
+front-face hit and each crossing reads as a fresh entry into the medium. Each one burns a
+PSR bounce out of `psrrMaxBounces`, and at grazing angles the thin-walled geometric series
+`1 / (1 - insideFresnel^2)` (`brdf.slangh:536-539`), guarded only by an exact float
+equality against 1.0, reaches thousands. That is the white speckle.
+
+The Glide driver never culled either -- it calls `grCullMode(GR_CULL_DISABLE)` once at
+init -- so all backface rejection in this game is BRender's software T&L, which the
+injection bypasses entirely. Remix was being handed both faces of every surface in the
+game, not just the glass.
+
+### 29.3 What the proxy does now
+
+* **`[Effects] BackfaceCulling`** -- submits a real cull mode. Which screen-space winding
+  is a back face is measured, not assumed: `sample_winding` compares the normal implied by
+  the order indices are emitted in against the authored vertex normals over the first 4096
+  triangles, and `resolve_cull_mode` names the mode from the majority. The projection is
+  right-handed with the camera down -Z, so a front face comes out counter-clockwise in NDC
+  and clockwise on screen after the viewport's Y flip; culling CCW is therefore correct
+  when the emitted order is the outward one, and the measurement says when it is not. The
+  choice is logged once either way, even when the switch is off. Materials flagged
+  `BR_MATF_ALWAYS_VISIBLE` / `BR_MATF_TWO_SIDED` and the spark billboards stay
+  double-sided.
+* **`[Effects] SolidTranslucency`** -- solid translucent surfaces are submitted as
+  ordinary geometry with an alpha test instead of as blended draws. Both switches are
+  needed: either alone still leaves the geometry double-sided. Sprites, decals, and
+  anything the game fades through its opacity byte keep their blending -- nothing replaces
+  those, and an alpha test cannot express a uniform fade. A replaced translucent material
+  owns how much light passes through the surface, so the blending buys glass nothing.
+
+The alternative was mod-side: `forceCullBit` is set only by a USD **mesh** replacement
+authoring `doubleSided` (`rtx_mod_usd.cpp:1571-1579`, and `usd_mesh_importer.cpp:169-174`
+requires the value to be authored, not defaulted). A material-only replacement cannot do
+it, and a mesh replacement per car is not practical here.
+
+### 29.4 Ruled out
+
+* **The unordered TLAS.** `calculateAlphaState` returns early for a translucent material
+  (`rtx_instance_manager.cpp:658`), so `isDecal` / `isParticle` / `emissiveBlend` are all
+  false and the instance takes `OBJECT_MASK_TRANSLUCENT` in the primary TLAS. Decal and
+  particle texture tags cannot divert replaced glass.
+* **The Neural Radiance Cache.** It is the default indirect integrator and trains on
+  unclamped radiance, which would fit "junk that grows over time" -- but this machine's
+  run log carries `Neural Radiance Cache failed to get initialized. Switching to
+  importance sampled indirect illumination mode`, so it is not running here.
+* **Vertex colour, texture factor opacity, alpha test state.** All ignored for a
+  translucent material (`translucent_surface_material_interaction.slangh:46-190`).
+
+### 29.5 Residual mitigations, in the order worth trying
+
+These address the section 29.1 limitation, which no code change removes:
+
+1. `rtx.fireflyFilteringLuminanceThreshold = 30` (default 1000) -- the global luminance
+   clamp in `sanitizeRadianceHitDistance`, the most direct suppressor of white speckle.
+2. `rtx.secondarySpecularFireflyFilteringThreshold = 50` (default 1000) -- clamps the
+   non-selected PSR surface specifically.
+3. `rtx.psrrMaxBounces = 2` (default 10) -- limits how far virtual reprojection error
+   compounds.
+4. Diagnostics that attribute the residual rather than fix it: `rtx.enablePSRR = False`
+   (if the speckle goes and reflections turn blurry, 29.1 is confirmed),
+   `rtx.useDenoiser = False` (separates accumulation from the raw signal), and
+   `rtx.uniqueObjectDistance` tuned to this game's scale -- the default 300 units is wider
+   than the entire visible world (section 28.2).
