@@ -2436,3 +2436,55 @@ The cull runs *inside* 0x00542960, downstream of `ModelRenderStyle_Faces`. A hoo
 render style, which is where this injection taps, therefore sees complete unculled
 model-space geometry -- which is why the facing has to be reconstructed here at all. A
 hook at the primitive emitters would see post-cull screen-space data instead.
+
+---
+
+## 31. Roughness is the way off the PSR path (2026-09-05)
+
+The in-game symptom confirms section 29.1 exactly: the streaks smeared across a car's
+windscreen are the car's own cream bodywork. That reflection is rigidly attached to the
+car and should be motionless relative to a chase camera, but PSR reprojects it with the
+reflected surface's **world** motion and no term for the mirror moving, so it drags a
+little further every frame and never converges. Hence "after a while of driving".
+
+### 31.1 A translucent material can never escape PSR
+
+`translucentSurfaceMaterialInteractionGetLobeInformation`
+(`translucent_surface_material_interaction.slangh:294-309`) hardcodes
+`specularReflectionPresent` and `specularReflectionDirac` to true. Every translucent
+surface is a perfect mirror to the resolver, so reflection PSR is always eligible and
+there is no material parameter that opts out -- the translucent material has no roughness
+input at all.
+
+### 31.2 An opaque material with any roughness is refused PSR
+
+`opaqueSurfaceMaterialInteractionCalcPSRReflectionSample`
+(`opaque_surface_material_interaction.slangh:1619-1631`) refuses PSR outright when a
+diffuse lobe is present or the specular lobe is not Dirac:
+
+```cpp
+if (lobeInformation.diffuseReflectionPresent ||
+    !lobeInformation.specularReflectionPresent ||
+    !lobeInformation.specularReflectionDirac || ...)
+{ materialPSRSample.performPSR = false; return materialPSRSample; }
+```
+
+and Dirac is `isotropicRoughness < 0.001f` (`:1034-1035`, threshold at `:34`). So an
+opaque material with even slight roughness is **not** replaced: its reflection is computed
+on the glass surface itself and denoised against that surface's own motion vectors, which
+are correct for a moving car.
+
+**For car glass that is the trade worth making.** Binding `AperturePBR_Opacity` with a
+small roughness (~0.05-0.1), low opacity and zero metallic instead of
+`AperturePBR_Translucent` gives up true refraction -- worth very little through a thin
+pane -- and gets back reflections that track the world. The water should stay
+`AperturePBR_Translucent`: it is a static reflector, PSR reprojects it correctly, and it
+is the one surface here that genuinely benefits from refraction.
+
+### 31.3 Applied meanwhile
+
+`rtx.conf` now carries the section 29.5 clamps: `fireflyFilteringLuminanceThreshold = 30`,
+`secondarySpecularFireflyFilteringThreshold = 50`, `psrrMaxBounces = 2`. They reduce how
+bright the smear gets; they do not stop it. `rtx.enablePSRR = False` is the global version
+of 31.2 -- it takes *every* mirror off the PSR path, water included, so it is the decisive
+A/B rather than the setting to keep.
