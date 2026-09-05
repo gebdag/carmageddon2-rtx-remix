@@ -704,11 +704,13 @@ $ 0x0079f934 void*  g_brender_module_list /* the BrDLLLoad internal module regis
  * side. Equality is kept. The parallel variant compares dot(n, viewdir) against 0.0.
  *
  * Winding: a front face is v0->v1->v2 counter-clockwise as seen from the eye in BRender's
- * right-handed model space. Under a right-handed projection that is counter-clockwise in
- * NDC and, after D3D's downward-Y viewport flip, CLOCKWISE on screen -- which is D3D9's
- * own front-face convention (dxvk d3d9_rtx.cpp: frontFace = VK_FRONT_FACE_CLOCKWISE), so
- * the mode that culls back faces is D3DCULL_CCW (dxvk d3d9_util.cpp:271 maps it to
- * VK_CULL_MODE_BACK_BIT).
+ * right-handed model space. D3D9's own convention is the opposite -- with the left-handed
+ * projection the API assumes, a front face is clockwise from the eye, and that is what
+ * D3DCULL_CCW keeps. A proxy that hands D3D a RIGHT-handed projection
+ * (D3DXMatrixPerspectiveFovRH, camera down -Z) therefore puts BRender's front faces on the
+ * side D3DCULL_CCW discards: the mode that culls back faces is **D3DCULL_CW**. Getting
+ * this backwards culls every front face and the world renders inside out -- solid objects
+ * read as transparent because only their far interior walls survive.
  */
 enum br_material_cull_flags {
     BR_MATF_ALWAYS_VISIBLE = 0x0800,  /* -> BRT_NONE: no facing test at all */

@@ -1196,16 +1196,19 @@ namespace comp
 	 *
 	 * BRender keeps a face when the eye is on the side its normal points to, with the
 	 * normal built by BrPlaneEquation (0x00536FB0) as (v1 - v0) x (v2 - v0) over the very
-	 * index triple this module emits. A front face is therefore counter-clockwise seen
-	 * from the eye; under the right-handed projection handed to Remix that is
-	 * counter-clockwise in normalized device coordinates, and D3D's downward-Y viewport
-	 * flips it to clockwise on screen -- which is D3D9's own front-face convention
-	 * (dxvk: frontFace = VK_FRONT_FACE_CLOCKWISE, D3DCULL_CCW -> VK_CULL_MODE_BACK_BIT).
-	 * So the mode is D3DCULL_CCW by construction, not by measurement.
+	 * index triple this module emits. A front face is therefore wound counter-clockwise
+	 * as seen from the eye.
 	 *
-	 * The sampling is kept as the check on the one thing that construction assumes: that
-	 * the order emitted here is still the order the plane was built from. It reports the
-	 * agreement once and says so loudly when it inverts.
+	 * D3D9's own convention is the opposite: with its left-handed projection a front face
+	 * is clockwise from the eye, which is what D3DCULL_CCW keeps. The projection handed to
+	 * Remix is right-handed (D3DXMatrixPerspectiveFovRH, camera down -Z), so BRender's
+	 * counter-clockwise front faces land on the side D3DCULL_CCW discards. The mode that
+	 * culls back faces here is therefore D3DCULL_CW -- the standard consequence of driving
+	 * a right-handed projection through an API that assumes a left-handed one.
+	 *
+	 * The sampling is kept as the check on the one thing this assumes: that the order
+	 * emitted here is still the order the plane was built from. It reports the agreement
+	 * once and says so loudly when it inverts.
 	 */
 	DWORD brender_inject::resolve_cull_mode()
 	{
@@ -1217,7 +1220,7 @@ namespace comp
 			const bool outward = m_winding_agree >= m_winding_disagree;
 
 			shared::common::log("BRender", std::format(
-				"backface culling {}: culling CCW, {} of {} sampled triangles wind outward{}",
+				"backface culling {}: culling CW, {} of {} sampled triangles wind outward{}",
 				apply ? "on" : "OFF",
 				std::max(m_winding_agree, m_winding_disagree),
 				m_winding_agree + m_winding_disagree,
@@ -1226,7 +1229,7 @@ namespace comp
 				        : shared::common::LOG_TYPE::LOG_TYPE_ERROR, true);
 		}
 
-		return apply ? DWORD{ D3DCULL_CCW } : DWORD{ D3DCULL_NONE };
+		return apply ? DWORD{ D3DCULL_CW } : DWORD{ D3DCULL_NONE };
 	}
 
 	bool brender_inject::extract_geometry(IDirect3DDevice9* dev, game::br_model* model,

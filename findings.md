@@ -2409,17 +2409,26 @@ d = +dot(n, v0)
 ### 30.3 Which D3D cull mode that makes
 
 `n = (v1 - v0) x (v2 - v0)` pointing at the eye means a front face is wound
-counter-clockwise **as seen from the eye**, in right-handed model space. Under the
-right-handed projection the injection hands Remix, that is counter-clockwise in NDC, and
-D3D's viewport flips Y, so it is **clockwise on screen** -- which is D3D9's own front-face
-convention: dxvk sets `frontFace = VK_FRONT_FACE_CLOCKWISE` (d3d9_rtx.cpp:637) and maps
-`D3DCULL_CCW -> VK_CULL_MODE_BACK_BIT` (d3d9_util.cpp:271-277).
+counter-clockwise **as seen from the eye**, in right-handed model space.
 
-**`D3DCULL_CCW` culls back faces here.** That is what `resolve_cull_mode` picks when the
-winding measurement agrees with the authored normals, which it must, since the vertex
-normals are averages of these same face normals. The measurement is kept as the check on
-the one step the engine does not settle -- that the injection emits indices in the order
-BRender took its normal from -- and it logs its verdict either way.
+D3D9 assumes the opposite. Its own projection is left-handed, under which a front face is
+clockwise from the eye, and `D3DCULL_CCW` -- the API default -- is the mode that keeps
+those. The injection hands Remix a **right-handed** projection
+(`D3DXMatrixPerspectiveFovRH`, camera down -Z), which puts BRender's counter-clockwise
+front faces on exactly the side `D3DCULL_CCW` throws away.
+
+**`D3DCULL_CW` culls back faces here** -- the standard consequence of driving a
+right-handed projection through an API built around a left-handed one. The measurement is
+kept as the check on the one step the engine does not settle -- that the injection emits
+indices in the order BRender took its normal from -- and it logs its verdict either way.
+
+This was got wrong once, and the symptom is worth recording because it is unmistakable:
+with the mode inverted every front face is culled, only the far interior walls of objects
+survive, and the whole world reads as transparent. `dxvk`'s `frontFace =
+VK_FRONT_FACE_CLOCKWISE` (d3d9_rtx.cpp:637) and `D3DCULL_CCW -> VK_CULL_MODE_BACK_BIT`
+(d3d9_util.cpp:271-277) describe D3D9's convention faithfully; they say nothing about which
+side a right-handed projection puts this game's geometry on, and using them as if they did
+is what produced the error.
 
 ### 30.4 A note for anything that hooks lower
 
