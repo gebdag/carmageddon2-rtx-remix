@@ -2517,3 +2517,17 @@ the PSR path.
 
 `mat_207656C26F8A30D3` is left translucent: it is thick, carries a subsurface transmittance
 texture and a measurement distance, and is the water.
+
+### 31.5 Tried and reverted: the opacity material looks worse (2026-09-05)
+
+The 31.4 swap was tested in game and rejected on looks -- reverted to
+`AperturePBR_Translucent` with `thin_walled = 1`. So the trade is not worth taking as
+stated: escaping PSR costs more in appearance than the smearing costs, at least at
+`opacity_constant = 0.18` / `reflection_roughness_constant = 0.07`.
+
+Worth noting what this does **not** rule out. The swap changed three things at once --
+material model, opacity source, and roughness -- so "looks bad" does not say which. A
+narrower experiment would keep the translucent material and attack the smear from the
+runtime side instead (`rtx.enablePSRR = False` is the whole-scene version of the same
+idea), or keep the opacity material and tune it, since 0.18 opacity with a 0.2 default
+albedo is a fairly milky starting point for glass.
