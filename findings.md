@@ -2488,3 +2488,32 @@ is the one surface here that genuinely benefits from refraction.
 bright the smear gets; they do not stop it. `rtx.enablePSRR = False` is the global version
 of 31.2 -- it takes *every* mirror off the PSR path, water included, so it is the decisive
 A/B rather than the setting to keep.
+
+### 31.4 The mod change, as applied (2026-09-05)
+
+`rtxmod/mod.usda` (backup `mod.usda.pre-opacity-bak`). The two thin-walled glass materials,
+`mat_A5D9906FE099EB7F` and `mat_A625862AD1FEF1CD`, now reference
+`AperturePBR_Opacity` instead of `AperturePBR_Translucent`:
+
+```
+custom bool  inputs:use_legacy_alpha_state = 0
+custom bool  inputs:blend_enabled = 1
+custom float inputs:opacity_constant = 0.18
+custom float inputs:reflection_roughness_constant = 0.07
+custom float inputs:metallic_constant = 0
+```
+
+`reflection_roughness_constant` only has to clear 0.001 to escape PSR; 0.07 is a plausible
+car window and leaves room to tune. `blend_enabled` has to be set explicitly because the
+opaque material defaults it to false, and `use_legacy_alpha_state = 0` is required now that
+`[Effects] SolidTranslucency` submits these draws unblended -- the transparency has to come
+from the material. That same unblended draw is what keeps the runtime from forcing the
+geometry double-sided, so the two changes depend on each other.
+
+Traced through `calculateAlphaState` and the mask ladder, such an instance lands on
+"alpha-blended geometry goes to the primary TLAS as non-opaque geometry with no duplicate
+hits" (rtx_instance_manager.cpp:1228-1232) -- properly ray traced, single-sided, and off
+the PSR path.
+
+`mat_207656C26F8A30D3` is left translucent: it is thick, carries a subsurface transmittance
+texture and a measurement distance, and is the water.
