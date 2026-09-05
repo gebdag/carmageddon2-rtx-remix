@@ -2531,3 +2531,16 @@ narrower experiment would keep the translucent material and attack the smear fro
 runtime side instead (`rtx.enablePSRR = False` is the whole-scene version of the same
 idea), or keep the opacity material and tune it, since 0.18 opacity with a 0.2 default
 albedo is a fairly milky starting point for glass.
+
+### 31.6 The clamps did not help either (2026-09-05)
+
+`rtx.fireflyFilteringLuminanceThreshold = 30`,
+`rtx.secondarySpecularFireflyFilteringThreshold = 50` and `rtx.psrrMaxBounces = 2` were
+tested and made no visible difference; `rtx.conf` is back to its previous 30 lines.
+
+That is itself informative. Clamping bright outliers and shortening the PSR chain both
+attack *how bright* the artefact is, and neither touched it -- which points away from
+fireflies and back at the reprojection itself: the smear is history being dragged to the
+wrong pixels, not a few over-bright samples being accumulated. The untried lever that
+addresses that directly is `rtx.enablePSRR = False`, which stops the reflection being
+replaced at all.
