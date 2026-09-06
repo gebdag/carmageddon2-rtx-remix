@@ -226,6 +226,36 @@ namespace comp
 				|| (material->flags & (game::BR_MATF_ALWAYS_VISIBLE | game::BR_MATF_TWO_SIDED)) != 0;
 		}
 
+		/*
+		 * The two ways this engine says "do not shade this surface".
+		 *
+		 * BRender has no emissive channel at all -- its material is colour, opacity, ka,
+		 * kd, ks, power and flags, and the struct reflection table at 0x006637F0 lists
+		 * nothing else. These are the two stand-ins it does have, and both are exact
+		 * rather than heuristic.
+		 *
+		 * Flags of exactly ALWAYS_VISIBLE means the material was built by one of the
+		 * effect systems, which clear LIGHT and set 0x800 (InitSpriteParticlePool
+		 * 0x004EAA5F, InitFlames 0x004FC4B2). BrMaterialUpdate then publishes
+		 * LIGHTING_B = 0 with the colour taken from the surface, i.e. a full-bright
+		 * unshaded texture: explosion fire, the powerup sparkle, blood, BANG marks and
+		 * the car flames.
+		 *
+		 * ka is the ambient coefficient, and at 1.0 the surface renders at full texture
+		 * brightness whatever the scene light does. Of the 4373 materials the game ships,
+		 * 4282 sit at BRender's 0.1 default and exactly 19 are at 1.0 -- tunnel lights,
+		 * a street lamp, cinema and vault interiors. Nothing writes it at runtime.
+		 */
+		bool material_is_fullbright(const game::br_material* material)
+		{
+			return material && material->flags == game::BR_MATF_ALWAYS_VISIBLE;
+		}
+
+		bool material_is_self_lit(const game::br_material* material)
+		{
+			return material && material->ka >= 1.0f;
+		}
+
 		// Noncars get chunks of their own: a hit noncar is punched out of its chunk, and
 		// keeping that write away from the pristine world chunks is what keeps *their*
 		// geometry hashes immutable for Remix modding. Opacity joins the key because a chunk
@@ -1342,6 +1372,16 @@ namespace comp
 
 			if (prelit || opacity < 255) {
 				note_shaded_material(material, prelit, opacity);
+			}
+
+			if (live_material)
+			{
+				if (material_is_fullbright(material)) {
+					note_emissive_candidate(material, "effect material, drawn unlit at full brightness");
+				}
+				else if (material_is_self_lit(material)) {
+					note_emissive_candidate(material, "authored ambient 1.0, ignores the scene light");
+				}
 			}
 
 			groups.push_back({ &group, material, vertex_base + total_vertices,
@@ -3234,6 +3274,24 @@ namespace comp
 		if (m_shaded_materials.try_emplace(name, state).second)
 		{
 			shared::common::log("BRender", std::format("shaded material: '{}' - {}", name, state),
+				shared::common::LOG_TYPE::LOG_TYPE_DEFAULT, false);
+		}
+	}
+
+	void brender_inject::note_emissive_candidate(const game::br_material* material, const char* reason)
+	{
+		const std::string name = material->identifier && readable(material->identifier, 1)
+			? material->identifier : "<null>";
+
+		const auto pm = static_cast<const game::br_pixelmap*>(material->colour_map);
+		const std::string texture = readable(pm, sizeof(*pm)) && readable(pm->identifier, 1)
+			? pm->identifier : "<none>";
+
+		if (m_emissive_materials.try_emplace(name, texture).second)
+		{
+			shared::common::log("BRender", std::format(
+				"unshaded surface: material '{}' texture '{}' - {} (tag this texture emissive in the mod)",
+				name, texture, reason),
 				shared::common::LOG_TYPE::LOG_TYPE_DEFAULT, false);
 		}
 	}

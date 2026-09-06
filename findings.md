@@ -2544,3 +2544,80 @@ fireflies and back at the reprojection itself: the smear is history being dragge
 wrong pixels, not a few over-bright samples being accumulated. The untried lever that
 addresses that directly is `rtx.enablePSRR = False`, which stops the reflection being
 replaced at all.
+
+---
+
+## 32. Emissive: the engine has none, but it has two exact stand-ins (2026-09-06)
+
+BRender has **no emissive, self-illumination or glow channel**. Its struct reflection table
+for `br_material` (17 entries at 0x006637F0, struct size 0x9C) lists exactly: `identifier`,
+`colour`, `opacity`, `ka`, `kd`, `ks`, `power`, `flags`, `map_transform.m[0..2]`,
+`index_base`, `index_range`, `fog_min`, `fog_max`, `fog_colour`, `subdivide_tolerance`.
+The SURFACE-part publish in `BrMaterialUpdate` (0x005211D7) emits only `COLOUR_RGB`,
+`OPACITY_F`, `AMBIENT_F`, `DIFFUSE_F`, `SPECULAR_F`, `SPECULAR_POWER_F`, `LIGHTING_B`,
+`FORCE_FRONT_B`, `COLOUR_SOURCE_T`, `MAPPING_SOURCE_T`. The 461-record token table
+(0x00667F50, stride 0x18) contains no EMISSIVE / GLOW / LUMINANCE / SELF_* token.
+
+This also resolves the last unmapped bytes of the struct, from BrMaterialUpdate rather than
+the table (which only covers serialized fields): **+0x50 `index_fog`** (`BRT_INDEX_FOG_O`
+0x18A), **+0x54 `extra_surf`** (SURFACE part), **+0x58 `extra_prim`** (PRIMITIVE part --
+what earlier sections call `extra`), **+0x68 `mode`** (texture wrap/mirror/clamp and
+antialias bits), +0x98 `stored`.
+
+### 32.1 The two signals that are exact
+
+**Flags exactly `BR_MATF_ALWAYS_VISIBLE` (0x0800).** `InitSpriteParticlePool` (0x004EAA4E,
+0x004EAA5F) and `InitFlames` (0x004FC4A5, 0x004FC4B2) both clear LIGHT and set 0x800 on a
+material `BrMaterialAllocate` had defaulted to flags 1, so the result is 0x0800 exactly:
+no LIGHT, no PRELIT. BrMaterialUpdate then publishes `LIGHTING_B = 0` with the colour taken
+from the surface (white), i.e. a full-bright unshaded texture. That is explosion fire
+(`ex00001..7`), the powerup sparkle (`TWINK1..4`, `BING1..6`), blood (`BIGBL01..05`), the
+`BANG!` marks and the car flames (`FLM01..FLM20`).
+
+**`ka >= 1.0`.** `ka` is the ambient coefficient, and at 1.0 the surface renders at full
+texture brightness whatever the scene light does -- the engine's stand-in for
+self-illumination. Of the 4373 material definitions the game ships, 4282 are at BRender's
+0.1 default, 60 at 0.2, 12 at 0.0, and exactly **19 at 1.0**: `lamp2` (Airport1); `TUNLI`,
+`tunli2`, `TUNCEL1`, `TUNFLR1`, `ROKMER`, `ROKSHAD`, `SHAD`, `FENCE` (desert1); `light1`,
+`cinema01`, `ceiling1`, `vaultconsole`, `vaultwall2`, `room2`, `slab2`, `slab3`, `road6`,
+`road7` (newcity1). Nothing writes `ka` at runtime.
+
+Both are now reported by the injection as `unshaded surface: material '...' texture '...'`,
+once per material, naming the texture to tag.
+
+### 32.2 What is only recognisable by name
+
+Brake and reverse lights are **byte-identical to ordinary body panels** on disk -- `EARLITL`
+/ `EARLITR` ship as flags 0x0001, ka 0.1, colour 0xFFFFFF, differing only in `colour_map`
+(`ebacklig`) and in being funked. The lit state is a texture region and nothing else: the
+2x2 `EBACKALL` atlas quadrant chosen by `map_transform` (section 6.4). Headlights
+(`EALITL` / `EALITR`, `eheadlig`) are not funked at all. Track neon, signs, TV screens and
+lamps carry no signal whatsoever -- every one is ka 0.1 with flags 0x0001 or 0x0021.
+For all of these, a pixelmap-name allowlist is the only route.
+
+### 32.3 PRELIT is "textured", not "glowing"
+
+**Zero of the 4373 shipped materials have PRELIT set on disk.** It is forced on at load by
+`LoadCarMaterials` (0x00450150), whose only condition is having a texture:
+
+```
+0x0045020D  mov ebp, 3                  ; LIGHT|PRELIT
+0x004502D9  if (material->colour_map != NULL) {
+0x004502E8      material->flags |= ebp;  material->flags |= 4 /*SMOOTH*/;
+0x00450307      BrMaterialUpdate(material, 0x7FFF); }
+```
+
+which is why `scrn`, `hawingy`, `es2wgblu` and every other car body panel logs as prelit.
+`g_texture_detail_mode` (0x00591374) does the same wholesale across both material stores.
+So PRELIT cannot distinguish a glowing surface from a baked-lit one and must never be used
+as an emissive gate.
+
+### 32.4 The injection cannot make a draw emissive
+
+Remix ignores the per-draw `D3DMATERIAL9`: `LegacyMaterialData::createDefault` takes
+emission from the global `rtx.legacyMaterial.emissiveIntensity` / `emissiveColorConstant` /
+`enableEmission` options (rtx_materials.cpp:133-142), and the only field of the stored
+`D3DMATERIAL9` read anywhere is `Diffuse` (rtx_scene_manager.cpp:864). Emission therefore
+has to come from a replacement keyed on the texture hash, or from `rtx.lightConverter`
+(rtx_options.h:240), which turns a tagged surface into an actual light rather than a bright
+texture -- the better fit for head and brake lights, which should illuminate the road.

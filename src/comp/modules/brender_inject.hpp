@@ -557,6 +557,13 @@ namespace comp
 		// the two things that can change how already-working geometry looks.
 		void note_shaded_material(const game::br_material* material, bool prelit, uint8_t opacity);
 		void note_unsupported_style(const game::br_model* model, uint32_t style);
+
+		// Names a surface the engine renders unshaded, and the texture behind it. Remix
+		// takes emission from a replacement keyed on the texture, so the list of textures
+		// worth tagging is the useful output -- the injection cannot make a draw emissive
+		// itself (the per-draw D3DMATERIAL9 is not read for emission).
+		void note_emissive_candidate(const game::br_material* material, const char* reason);
+		std::map<std::string, std::string> m_emissive_materials;
 		void note_scene_target(const game::br_actor* camera, const game::br_pixelmap* colour);
 		std::set<std::pair<const game::br_actor*, const game::br_pixelmap*>> m_scene_targets;
 

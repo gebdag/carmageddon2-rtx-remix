@@ -820,3 +820,203 @@ $ 0x0058c8e0 float g_zero_f                /* parallel cull threshold */
 @ 0x10001fb0 int  Glide_DeviceOpen(void);  /* grSstSelect(0) + grCullMode(0) at 0x10002112/18 */
 $ 0x1000b1fc void* p_grCullMode            /* IAT slot; thunk 0x10005A04, one call site */
 $ 0x1000b1f8 void* p_grSstSelect           /* IAT slot; thunk 0x10005A0A */
+
+/* ------------------------------------------------ br_material: the authoritative field
+ * list, and why this engine has no emissive channel (2026-09-06)
+ *
+ * BRender's file-format struct-reflection tables live at 0x00663490..0x00663E50. Each
+ * table is an array of 16-byte entries followed immediately by its header:
+ *
+ *     entry  { uint32 type; uint32 offset; const char *name; uint32 reserved; }   (0x10)
+ *     header { const char *struct_name; uint32 count; entry *entries; uint32 sizeof; }
+ *
+ * so `entries + count*0x10 == &header`. Type codes seen: 0x01 u8, 0x03 u16, 0x04 u32,
+ * 0x05 u32(flags), 0x07 br_angle(u16), 0x0A br_scalar(float), 0x0C br_ufraction(float in
+ * this build), 0x0D enum(+name table in `reserved`), 0x11 char* identifier,
+ * 0x12 br_colour(3 bytes on disk), 0x13 br_vector2.
+ *
+ * Tables present: br_vertex, br_vertex_uv, br_old_vertex_uv, br_face, br_old_face_1,
+ * br_old_face, br_model, br_old_model_1, br_pivot, br_material_old (13, hdr 0x006637E0),
+ * br_material (17, hdr 0x00663900), br_actor, br_transform_*, br_bounds3, br_plane,
+ * br_light (8, hdr 0x00663DB8), br_camera (6, hdr 0x00663E40), file_info.
+ *
+ * br_material, entries at 0x006637F0, header 0x00663900, sizeof 0x9C -- COMPLETE:
+ *     type 0x12  off 0x08  colour
+ *     type 0x01  off 0x0C  opacity
+ *     type 0x0C  off 0x10  ka                 (ambient reflectance, float)
+ *     type 0x0C  off 0x14  kd                 (diffuse)
+ *     type 0x0C  off 0x18  ks                 (specular)
+ *     type 0x0A  off 0x1C  power
+ *     type 0x05  off 0x20  flags
+ *     type 0x13  off 0x24  map_transform.m[0]
+ *     type 0x13  off 0x2C  map_transform.m[1]
+ *     type 0x13  off 0x34  map_transform.m[2]
+ *     type 0x01  off 0x3C  index_base
+ *     type 0x01  off 0x3D  index_range
+ *     type 0x0A  off 0x5C  fog_min
+ *     type 0x0A  off 0x60  fog_max
+ *     type 0x12  off 0x64  fog_colour
+ *     type 0x04  off 0x90  subdivide_tolerance
+ *     type 0x11  off 0x04  identifier
+ *
+ * >>> THERE IS NO EMISSIVE / SELF-ILLUMINATION / GLOW / LUMINANCE FIELD. <<<
+ * The lighting model is exactly colour, opacity, ka, kd, ks, power and flags. The token
+ * table (461 records at 0x00667F50..0x0066AA70, stride 0x18, alphabetical, record
+ * { char *name; uint32 datatype; uint32 token; uint32 base_name_len; 0; 0; }) has no
+ * EMISSIVE/GLOW/LUMINANCE/SELF_*/PRELIT/INTENSITY/BRIGHT token either, so the renderer
+ * cannot even be told about emission.
+ *
+ * The unmapped bytes kb.h called pad50/pad68 are runtime-only (never serialized):
+ *     +0x50 br_pixelmap *index_fog     -> BRT_INDEX_FOG_O   0x18A (BrMaterialUpdate 0x00521337)
+ *     +0x54 br_token_value *extra_surf -> pushed whole to part BRT_SURFACE   (0x005213B4)
+ *     +0x58 br_token_value *extra_prim -> pushed whole to part BRT_PRIMITIVE (0x005213E2)
+ *     +0x68 uint32 mode                -> texture addressing / AA, read at 0x00521037:
+ *              bit 0x001 MAP_WIDTH_LIMIT=MIRROR   bit 0x002 MAP_WIDTH_LIMIT=CLAMP
+ *              bit 0x004 MAP_HEIGHT_LIMIT=MIRROR  bit 0x008 MAP_HEIGHT_LIMIT=CLAMP
+ *              bit 0x100 ANTIALIASING_T = DEFAULT (else NONE)
+ *     +0x98 void *stored (already in kb.h)
+ * kb.h's `extra` at 0x58 is extra_prim; the smoke and 'Acc Poly Mat' OPACITY lists live there.
+ */
+
+/* The remaining br_material::flags bits BrMaterialUpdate 0x00520E70 consumes. Together
+ * with br_material_flags (0x0001..0x0040), the cull bits (0x0800/0x1000/0x2000) and
+ * BR_MATF_FOG_LOCAL (0x00080000) declared earlier, this is the COMPLETE set -- any bit
+ * outside it is inert as far as the renderer is concerned.
+ *   BR_MATF_LIGHT  0x0001 -> LIGHTING_B, but only when PRELIT is clear
+ *   BR_MATF_PRELIT 0x0002 -> LIGHTING_B = 0 and COLOUR_SOURCE_T = BRT_GEOMETRY          */
+enum br_material_flags_ext {
+    BR_MATF_ENVIRONMENT_I   = 0x00000008,  /* -> MAPPING_SOURCE_T = ENVIRONMENT_INFINITE   */
+    BR_MATF_ENVIRONMENT_L   = 0x00000010,  /* -> MAPPING_SOURCE_T = ENVIRONMENT_LOCAL      */
+    BR_MATF_DITHER          = 0x00004000,  /* -> DITHER_MAP_B and DITHER_COLOUR_B */
+    BR_MATF_MAP_ANTIALIAS   = 0x00010000,  /* -> MAP_ANTIALIASING_T  = LINEAR */
+    BR_MATF_MAP_INTERPOLATE = 0x00020000,  /* -> MAP_INTERPOLATION_T = LINEAR */
+    BR_MATF_MIP_INTERPOLATE = 0x00040000,  /* -> MIP_INTERPOLATION_T = LINEAR */
+    BR_MATF_SUBDIVIDE       = 0x00100000,  /* -> PERSPECTIVE_T + SUBDIVIDE + tolerance @0x90 */
+    BR_MATF_ZTRANSPARENCY   = 0x00200000,  /* -> ZTRANSPARENCY_B   */
+    BR_MATF_NEW_BLEND       = 0x00400000   /* -> NEW_BLEND_B       */
+};
+
+/* Surface tokens BrMaterialUpdate publishes on part BRT_SURFACE (0x75) at 0x005211D7.
+ * ka/kd/ks/power go out as AMBIENT_F/DIFFUSE_F/SPECULAR_F/SPECULAR_POWER_F -- that is the
+ * whole of the material's contribution to shading. */
+enum BrSurfaceToken {
+    BRT_COLOUR_RGB       = 0x00E,
+    BRT_GEOMETRY         = 0x02E,  /* COLOUR_SOURCE_T value when BR_MATF_PRELIT is set */
+    BRT_SURFACE_PART     = 0x075,  /* COLOUR_SOURCE_T value otherwise; also the part id */
+    /* BRT_OPACITY_X 0x0BE / BRT_OPACITY_F 0x0BF are in br_material_token above */
+    BRT_LIGHTING_B       = 0x0B2,
+    BRT_FORCE_FRONT_B    = 0x0B3,
+    BRT_COLOUR_SOURCE_T  = 0x0B4,
+    BRT_OPACITY_SOURCE_T = 0x0B5,
+    BRT_MAPPING_SOURCE_T = 0x0B6,
+    BRT_ENVIRONMENT_LOCAL    = 0x0B7,
+    BRT_ENVIRONMENT_INFINITE = 0x0B8,
+    BRT_GEOMETRY_MAP     = 0x0B9,  /* default MAPPING_SOURCE_T (use the UVs) */
+    BRT_AMBIENT_X        = 0x0C0,
+    BRT_AMBIENT_F        = 0x0C1,  /* <- material->ka    [esi+0x10] */
+    BRT_DIFFUSE_X        = 0x0C2,
+    BRT_DIFFUSE_F        = 0x0C3,  /* <- material->kd    [esi+0x14] */
+    BRT_SPECULAR_X       = 0x0C4,
+    BRT_SPECULAR_F       = 0x0C5,  /* <- material->ks    [esi+0x18] */
+    BRT_SPECULAR_POWER_X = 0x0C6,
+    BRT_SPECULAR_POWER_F = 0x0C7   /* <- material->power [esi+0x1C] */
+};
+
+/* ------------------------------------------------ BR_MATF_PRELIT is a texture flag here,
+ * not a "this glows" flag (2026-09-06)
+ *
+ * NOT ONE of the 4373 distinct br_material definitions shipped in DATA (loose .MAT plus
+ * every .TWT/.DAT/.ACT) has BR_MATF_PRELIT set on disk. The observed flag histogram is
+ * 0x0001 LIGHT (2399), 0x0021 LIGHT|PERSP (1381), 0x1021 (295), 0x1001 (234), 0x0005 (52),
+ * plus a handful; BrMaterialAllocate 0x00526940 also defaults flags to 0x0001.
+ *
+ * The car loader forces it on at load time -- LoadCarMaterials 0x00450150, right after
+ * appending the car's .MAT to the store at 0x00762340:
+ *     0x0045020D  mov ebp, 3                     ; BR_MATF_LIGHT|BR_MATF_PRELIT
+ *     0x004502C7  mov edi, 4                     ; BR_MATF_SMOOTH
+ *     0x004502D9  if (material->colour_map != NULL) {
+ *     0x004502E8      material->flags |= ebp;    ;  |= 3
+ *     0x004502F8      material->flags |= edi;    ;  |= 4
+ *     0x00450307      BrMaterialUpdate(material, 0x7FFF); }
+ * i.e. "has a texture" is the entire condition. That is why the proxy log shows ordinary
+ * car body panels ('scrn', 'hawingy', 'es2wgblu', 'buweel', ...) as prelit.
+ *
+ * A global texture-detail mode does the same thing wholesale:
+ *     $ 0x00591374 g_texture_detail_mode  (default 2)
+ *     @ 0x00447640 GetTextureDetailMode  ; @ 0x00447650 SetTextureDetailMode(ecx=mode)
+ *     @ 0x00447350 ApplyTextureDetail(ecx=material_store, edx=mode)
+ *         mode 2 branch 0x00447370: restore saved colour_map, flags |= 2, update
+ *         mode 1 branch 0x004473CA / mode 0 branch 0x00447543: stash colour_map away,
+ *                                     colour_map = NULL, flags &= ~2, update
+ * Stores: 0x0075B960 (200 slots, cars) and 0x00761CA0 (1500 slots, world), both created by
+ * 0x00500D50 at 0x0047E1C0 / 0x0047E1DF.
+ *
+ * CONCLUSION for a Remix port: BR_MATF_PRELIT means "colour comes from the vertices, do
+ * not light this again" -- baked lighting, not emission. It cannot separate a glowing
+ * surface from a baked-lit one.
+ */
+
+@ 0x00450150 void LoadCarMaterials(void *car);              /* ecx=car; forces LIGHT|PRELIT|SMOOTH on every textured material at 0x004502E8 */
+@ 0x00447350 void ApplyTextureDetail(void *store, int mode);/* ecx=store, edx=mode; mode 2 sets PRELIT, modes 0/1 clear it */
+@ 0x00447650 void SetTextureDetailMode(int mode);           /* ecx=mode; walks both material stores */
+@ 0x00447640 int  GetTextureDetailMode(void);               /* returns [0x00591374] */
+@ 0x00447b00 void RestoreMaterialTextures(void *store);     /* ecx=store; same PRELIT coupling, debug path */
+@ 0x00526940 void *BrMaterialAllocate_Defaults(void);       /* colour 0xFFFFFF, opacity 0xFF, ka 0.1, kd 0.7, ks 0, power 20, flags 1, index 10/31 */
+@ 0x00500d50 void MaterialStoreInit(void *store, int max, int a, int b, int c, int d);
+@ 0x005183f0 void BrMaterialSetPreset(void *material, int style); /* ka/kd/ks presets; style>3 gives ka=1.0 kd=0 ks=0 */
+
+$ 0x00591374 int   g_texture_detail_mode  /* 0/1 = textures off (+PRELIT cleared), 2 = on (+PRELIT set) */
+$ 0x0075b960 void* g_car_material_store   /* +0x08 count, +0x38 br_material**, +0x40 stashed br_pixelmap** */
+$ 0x00761ca0 void* g_world_material_store /* same layout, 1500 slots */
+$ 0x00762340 void* g_load_material_store  /* the store LoadCarMaterials appends into; count 0x00762348, array 0x00762378 */
+$ 0x006ad520 void* g_default_material     /* the object BrMaterialAllocate_Defaults fills */
+
+/* ------------------------------------------------ what actually reads as self-lit
+ * (2026-09-06)
+ *
+ * 1. ka == 1.0f is the engine's only stand-in for self-illumination: with LIGHTING_B on,
+ *    AMBIENT_F=1.0 makes the surface render at full texture brightness regardless of the
+ *    directional light. Exactly 19 of the 4373 shipped materials use it (everything else
+ *    is BRender's default 0.1, or the exporter's 0.2 / kd 0.5 / ks 0.05):
+ *      RACES/Airport1.TWT  lamp2
+ *      RACES/desert1.TWT   TUNLI, tunli2, TUNCEL1, TUNFLR1, ROKMER, ROKSHAD, SHAD, FENCE
+ *      RACES/newcity1.TWT  light1, cinema01, ceiling1, vaultconsole, vaultwall2, room2,
+ *                          slab2, slab3, road6, road7
+ *    Nothing writes br_material::ka at runtime -- no FPU or constant store to +0x10 exists
+ *    outside BrMaterialAllocate_Defaults and BrMaterialSetPreset. The race TXT documents
+ *    the concept in its GLOBAL LIGHTING DATA block ("Ambient/Diffuse light to be used when
+ *    plaything ambient says 1" = 1.0,0.8).
+ *
+ * 2. flags & (LIGHT|PRELIT) == 0 with colour 0xFFFFFF is the sprite recipe for
+ *    "full-bright, unshaded": LIGHTING_B=0 and COLOUR_SOURCE_T=SURFACE, so the draw is
+ *    texture x white. Set by InitSpriteParticlePool 0x004EAA4E / 0x004EAA5F and InitFlames
+ *    0x004FC4A5 / 0x004FC4B2 (clear bit 0, set 0x800), giving flags == 0x0800 exactly:
+ *    explosion fire (ex00001..7), powerup sparkle (TWINK1..4, BING1..6), blood
+ *    (BIGBL01..05), BANG! impact marks, car flames (FLM01..FLM20).
+ *    Smoke is 0x0027 (LIGHT|PRELIT|SMOOTH|PERSPECTIVE) and sparks 0x1007, so those two
+ *    carry their brightness in the vertex colours instead.
+ *
+ * 3. Car lights are one material each, distinguished only by texture region. EARLITL,
+ *    EARLITR (rear) and EALITL, EALITR (head) all ship as flags 0x0001, ka 0.1, colour
+ *    0xFFFFFF -- identical to every other body panel. Only the rear pair is funked: the
+ *    EAGLE3.TXT funk block gives them `texturebits` frames EBACKALL,2,x,2,y, a 2x2 atlas
+ *    whose quadrant (off / brake / reverse / both) is chosen through map_transform only
+ *    (see findings 6.4). Nothing about the material or its flags changes with the state.
+ *    Headlights are not funked at all -- a static `eheadlig` texture.
+ *    Naming is consistent across the fleet: materials ending LITL/LITR or containing
+ *    hlite/light, pixelmaps eheadlig, ebacklig, EBACKALL, burearlit, backligh, bghlite,
+ *    clights, cerlight, Cphlite, Dfhlite, 37backlit, amhlite.
+ *
+ * 4. Track light/neon/sign materials carry no distinguishing flag or coefficient at all
+ *    (all ka 0.1, flags 0x0001 or 0x0021): NEON, NEONFLR, NEONFLR64, redneonflr64,
+ *    TOPLIGHT, WARSIGN (Silonet03); light, ticketlight, tv, tv2, stuntscreen (funfair1);
+ *    gtsign, rsign01, rsign02, shopsign, shopsign2, shopsign3 (newcity1); lamp1, backsign,
+ *    bagsign, bagsign2, bagsign3, tvmon, tvgen, tvspeak (Airport1); lamppost, lamppos2,
+ *    "@MAGLIGHT" (Junknet); lamp, gassign, gassign2, twinsign (timber1); screen1, screen2,
+ *    screen3, mssign, missign (silo1); bobsign, bobsign2 (skitrack1); tscreen (Carrier1);
+ *    ABLUELIT (Silonet03). Only name or pixelmap matching can find these.
+ *
+ * 5. The horizon/sky is deliberately outside all of this: HORIZON.MAT at [0x0067C4E0] is
+ *    never fogged and gets its depth cue from a shade-table pixelmap written into
+ *    colour_map (findings 21.5).
+ */
