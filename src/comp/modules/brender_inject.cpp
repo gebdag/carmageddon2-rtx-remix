@@ -1192,6 +1192,57 @@ namespace comp
 	}
 
 	/*
+	 * Counts the normals that cannot be shaded with, and names a model carrying them.
+	 *
+	 * BRender only rebuilds a prepared model's normals when BrModelUpdate is asked for
+	 * BR_MODU_VERTEX_NORMALS, and several of this game's systems update a model for one
+	 * channel alone -- the smoke rewrites vertex colours with flag 2 and nothing else. A
+	 * model that never had normals computed carries zeroes here, and a zero normal is not
+	 * a shading error the injection would otherwise notice: geometry still draws, it just
+	 * reflects nowhere.
+	 */
+	void brender_inject::sample_normals(const std::vector<ffp_vertex>& vertices,
+		const size_t first_vertex, const game::br_model* model)
+	{
+		uint32_t degenerate = 0;
+
+		for (size_t i = first_vertex; i < vertices.size() && m_normals_sampled < NORMAL_SAMPLES; ++i)
+		{
+			const ffp_vertex& v = vertices[i];
+			const float length_sq = v.nx * v.nx + v.ny * v.ny + v.nz * v.nz;
+			++m_normals_sampled;
+
+			if (length_sq < 1e-8f)
+			{
+				++m_normals_degenerate;
+				++degenerate;
+			}
+			else if (fabsf(length_sq - 1.0f) > 0.02f) {
+				++m_normals_unnormalized;
+			}
+		}
+
+		if (degenerate && m_worst_normal_model.empty()) {
+			m_worst_normal_model = model->identifier ? model->identifier : "<null>";
+		}
+
+		if (m_normals_reported || m_normals_sampled < NORMAL_SAMPLES) {
+			return;
+		}
+		m_normals_reported = true;
+
+		const bool healthy = m_normals_degenerate == 0 && m_normals_unnormalized == 0;
+		shared::common::log("BRender", std::format(
+			"normals: {} sampled, {} with no direction{}, {} not unit length{}",
+			m_normals_sampled, m_normals_degenerate,
+			m_worst_normal_model.empty() ? "" : std::format(" (first on '{}')", m_worst_normal_model),
+			m_normals_unnormalized,
+			healthy ? " - forwarded to Remix as authored" : " - THESE SHADE WRONG"),
+			healthy ? shared::common::LOG_TYPE::LOG_TYPE_GREEN
+			        : shared::common::LOG_TYPE::LOG_TYPE_ERROR, true);
+	}
+
+	/*
 	 * The mode that culls back faces, and the check that the assumption behind it holds.
 	 *
 	 * BRender keeps a face when the eye is on the side its normal points to, with the
@@ -1338,6 +1389,10 @@ namespace comp
 				dst.v = src.v;
 				dst.diffuse = colours ? to_d3d_colour(colours[v]) : 0xFFFFFFFFu;
 			}
+		}
+
+		if (m_normals_sampled < NORMAL_SAMPLES) {
+			sample_normals(vertices, vertex_base, model);
 		}
 
 		// Emit indices grouped by material so each material forms one contiguous draw.

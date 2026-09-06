@@ -411,6 +411,18 @@ namespace comp
 		                    const std::vector<uint32_t>& indices, size_t first_index);
 		DWORD resolve_cull_mode();
 
+		/*
+		 * Reports the health of the normals being handed to Remix, once.
+		 *
+		 * They are forwarded verbatim from BRender's prepared vertices, and Remix shades
+		 * with them rather than deriving its own -- so a model prepared without
+		 * BR_MODU_VERTEX_NORMALS, or one whose normals were averaged across a material
+		 * boundary, is invisible here but decides where every mirror points. Counting the
+		 * degenerate and non-unit ones says whether the data is worth suspecting.
+		 */
+		void sample_normals(const std::vector<ffp_vertex>& vertices, size_t first_vertex,
+		                    const game::br_model* model);
+
 		void capture_lines(const game::br_model* model, const game::br_matrix34& model_to_world);
 		uint32_t submit_lines(IDirect3DDevice9* dev);
 		void log_spark_geometry(const float camera[3]);
@@ -649,6 +661,14 @@ std::vector<static_chunk> m_chunks;
 		// disagree -- authored geometry is not always consistent -- so the answer is the
 		// majority over many models rather than the first one seen.
 		static constexpr uint32_t WINDING_SAMPLES = 4096;
+
+		// Normal health, over the same kind of bounded sample.
+		uint32_t m_normals_sampled = 0;
+		uint32_t m_normals_degenerate = 0;    // no direction at all
+		uint32_t m_normals_unnormalized = 0;  // a direction, but not unit length
+		bool m_normals_reported = false;
+		std::string m_worst_normal_model;
+		static constexpr uint32_t NORMAL_SAMPLES = 8192;
 
 		// The camera whose scene last submitted, i.e. the race view. Models seen under any
 		// other camera belong to 3D HUD widgets: they are never suppressed and never enter
