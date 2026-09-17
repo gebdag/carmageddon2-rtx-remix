@@ -37,6 +37,8 @@
 # Documentation
 !*.md
 !LICENSE
+!LICENSE.txt
+!AUTHORS.txt
 
 # Re-ignore build output (overrides the above)
 build/
