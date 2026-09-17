@@ -195,7 +195,7 @@ cl /nologo /c %CF% %INC% /I"%COMP_DIR%\.." ^
 if errorlevel 1 goto :fail
 
 :: Link DLL as d3d9.dll proxy (exports via .def, no d3d9.lib import)
-link /nologo /DLL /SUBSYSTEM:WINDOWS /DEBUG /PDBCompress %LF% %LIBPATH% ^
+link /nologo /DLL /SUBSYSTEM:WINDOWS /DEBUG /PDBCompress /PDBALTPATH:%%_PDB%% %LF% %LIBPATH% ^
     /DEF:"%ROOT%d3d9.def" ^
     /OUT:"%GAME_OUT%\d3d9.dll" ^
     /PDB:"%GAME_OUT%\%NAME%.pdb" ^

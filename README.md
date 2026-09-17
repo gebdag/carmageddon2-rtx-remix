@@ -1,77 +1,74 @@
-# remix-comp-proxy
+# Carmageddon 2 RTX Remix
 
-A DX9 proxy framework for RTX Remix compatibility mods, with built-in fixed-function pipeline (FFP) conversion. Part of the [Vibe Reverse Engineering](https://github.com/Ekozmaster/Vibe-Reverse-Engineering) toolkit.
+An RTX Remix compatibility mod for Carmageddon 2: Carpocalypse Now (`CARMA2_HW.EXE`).
 
-## What It Does
-
-Legacy DX9 games use vertex/pixel shaders that RTX Remix can't inject ray-traced lighting into. This proxy sits between the game and Remix, intercepting D3D9 calls and converting shader-based rendering to fixed-function pipeline calls that Remix understands.
-
-### Core Features
-
-- **Full D3D9 proxy** — d3d9.dll proxy with every IDirect3DDevice9 method intercepted
-- **FFP conversion** — captures VS constants, parses vertex declarations, transposes matrices, and routes draw calls through the D3D9 fixed-function pipeline
-- **Draw routing** — configurable decision trees that classify each draw call (3D geometry, HUD, skinned mesh) and decide whether to convert or pass through
-- **Integrated frame tracer** — captures all D3D9 API calls to JSONL with category filtering, delayed capture, and external trigger support
-- **INI configuration** — game-specific register layouts, albedo stage, skinning toggle, and diagnostics settings in `remix-comp-proxy.ini` (no recompile needed)
-- **ImGui debug overlay** (F4) — live VS constant heatmap, matrix viewer, texture stage bindings, draw stats, FFP enable/disable toggle, tracer controls
-- **Diagnostic logging** — timed frame dump to `rtx_comp\diagnostics.log` for debugging VS register layouts, vertex declarations, and draw call routing
-- **Optional skinning module** — runtime-toggled vertex skinning with bone matrix upload, vertex buffer expansion, and compressed format decoding
-- **DLL chain loading** — pre-load and post-load DLL/ASI injection for additional mods
-- **Component module system** — `shared/` (game-agnostic static lib) + `comp/` (game-specific DLL) with clean separation
-- **Per-game build split** — shared library stays in the base, only `comp/` is copied per game project
-
-### Architecture
+Carmageddon 2 transforms and lights everything on the CPU through BRender, so what reaches the
+graphics driver is already in screen space, which Remix skips. This mod is a `d3d9.dll` proxy
+that hooks BRender's model renderer (`BrZbModelRender`) while the vertices are still in model
+space, and submits them to Remix with separate world, view and projection transforms.
 
 ```
-src/
-  shared/              Game-agnostic static library
-    common/
-      config.hpp/cpp     INI config reader
-      ffp_state.hpp/cpp  FFP state tracking, transforms, lighting, texture stages
-      ...
-    utils/               Hooking, memory, general utilities
-  comp/                Game-specific DLL (copy this per game)
-    main.cpp             DLL entry, window finding, config loading
-    comp.cpp             Module registration
-    d3d9_proxy.cpp       d3d9.dll export forwarding
-    game/                Game-specific patterns and structs
-    modules/
-      d3d9ex.cpp         D3D9 proxy with FFP + tracer interceptions
-      renderer.cpp       Draw routing decision trees
-      imgui.cpp          Debug overlay with FFP tab
-      tracer.cpp         Integrated frame tracer
-      diagnostics.cpp    Frame logging
-      skinning.cpp       Optional skinning
+CARMA2_HW.EXE (BRender) -> Glide -> nGlide -> d3d9.dll (this mod) -> d3d9_remix.dll (RTX Remix)
 ```
+
+## Features
+
+- Static scenery baked into per-texture chunks that Remix keeps between frames
+- The game's own render of injected models suppressed, so it isn't drawn over the path-traced frame
+- Frustum culling disabled and a longer far plane for path tracing
+- Tyre tracks and other decals lifted off the road, with a separate translucent pass
+- Sparks rebuilt as billboards
+- Car rear light panels showing the right cell of their texture atlas
+- Smoke and dust tinted by vertex colour and faded by material opacity
+- The game's back-face culling handed to Remix, so car glass stays single-sided
+- The race's depth cue passed on as fog and to Remix's volumetrics
+- A patch for the game's own out-of-bounds crash in the tint-poly code when pressing ESC
+- F4 debug overlay
+
+All options are documented in `remix-comp-proxy.ini`.
+
+## Requirements
+
+- Carmageddon 2: Carpocalypse Now (developed against the GOG version; no game files are included)
+- nGlide (included with the GOG version)
+- RTX Remix runtime
+
+## Installing
+
+1. Install the RTX Remix runtime into the game folder, then rename its `d3d9.dll` to `d3d9_remix.dll`.
+2. Copy `d3d9.dll` and `remix-comp-proxy.ini` from a release into the game folder.
+3. Start `CARMA2_HW.EXE`.
 
 ## Building
 
-1. Run `build.bat` (requires Visual Studio 2022)
-2. Output: `build/bin/release/d3d9.dll`
+Needs Visual Studio 2022 with the C++ x86 toolset.
 
-For per-game projects: `build.bat release --name GameName --comp path/to/comp`
+```bat
+build.bat
+```
 
-## Deploying
+Output: `build\bin\release\d3d9.dll` and `remix-comp-proxy.ini`.
 
-1. Copy `d3d9.dll` to the game directory
-2. Copy `remix-comp-proxy.ini` to the game directory
-3. Edit `remix-comp-proxy.ini` with game-specific settings
-4. Place `d3d9_remix.dll` (RTX Remix) in the game directory
+## Repository layout
 
-## Contributors
+```
+src/comp/modules/brender_inject.*   BRender hooks and Remix submission
+src/comp/game/                      Carmageddon 2 addresses, structures and the ESC crash patch
+src/comp/, src/shared/              remix-comp-proxy framework
+deps/                               vendored dependencies
+assets/remix-comp-proxy.ini         default configuration
+findings.md                         research notes
+kb.h                                knowledge base for the reverse engineering tools
+save-run.ps1                        saves a finished run's logs and settings into runs\<name>
+```
 
-| Who | What | Support |
-|-----|------|---------|
-| [xoxor4d](https://github.com/xoxor4d) | Original [remix-comp-base](https://github.com/xoxor4d/remix-comp-base) framework, D3D9 proxy architecture, ImGui integration, module system | [Ko-Fi](https://ko-fi.com/xoxor4d) / [Patreon](https://patreon.com/xoxor4d) |
-| [kim2091](https://github.com/kim2091) | FFP conversion system, skinning module, diagnostic logging, tracer integration, INI config, toolkit integration | [Ko-Fi](https://ko-fi.com/kim20913944) |
-| [momo5502](https://github.com/momo5502) | Initial codebase that remix-comp-base was built on | |
+## Credits
 
-## Dependencies
-
-- [Dear ImGui](https://github.com/ocornut/imgui) — debug overlay
-- [MinHook](https://github.com/TsudaKageyu/minhook) — function hooking
-- [RTX Remix Bridge API](https://github.com/NVIDIAGameWorks/rtx-remix) — Remix integration
+Built on the remix-comp-proxy framework by [xoxor4d](https://github.com/xoxor4d) and
+[kim2091](https://github.com/kim2091), from the
+[Vibe Reverse Engineering](https://github.com/Ekozmaster/Vibe-Reverse-Engineering) toolkit.
+Third-party components are listed in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
 ## License
 
-MIT. See [LICENSE](LICENSE).
+MIT, see [LICENSE](LICENSE).
