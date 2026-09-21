@@ -5,6 +5,7 @@
 #include "renderer.hpp"
 #include "tracer.hpp"
 #include "diagnostics.hpp"
+#include "headlights.hpp"
 #include "shared/common/imgui_helper.hpp"
 #include "shared/common/ffp_state.hpp"
 #include "shared/common/config.hpp"
@@ -46,6 +47,15 @@ namespace comp
 
 	bool imgui::input_message(const UINT message_type, const WPARAM wparam, const LPARAM lparam)
 	{
+		// Bit 30 of lparam is set on auto-repeat; one press is one step.
+		if (message_type == WM_KEYDOWN && wparam == 'H' && !(lparam & (1 << 30))
+			&& !shared::globals::imgui_wants_text_input)
+		{
+			if (const auto lights = headlights::get(); lights) {
+				lights->cycle_mode();
+			}
+		}
+
 		if (message_type == WM_KEYUP && wparam == VK_F4) 
 		{
 			const auto& io = ImGui::GetIO();
@@ -254,6 +264,13 @@ namespace comp
 	void imgui::tab_dev()
 	{
 		dev_debug_container();
+	}
+
+	void imgui::tab_headlights()
+	{
+		if (const auto lights = headlights::get(); lights) {
+			lights->draw_menu();
+		}
 	}
 
 	void imgui::tab_ffp()
@@ -639,6 +656,7 @@ namespace comp
 		{
 			ImGui::PopStyleColor();
 			ImGui::PopStyleVar(1);
+			ADD_TAB("Headlights", tab_headlights);
 			ADD_TAB("FFP", tab_ffp);
 			ADD_TAB("Diagnostics", tab_diagnostics);
 			ADD_TAB("Tracer", tab_tracer);
@@ -750,6 +768,10 @@ namespace comp
 
 					if (im->m_stats.is_tracking_enabled()) {
 						im->m_stats.reset_stats();
+					}
+
+					if (const auto lights = headlights::get(); lights) {
+						lights->draw_mode_notice();
 					}
 
 					shared::globals::imgui_is_rendering = true;

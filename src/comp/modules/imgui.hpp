@@ -182,6 +182,7 @@ namespace comp
 	private:
 		void tab_about();
 		void tab_dev();
+		void tab_headlights();
 		void tab_ffp();
 		
 		bool m_im_window_focused = false;

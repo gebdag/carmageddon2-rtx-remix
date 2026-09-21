@@ -85,6 +85,89 @@ namespace comp::game
 		}
 	}
 
+	bool can_read(const void* p, const size_t bytes)
+	{
+		if (reinterpret_cast<uintptr_t>(p) < 0x10000) {
+			return false;
+		}
+
+		MEMORY_BASIC_INFORMATION mbi{};
+		if (!VirtualQuery(p, &mbi, sizeof(mbi)) || mbi.State != MEM_COMMIT) {
+			return false;
+		}
+
+		constexpr DWORD readable_mask = PAGE_READONLY | PAGE_READWRITE | PAGE_WRITECOPY
+			| PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY;
+		if (!(mbi.Protect & readable_mask) || (mbi.Protect & PAGE_GUARD)) {
+			return false;
+		}
+
+		const auto region_end = static_cast<const uint8_t*>(mbi.BaseAddress) + mbi.RegionSize;
+		return static_cast<const uint8_t*>(p) + bytes <= region_end;
+	}
+
+	namespace
+	{
+		constexpr uint32_t CAR_SPEC_SIZE = CAR_MODEL_ACTOR + sizeof(void*);
+
+		void append_car(std::vector<race_car>& out, const void* spec, const bool is_player)
+		{
+			if (!can_read(spec, CAR_SPEC_SIZE)) {
+				return;
+			}
+
+			const auto field = [spec](const uint32_t offset) {
+				return static_cast<const uint8_t*>(spec) + offset;
+			};
+
+			const auto master = *reinterpret_cast<const br_actor* const*>(field(CAR_MASTER_ACTOR));
+			if (!can_read(master, sizeof(br_actor))) {
+				return;
+			}
+
+			auto model = *reinterpret_cast<const br_actor* const*>(field(CAR_MODEL_ACTOR));
+			if (!can_read(model, sizeof(br_actor))) {
+				model = nullptr;
+			}
+
+			out.push_back({
+				.spec = spec,
+				.master = master,
+				.model = model,
+				.is_player = is_player,
+				.knackered = *reinterpret_cast<const int*>(field(CAR_KNACKERED)) != 0,
+			});
+		}
+
+		void append_opponent_specs(std::vector<race_car>& out, const uint32_t array_addr, const uint32_t count_addr)
+		{
+			const int count = *reinterpret_cast<const int*>(rebase(count_addr));
+			if (count <= 0 || count > static_cast<int>(MAX_OPPONENT_SPECS)) {
+				return;
+			}
+
+			const auto base = reinterpret_cast<const uint8_t*>(rebase(array_addr));
+			for (int i = 0; i < count; ++i)
+			{
+				const auto entry = base + i * OPPONENT_SPEC_STRIDE;
+				append_car(out, *reinterpret_cast<const void* const*>(entry + OPPONENT_SPEC_CAR), false);
+			}
+		}
+	}
+
+	void collect_race_cars(std::vector<race_car>& out)
+	{
+		out.clear();
+
+		if (*reinterpret_cast<const int*>(rebase(ADDR_g_racing)) == 0) {
+			return;
+		}
+
+		append_car(out, reinterpret_cast<const void*>(rebase(ADDR_g_player_car)), true);
+		append_opponent_specs(out, ADDR_g_opponents, ADDR_g_num_opponents);
+		append_opponent_specs(out, ADDR_g_cops, ADDR_g_num_cops);
+	}
+
 	scene_fog read_scene_fog()
 	{
 		scene_fog fog{};

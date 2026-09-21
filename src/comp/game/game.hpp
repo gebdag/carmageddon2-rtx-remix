@@ -172,6 +172,51 @@ namespace comp::game
 	// ApplyDepthCueToMaterial bakes them into a material.
 	scene_fog read_scene_fog();
 
+	/*
+	 * Cars. The player's tCar_spec is a global struct, not an allocation: GetCarSpec
+	 * (0x004AE7E0) returns the constant for category 0, and BuildCarShadows (0x004E74D0)
+	 * loads the same address. Opponents and cops live in two tOpponent_spec arrays with a
+	 * shared layout, each entry holding a pointer to its tCar_spec -- the lookup loops at
+	 * 0x004A9CEC and 0x004A9D27 prove base, stride and offset. Net players are a third
+	 * category this does not read.
+	 */
+	constexpr uint32_t ADDR_g_player_car = 0x0075BC2Cu;     // tCar_spec
+	constexpr uint32_t ADDR_g_opponents = 0x0075D8A0u;      // tOpponent_spec[]
+	constexpr uint32_t ADDR_g_num_opponents = 0x0075D7A0u;  // int
+	constexpr uint32_t ADDR_g_cops = 0x007609D8u;           // tOpponent_spec[]
+	constexpr uint32_t ADDR_g_num_cops = 0x00691744u;       // int
+	constexpr uint32_t OPPONENT_SPEC_STRIDE = 0x1A4u;
+	constexpr uint32_t OPPONENT_SPEC_CAR = 0x08u;           // tCar_spec*
+	constexpr uint32_t MAX_OPPONENT_SPECS = 30u;
+
+	// tCar_spec fields. The master actor's matrix is car-to-world; a car faces down its
+	// local -Z with +Y up (0x0041410C negates matrix row 2 into car->direction). The model
+	// actor is the loaded car .ACT, linked under the master with an identity transform.
+	constexpr uint32_t CAR_MASTER_ACTOR = 0x010u;           // br_actor*
+	constexpr uint32_t CAR_KNACKERED = 0x1D4u;              // int, set by KnackerThisCar (0x0043F5F0)
+	constexpr uint32_t CAR_MODEL_ACTOR = 0xE0Cu;            // br_actor*
+
+	// gProgram_state.racing -- raised at the top of MainGameLoop (0x00492A5C), dropped on
+	// every way out of a race and for the length of the pause frontend (0x00494484).
+	constexpr uint32_t ADDR_g_racing = 0x0075BBA8u;         // int
+
+	struct race_car
+	{
+		const void* spec;           // identity of the car for as long as the race lasts
+		const br_actor* master;
+		const br_actor* model;      // may be null
+		bool is_player;
+		bool knackered;
+	};
+
+	// Every car in the race whose master actor can be read: the player first, then the
+	// opponents, then the cops. Empty outside a race.
+	void collect_race_cars(std::vector<race_car>& out);
+
+	// Whether the whole span can be read without faulting. Game pointers that are only
+	// valid for part of a race go through this before they are followed.
+	bool can_read(const void* p, size_t bytes);
+
 	// ---
 
 	extern void init_game_addresses();

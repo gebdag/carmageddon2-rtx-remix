@@ -1,5 +1,6 @@
 #include "std_include.hpp"
 #include "brender_inject.hpp"
+#include "headlights.hpp"
 #include "shared/common/config.hpp"
 #include "shared/common/ffp_state.hpp"
 #include "shared/common/remix_api.hpp"
@@ -1894,6 +1895,10 @@ namespace comp
 		m_in_frontend = true;
 		m_frontend_models.clear();
 
+		if (const auto lights = headlights::get(); lights) {
+			lights->on_frame_without_race();
+		}
+
 		// Whatever camera the race was measured against is finished with. Keeping it would
 		// let a recycled camera pointer in the next track pass for the race view, and the
 		// first submit back establishes the real one anyway.
@@ -2677,6 +2682,10 @@ namespace comp
 		m_last_scene_ticks = start.QuadPart;
 
 		log_performance(stats);
+
+		if (const auto lights = headlights::get(); lights) {
+			lights->on_race_frame(m_view_inverse.m[3]);
+		}
 
 		++m_scenes_submitted;
 		if ((m_scenes_submitted % 600) == 0) {

@@ -3,6 +3,7 @@
 #include "modules/imgui.hpp"
 #include "modules/renderer.hpp"
 #include "modules/brender_inject.hpp"
+#include "modules/headlights.hpp"
 #include "modules/diagnostics.hpp"
 #include "modules/skinning.hpp"
 #include "modules/tracer.hpp"
@@ -88,6 +89,7 @@ namespace comp
 		// Carmageddon 2 submits nothing usable through D3D9 itself — nGlide hands Remix
 		// screen-space triangles. This module supplies the model-space geometry instead.
 		shared::common::loader::module_loader::register_module(std::make_unique<brender_inject>());
+		shared::common::loader::module_loader::register_module(std::make_unique<headlights>());
 
 		auto& cfg = shared::common::config::get();
 

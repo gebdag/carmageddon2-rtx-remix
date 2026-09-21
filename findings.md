@@ -2621,3 +2621,61 @@ emission from the global `rtx.legacyMaterial.emissiveIntensity` / `emissiveColor
 has to come from a replacement keyed on the texture hash, or from `rtx.lightConverter`
 (rtx_options.h:240), which turns a tagged surface into an actual light rather than a bright
 texture -- the better fit for head and brake lights, which should illuminate the road.
+
+## 33. Headlights: Remix lights on the car's master actor (2026-09-21)
+
+Dark stretches path-trace to black because the sky is the port's only light. The proxy
+now puts two Remix spot lights on each car. H cycles off -> player car -> all cars -> off;
+the F4 menu's Headlights tab has every value on a slider and saves them to
+`carma2-headlights.ini` beside the game EXE.
+
+### 33.1 Where the cars are
+
+All from disassembly of `CARMA2_HW0.EXE`; the offsets are in `kb.h`.
+
+- The player's `tCar_spec` is a global struct at `0x0075BC2C`, not a pointer.
+  `GetCarSpec(0, 0)` returns the constant (`0x004AE7EC`), and `BuildCarShadows` loads it
+  directly (`0x004E752A`).
+- Opponents: `tOpponent_spec[30]` at `0x0075D8A0`, stride `0x1A4`, `tCar_spec*` at `+0x08`,
+  count at `0x0075D7A0`. Cops: same layout at `0x007609D8`, count at `0x00691744`. The
+  lookup loops at `0x004A9CEC` and `0x004A9D27` prove base, stride and offset.
+- `car + 0x10` is the master actor; its matrix is car-to-world. `car + 0xE0C` is the loaded
+  `.ACT`, added under the master with an identity transform (`0x0048A342`).
+- A car faces down local -Z with +Y up: `0x0041410C` writes `-(row 2)` into
+  `car->direction`. The car data agrees -- `copcar`'s front bumper sits at z = -0.53.
+- `car + 0x1D4` is set by `KnackerThisCar` (`0x0043F5F0`): the car is wasted.
+- `0x0075BBA8` is `gProgram_state.racing`: 1 inside `MainGameLoop`, 0 in the pause frontend.
+- The proxy reads the arrays itself instead of calling `GetCarCount` / `GetCarSpec`; net
+  players (category 1) are not read.
+
+### 33.2 Scale
+
+A normal car is about 0.4 wide, 0.8-1.0 long and 0.25-0.3 high in BRender units; `bigdump`
+is 1.2 wide and its shell reaches z = 1.17. The constant 6.9 (Carmageddon 1's WORLD_SCALE)
+appears in `.rdata`, so one unit is about 6.9 m. No fixed mounting point fits both, which
+is why a lamp is placed relative to the box around everything the car's actor tree draws:
+a fraction of the half width, a fraction of the height, and a fixed distance ahead of the
+front face so the body does not shadow its own lamp. The box is re-measured every 120
+frames, because damage reshapes the models.
+
+### 33.3 The Remix side
+
+- The lights are sphere lights with cone shaping, created through the Remix API from the
+  race-view submit, where world space is BRender's own world space.
+- The API has no move call. Describing a light again under the same hash overwrites it;
+  destroying it first would blink it out for a frame.
+- A light is in the scene only in frames where `DrawLightInstance` is called for it.
+- The menu's brightness is radiance times emitter area, so the emitter radius changes how
+  soft the shadows are and nothing else.
+- **The Remix API was not initializing before this** (`Failed to initialize the remixApi -
+  Code: 11`, NOT_INITIALIZED): the game's `.trex/bridge.conf` lacked `exposeRemixApi = True`.
+  That also means section 24's `SetConfigVariable` pushes never reached Remix on that
+  install. The headlights module retries the initialization a few times from the race
+  frame, because the bridge is not necessarily up when the proxy first asks.
+
+### 33.4 Not verified in game yet
+
+The defaults (brightness 20, emitter radius 0.012, cone 38 degrees, 4 degrees down) are
+computed, not tuned. Whether distant, physics-inactive opponents keep a valid master
+matrix is inferred, not observed; "Range from camera" keeps their lights off beyond 12
+units either way. Whether the game itself binds H was not checked.

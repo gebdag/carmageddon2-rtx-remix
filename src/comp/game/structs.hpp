@@ -283,6 +283,7 @@ namespace comp::game
 		uint16_t pad4;          // 0x2A
 		br_matrix34 t;          // 0x2C
 		void* type_data;        // 0x5C  br_camera* for camera actors
+		void* user;             // 0x60
 	};
 
 	// br_actor::render_style, and the style argument BrZbModelRender dispatches on. The

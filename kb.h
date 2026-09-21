@@ -1020,3 +1020,50 @@ $ 0x006ad520 void* g_default_material     /* the object BrMaterialAllocate_Defau
  *    never fogged and gets its depth cue from a shade-table pixelmap written into
  *    colour_map (findings 21.5).
  */
+
+/* ---- Cars (2026-09-21, from disassembly; see findings 33) -------------------------------
+ *
+ * The player's tCar_spec is a global struct. Opponents and cops sit in two tOpponent_spec
+ * arrays of identical layout; each entry points at its tCar_spec. GetCarCount / GetCarSpec
+ * are the game's own category/index accessors (0 self, 1 net players, 2 opponents, 3 cops,
+ * 4 drones -- fatal error, 5 non-car physics objects). A car faces down local -Z, +Y up:
+ * 0x0041410C and 0x004C9545 write -(master matrix row 2) into car->direction.
+ */
+struct tCar_spec {
+    int index;                      /* 0x000 */
+    int disabled;                   /* 0x004  player is left out of the active list when set (0x004A7B0F) */
+    void *physics_obj;              /* 0x008 */
+    int driver;                     /* 0x00C  8 local human, 7 net human, 6 opponent or cop, <= 5 not a car */
+    br_actor *car_master_actor;     /* 0x010  matrix at +0x2C is car-to-world */
+    /* 0x04C br_vector3 pos         -- copy of the master translation */
+    /* 0x070 br_vector3 direction   -- world-space forward */
+    /* 0x080 unsigned short car_ID  -- 0x02xx opponent, 0x03xx cop */
+    /* 0x1D0 int active             -- physics-active / nearby, maintained by BuildActiveCarList */
+    /* 0x1D4 int knackered          -- wasted */
+    /* 0xE0C br_actor *car_model_actor -- the loaded .ACT, child of the master, identity transform */
+};
+
+struct tOpponent_spec {             /* stride 0x1A4 */
+    int pad0;                       /* 0x00 */
+    int current_objective;          /* 0x04 */
+    tCar_spec *car_spec;            /* 0x08 */
+    /* 0xB0 flags: 0x08 physics_me, 0x20 cheating */
+};
+
+@ 0x004ae790 int   __fastcall GetCarCount(int category /*ecx*/);
+@ 0x004ae7e0 void* __fastcall GetCarSpec(int category /*ecx*/, int index /*edx*/);
+@ 0x004a7a80 void BuildActiveCarList(void);
+@ 0x00488f70 void __fastcall LoadCar(char *name /*ecx*/, int driver /*edx*/, tCar_spec *car, int owner, char *driver_name, void *storage);
+@ 0x0043f5f0 void __fastcall KnackerThisCar(tCar_spec *car /*ecx*/);
+@ 0x00492980 void MainGameLoop(void);
+
+$ 0x0075bc2c tCar_spec g_player_car
+$ 0x0075bba8 int    g_racing               /* gProgram_state.racing: 1 inside MainGameLoop, 0 in the pause frontend */
+$ 0x0075bc24 int    g_prog_status          /* 2 idling, 4 starting, 5 game ongoing, 6 quit */
+$ 0x0075d8a0 tOpponent_spec g_opponents[30]
+$ 0x0075d7a0 int    g_num_opponents
+$ 0x007609d8 tOpponent_spec g_cops[30]
+$ 0x00691744 int    g_num_cops
+$ 0x0074c7c0 tCar_spec* g_active_car_list[]
+$ 0x0074c9ec int    g_num_active_cars
+$ 0x0068b918 int    g_net_mode             /* 0 = single player */
