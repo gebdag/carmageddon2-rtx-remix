@@ -631,6 +631,14 @@ namespace shared::common
 
 	// ---
 
+	namespace { constexpr uint32_t MAX_ATTEMPTS = 5; }
+
+	bool remix_api::gave_up()
+	{
+		const auto& instance = get();
+		return !instance.m_initialized && instance.m_init_attempts >= MAX_ATTEMPTS;
+	}
+
 	/*
 	 * API calls travel down the bridge's device queue, so nothing may be sent before the
 	 * game has created its device: the server is still waiting for the handshake's CONTINUE
@@ -640,7 +648,6 @@ namespace shared::common
 	 */
 	bool remix_api::ensure_initialized()
 	{
-		constexpr uint32_t MAX_ATTEMPTS = 5;
 		constexpr uint32_t CALLS_BETWEEN_ATTEMPTS = 180;
 
 		auto& instance = get();

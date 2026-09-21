@@ -140,12 +140,53 @@ namespace comp
 		return hr;
 	}
 
+	/*
+	 * Draws the ImGui overlay into the back buffer, in a scene of its own, as the last thing
+	 * before Present.
+	 *
+	 * nGlide never renders to the back buffer. It draws the whole frame into an offscreen
+	 * target, ends the scene, and copies that target across with StretchRect. An overlay
+	 * drawn at EndScene therefore lands in the offscreen target, which is also where Remix
+	 * writes the path-traced frame, and does not survive to the screen. The back buffer
+	 * after the copy is the frame the player actually sees.
+	 */
+	void d3d9ex::D3D9Device::draw_overlay()
+	{
+		if (!imgui::is_initialized()) {
+			return;
+		}
+
+		IDirect3DSurface9* back_buffer = nullptr;
+		if (FAILED(m_pIDirect3DDevice9->GetBackBuffer(0, 0, D3DBACKBUFFER_TYPE_MONO, &back_buffer))) {
+			return;
+		}
+
+		IDirect3DSurface9* game_target = nullptr;
+		m_pIDirect3DDevice9->GetRenderTarget(0, &game_target);
+
+		m_pIDirect3DDevice9->SetRenderTarget(0, back_buffer);
+		if (SUCCEEDED(m_pIDirect3DDevice9->BeginScene()))
+		{
+			imgui::get()->on_present();
+			m_pIDirect3DDevice9->EndScene();
+		}
+
+		if (game_target)
+		{
+			m_pIDirect3DDevice9->SetRenderTarget(0, game_target);
+			game_target->Release();
+		}
+		back_buffer->Release();
+	}
+
 	HRESULT d3d9ex::D3D9Device::Present(CONST RECT* pSourceRect, CONST RECT* pDestRect, HWND hDestWindowOverride, CONST RGNDATA* pDirtyRegion)
 	{
 		TRACE_IF_ACTIVE(trace_Present, pSourceRect, pDestRect, hDestWindowOverride, pDirtyRegion);
 		auto& ffp = shared::common::ffp_state::get();
 		if (auto* d = diagnostics::get()) d->on_present(ffp.frame_count(), ffp.draw_call_count(), ffp.scene_count());
 		ffp.on_present();
+
+		draw_overlay();
 
 		LARGE_INTEGER before{}, after{}, frequency{};
 		QueryPerformanceFrequency(&frequency);
@@ -315,10 +356,6 @@ namespace comp
 	HRESULT d3d9ex::D3D9Device::EndScene()
 	{
 		TRACE_IF_ACTIVE_NOARGS(trace_EndScene);
-		if (imgui::is_initialized()) {
-			imgui::get()->on_present();
-		}
-
 		return m_pIDirect3DDevice9->EndScene();
 	}
 

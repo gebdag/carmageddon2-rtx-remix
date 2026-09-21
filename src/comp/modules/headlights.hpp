@@ -13,8 +13,10 @@ namespace comp
 	 *
 	 * Cars differ too much in size for one fixed mounting point, so a lamp is placed
 	 * relative to the box around everything the car's actor tree draws: a fraction of the
-	 * half width out from the centre line, a fraction of the height up, and a fixed
-	 * distance ahead of the front face so the body does not shadow its own lamp.
+	 * half width out from the centre line, a fraction of the height up, and just clear of
+	 * the front face so the body does not shadow its own lamp. Just clear and no more: the
+	 * game keeps the car out of the scenery, and nothing keeps a lamp out of it, so a lamp
+	 * held well ahead of the bumper is buried by the first slope the nose meets.
 	 */
 	class headlights final : public shared::common::loader::component_module
 	{
@@ -38,8 +40,8 @@ namespace comp
 
 			// placement, relative to the car's drawn bounds
 			float spacing = 0.68f;          // 0..1 of the half width, out from the centre line
-			float height = 0.42f;           // 0..1 of the body height, up from its underside
-			float forward = 0.04f;          // world units ahead of the front face
+			float height = 0.55f;           // 0..1 of the car's height, up from its wheels
+			float forward = 0.01f;          // world units ahead of the front face
 
 			// beam
 			float pitch_down = 4.0f;        // degrees
@@ -110,6 +112,7 @@ namespace comp
 
 		uint32_t m_frame = 0;
 		uint32_t m_lit_cars = 0;
+		std::string m_player_status;
 		bool m_create_failed = false;
 
 		std::chrono::steady_clock::time_point m_notice_until{};

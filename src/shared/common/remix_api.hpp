@@ -51,6 +51,9 @@ namespace shared::common
 		// Initializes on first use once the game is rendering; call once per frame.
 		static bool ensure_initialized();
 
+		// Every attempt has been spent without success.
+		static bool gave_up();
+
 		PFN_remixapi_BridgeCallback begin_scene_callback_external = nullptr;
 		PFN_remixapi_BridgeCallback end_scene_callback_external = nullptr;
 		PFN_remixapi_BridgeCallback present_callback_external = nullptr;

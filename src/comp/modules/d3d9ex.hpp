@@ -136,6 +136,8 @@ namespace comp
 
 		private:
 			IDirect3DDevice9 *m_pIDirect3DDevice9;
+
+			void draw_overlay();
 		};
 
 	public:

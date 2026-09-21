@@ -2709,10 +2709,49 @@ materials are created on first use instead of at initialization.
 Verified on 2026-09-21: the game boots, `Initialized RemixApi` is logged on the first race
 frame, H lights the player car and then every car, and nothing faults.
 
-### 33.6 Not verified in game yet
+### 33.6 The overlay has to be drawn into the back buffer (2026-09-21)
+
+The F4 menu was only visible on the black frames between menu screens. A two-frame trace
+shows why: nGlide never renders to the back buffer. It sets an offscreen target, draws the
+whole frame into it, calls `EndScene`, then `StretchRect`s that target onto the back buffer
+and presents. The framework drew ImGui from the `EndScene` hook, so it went into the
+offscreen target -- the same image Remix writes the path-traced frame into
+(`RtxContext::injectRTX` targets the bound render target) -- and never reached the screen
+over a live frame.
+
+`D3D9Device::draw_overlay` now draws ImGui from the `Present` hook instead: back buffer
+bound, a scene of its own, after the copy. Verified over the intro video, the frontend and
+a path-traced race.
+
+### 33.7 Lights that go missing (2026-09-21)
+
+Reported: the player's lights sometimes disappear, possibly when going uphill. Not
+reproduced -- synthetic input was too unreliable to drive a hill. What was established:
+
+- The measured car box is stable. Logged every re-measure for 40 s of start-line
+  collisions, only min y moved, by 0.03 with the suspension. Nothing the game hangs under
+  the master actor inflated it.
+- The Thunderbucket is 0.32 x 0.26 x 0.78 units. With the first defaults (height 0.42,
+  0.04 ahead of the nose) a lamp sat about 0.12 above the road and well outside the car.
+  The game keeps the *car* out of the scenery; nothing keeps a lamp out of it, so a lamp
+  held ahead of the bumper is buried by a slope the nose is only just meeting, and a
+  buried emitter lights nothing. The defaults are now 0.55 and 0.01: the box already
+  includes the bumpers, so 0.04 was never needed to clear them.
+- A pool that fades over a crest, or under hard acceleration, is the beam leaving the
+  road: it is only pitched 4 degrees down. That is a setting, not a fault.
+- This runtime fork freezes a re-described light after a few frames unless the light is
+  flagged dynamic (`fork_hooks::updateLightStaticSleep`). The lamps are flagged.
+
+The Headlights tab now says why the player's car is dark when it is ("flagged as wasted",
+"not being drawn", ...) or that it is lit and how big the game says it is, which separates
+a lamp the proxy never submitted from one Remix occluded.
+
+The game binds H itself (KEYMAP action 59); the proxy's toggle rides along with it.
+
+### 33.8 Not verified in game yet
 
 The defaults (brightness 20, emitter radius 0.012, cone 38 degrees, 4 degrees down) are
 computed, not tuned; in daylight snow they read as a modest pool ahead of the car. The
-Headlights tab and the mode notice were not seen on screen. Whether distant, physics-inactive opponents keep a valid master
+mode notice was not seen on screen. Whether distant, physics-inactive opponents keep a valid master
 matrix is inferred, not observed; "Range from camera" keeps their lights off beyond 12
-units either way. Whether the game itself binds H was not checked.
+units either way.

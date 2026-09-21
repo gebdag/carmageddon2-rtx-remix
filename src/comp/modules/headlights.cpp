@@ -440,15 +440,35 @@ namespace comp
 		}
 
 		m_lit_cars = 0;
+		m_player_status = m_cars.empty() ? "no cars: the game is not in a race" : "not found";
 		for (const auto& car : m_cars)
 		{
 			if (!car.is_player && m_mode != mode::all_cars) {
 				continue;
 			}
-			if (car.knackered && !m_settings.wasted_stay_lit) {
+
+			// Why a car is dark is the first thing to know when its lights go missing, and
+			// the player's car is the one being watched.
+			const auto skip = [this, &car](const char* reason)
+			{
+				if (car.is_player) {
+					m_player_status = reason;
+				}
+			};
+
+			if (car.knackered && !m_settings.wasted_stay_lit)
+			{
+				skip("dark: the game has it flagged as wasted");
 				continue;
 			}
-			if (car.master->render_style == game::BR_RSTYLE_NONE || car.master->t_type > BR_TRANSFORM_MATRIX34_LP) {
+			if (car.master->render_style == game::BR_RSTYLE_NONE)
+			{
+				skip("dark: the game is not drawing the car");
+				continue;
+			}
+			if (car.master->t_type > BR_TRANSFORM_MATRIX34_LP)
+			{
+				skip("dark: the car's actor carries no matrix");
 				continue;
 			}
 
@@ -471,8 +491,17 @@ namespace comp
 			}
 
 			const car_bounds* bounds = measure(car);
-			if (!bounds) {
+			if (!bounds)
+			{
+				skip("dark: nothing under the car's actor could be measured");
 				continue;
+			}
+
+			if (car.is_player)
+			{
+				m_player_status = std::format("lit - car {:.2f} x {:.2f} x {:.2f} units",
+					bounds->max[0] - bounds->min[0], bounds->max[1] - bounds->min[1],
+					bounds->max[2] - bounds->min[2]);
 			}
 
 			describe_lamp(car, *bounds, 0, brightness);
@@ -530,11 +559,20 @@ namespace comp
 
 		if (!shared::common::remix_api::is_initialized())
 		{
-			ImGui::TextColored(ImVec4(1.0f, 0.45f, 0.35f, 1.0f),
-				"Remix API not available - .trex/bridge.conf needs 'exposeRemixApi = True'");
+			if (shared::common::remix_api::gave_up()) {
+				ImGui::TextColored(ImVec4(1.0f, 0.45f, 0.35f, 1.0f),
+					"Remix API not available - .trex/bridge.conf needs 'exposeRemixApi = True'");
+			}
+			else {
+				ImGui::TextDisabled("The Remix API starts with the first race frame.");
+			}
 		}
-		else {
+		else
+		{
 			ImGui::TextDisabled("%u car(s) lit, %u Remix light(s)", m_lit_cars, static_cast<uint32_t>(m_lamps.size()));
+			if (m_mode != mode::off) {
+				ImGui::TextDisabled("Player car: %s", m_player_status.c_str());
+			}
 		}
 
 		ImGui::Spacing();
