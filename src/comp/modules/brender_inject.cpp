@@ -2512,6 +2512,14 @@ namespace comp
 
 		shared::common::remix_api::ensure_initialized();
 
+		// Ahead of every draw below. Remix collects API lights at its injection point, and
+		// API calls ride the same queue as the draws, so a light described after
+		// trigger_injection belongs to the next frame -- where the car has moved on and
+		// left its lamps behind, inside the bodywork, by however far it travelled.
+		if (const auto lights = headlights::get(); lights) {
+			lights->on_race_frame(m_view_inverse.m[3]);
+		}
+
 		if (m_in_frontend) {
 			resolve_frontend_return();
 		}
@@ -2684,10 +2692,6 @@ namespace comp
 		m_last_scene_ticks = start.QuadPart;
 
 		log_performance(stats);
-
-		if (const auto lights = headlights::get(); lights) {
-			lights->on_race_frame(m_view_inverse.m[3]);
-		}
 
 		++m_scenes_submitted;
 		if ((m_scenes_submitted % 600) == 0) {

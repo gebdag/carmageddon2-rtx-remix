@@ -2748,7 +2748,24 @@ a lamp the proxy never submitted from one Remix occluded.
 
 The game binds H itself (KEYMAP action 59); the proxy's toggle rides along with it.
 
-### 33.8 Not verified in game yet
+### 33.8 The lights were a frame behind the car (2026-09-21)
+
+Reported: the faster the car goes, the smaller the cone, until it is gone. That is a lamp
+being left behind. Remix gathers API lights when it injects: `LightManager::prepareSceneData`
+opens with `flushPendingLightMutations`, which applies the queued `CreateLight` and
+`DrawLightInstance` calls, and API calls ride the same bridge queue as the draws. The
+headlights were described at the *end* of `brender_inject::submit`, after
+`trigger_injection` had already marked the injection point, so frame N's lamps were lit in
+frame N+1 -- around a car that had moved on. The lamp trails by speed x frame time: at 13
+units/s and 60 fps that is 0.2 units, against a mount 0.01-0.04 ahead of the nose. The
+emitter slides back into the bodywork, the shell shadows more and more of the cone, and
+then all of it. It also explains 33.7's "going uphill": that is where one accelerates.
+
+The lamps are now described at the top of `submit`, ahead of every draw. Seen working
+with the car stationary; not seen at speed, because synthetic input could not get the car
+clear of the start-line scrum.
+
+### 33.9 Not verified in game yet
 
 The defaults (brightness 20, emitter radius 0.012, cone 38 degrees, 4 degrees down) are
 computed, not tuned; in daylight snow they read as a modest pool ahead of the car. The
