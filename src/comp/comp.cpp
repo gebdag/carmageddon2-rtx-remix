@@ -77,9 +77,8 @@ namespace comp
 
 	void main()
 	{
-		// #Step 2: init remix api if you want to use it or comment it otherwise
-		// Requires "exposeRemixApi = True" in the "bridge.conf" that is located in the .trex folder
-		shared::common::remix_api::initialize(nullptr, nullptr, nullptr, false);
+		// The Remix API is initialized from the first race frame, not here: see
+		// remix_api::ensure_initialized. Requires "exposeRemixApi = True" in .trex/bridge.conf.
 
 		// Core modules
 		shared::common::loader::module_loader::register_module(std::make_unique<tracer>());

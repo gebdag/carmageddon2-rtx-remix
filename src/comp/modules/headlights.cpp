@@ -13,10 +13,6 @@ namespace comp
 		// A car's drawn box only changes when it is crushed or sheds a part.
 		constexpr uint32_t BOUNDS_LIFETIME_FRAMES = 120;
 
-		// The bridge is not necessarily up when the proxy first asks for the API.
-		constexpr uint32_t API_MAX_ATTEMPTS = 5;
-		constexpr uint32_t API_RETRY_FRAMES = 180;
-
 		constexpr uint32_t MAX_TREE_ACTORS = 256;
 		constexpr uint32_t MAX_TREE_DEPTH = 8;
 
@@ -280,23 +276,12 @@ namespace comp
 	// ------
 	// remix
 
-	bool headlights::ensure_remix_api()
+	bool headlights::remix_lights_available()
 	{
 		using shared::common::remix_api;
 
-		if (!remix_api::is_initialized())
-		{
-			if (m_api_attempts >= API_MAX_ATTEMPTS || m_frame < m_api_next_attempt_frame) {
-				return false;
-			}
-
-			++m_api_attempts;
-			m_api_next_attempt_frame = m_frame + API_RETRY_FRAMES;
-			remix_api::initialize(nullptr, nullptr, nullptr, false);
-
-			if (!remix_api::is_initialized()) {
-				return false;
-			}
+		if (!remix_api::is_initialized()) {
+			return false;
 		}
 
 		const auto& bridge = remix_api::get().m_bridge;
@@ -444,7 +429,7 @@ namespace comp
 			return;
 		}
 
-		if (!ensure_remix_api()) {
+		if (!remix_lights_available()) {
 			return;
 		}
 

@@ -92,7 +92,7 @@ namespace comp
 		void load();
 		void save();
 
-		bool ensure_remix_api();
+		static bool remix_lights_available();
 		const car_bounds* measure(const game::race_car& car);
 		void describe_lamp(const game::race_car& car, const car_bounds& bounds, int side, float brightness);
 		void destroy_all();
@@ -109,8 +109,6 @@ namespace comp
 		std::vector<game::race_car> m_cars;
 
 		uint32_t m_frame = 0;
-		uint32_t m_api_attempts = 0;
-		uint32_t m_api_next_attempt_frame = 0;
 		uint32_t m_lit_cars = 0;
 		bool m_create_failed = false;
 

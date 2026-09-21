@@ -2690,9 +2690,29 @@ match the 0.1000.0 header of the runtime's own source tree exactly, including it
 and `initialize` carries a `static_assert` on the table size. Replace the headers only
 together with the runtime. `PFN_remixapi_BridgeCallback` became `__stdcall` in that version.
 
-### 33.5 Not verified in game yet
+### 33.5 The API may not be initialized before the device exists
+
+With matching headers the initialization succeeded -- and the Remix server then closed the
+game ("The RTX Remix Runtime has encountered an unexpected issue"). `bridge32.log` names
+it: the client's device queue held four `RemixApi_CreateMaterial` commands ahead of the
+handshake's `Syn`, and `bridge64.log` ends on `Timeout. Application failed to give
+go-ahead (CONTINUE)`. `comp::main` initialized the API from the proxy's start-up thread,
+before the game had created a device, and `remix_api::initialize` immediately created the
+framework's four debug-line materials. API calls ride the device queue, so they arrived
+where the server expected the handshake. The stale headers had hidden this for the whole
+life of the port: initialization always failed, so nothing was ever sent.
+
+The API is now initialized by `remix_api::ensure_initialized` from the first race-view
+submit -- render thread, device live -- with a few spaced retries, and the debug-line
+materials are created on first use instead of at initialization.
+
+Verified on 2026-09-21: the game boots, `Initialized RemixApi` is logged on the first race
+frame, H lights the player car and then every car, and nothing faults.
+
+### 33.6 Not verified in game yet
 
 The defaults (brightness 20, emitter radius 0.012, cone 38 degrees, 4 degrees down) are
-computed, not tuned. Whether distant, physics-inactive opponents keep a valid master
+computed, not tuned; in daylight snow they read as a modest pool ahead of the car. The
+Headlights tab and the mode notice were not seen on screen. Whether distant, physics-inactive opponents keep a valid master
 matrix is inferred, not observed; "Range from camera" keeps their lights off beyond 12
 units either way. Whether the game itself binds H was not checked.

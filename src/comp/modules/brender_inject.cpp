@@ -2510,6 +2510,8 @@ namespace comp
 		// measured against from now on.
 		m_race_camera = m_camera;
 
+		shared::common::remix_api::ensure_initialized();
+
 		if (m_in_frontend) {
 			resolve_frontend_return();
 		}

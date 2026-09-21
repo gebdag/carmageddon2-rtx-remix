@@ -267,6 +267,8 @@ namespace shared::common
 
 	void remix_api::add_debug_line(const Vector& p1, const Vector& p2, const float width, DEBUG_REMIX_LINE_COLOR color)
 	{
+		init_debug_lines();
+
 		if (m_debug_line_materials[color])
 		{
 			if (can_add_debug_lines())
@@ -629,6 +631,36 @@ namespace shared::common
 
 	// ---
 
+	/*
+	 * API calls travel down the bridge's device queue, so nothing may be sent before the
+	 * game has created its device: the server is still waiting for the handshake's CONTINUE
+	 * and gives up when a CreateMaterial arrives in its place. Asking from the first race
+	 * frame puts the initialization on the render thread with a device behind it. The
+	 * bridge is not necessarily ready on the first ask, so a failure is retried a few times.
+	 */
+	bool remix_api::ensure_initialized()
+	{
+		constexpr uint32_t MAX_ATTEMPTS = 5;
+		constexpr uint32_t CALLS_BETWEEN_ATTEMPTS = 180;
+
+		auto& instance = get();
+		if (instance.m_initialized) {
+			return true;
+		}
+
+		if (instance.m_init_attempts >= MAX_ATTEMPTS || instance.m_init_cooldown) {
+			if (instance.m_init_cooldown) {
+				--instance.m_init_cooldown;
+			}
+			return false;
+		}
+
+		++instance.m_init_attempts;
+		instance.m_init_cooldown = CALLS_BETWEEN_ATTEMPTS;
+		initialize(nullptr, nullptr, nullptr, false);
+		return instance.m_initialized;
+	}
+
 	void remix_api::initialize(
 		PFN_remixapi_BridgeCallback begin_scene_callback,
 		PFN_remixapi_BridgeCallback end_scene_callback,
@@ -687,7 +719,6 @@ namespace shared::common
 		if (pfn_callbacks)
 			pfn_callbacks(begin_scene_callback_internal, end_scene_callback_internal, present_callback_internal);
 
-		instance.init_debug_lines();
 		instance.m_debug_circles.reserve(512);
 		instance.m_debug_circle_materials.reserve(512);
 		instance.m_initialized = true;

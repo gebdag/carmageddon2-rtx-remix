@@ -48,6 +48,9 @@ namespace shared::common
 
 		static bool is_initialized() { return get().m_initialized; }
 
+		// Initializes on first use once the game is rendering; call once per frame.
+		static bool ensure_initialized();
+
 		PFN_remixapi_BridgeCallback begin_scene_callback_external = nullptr;
 		PFN_remixapi_BridgeCallback end_scene_callback_external = nullptr;
 		PFN_remixapi_BridgeCallback present_callback_external = nullptr;
@@ -85,6 +88,8 @@ namespace shared::common
 	private:
 		remix_api() : m_initialized(false) {}
 		bool m_initialized;
+		uint32_t m_init_attempts = 0;
+		uint32_t m_init_cooldown = 0;
 
 
 		bool m_debug_lines_initialized = false;
