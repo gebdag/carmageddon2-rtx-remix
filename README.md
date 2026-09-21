@@ -38,7 +38,7 @@ All options are documented in `remix-comp-proxy.ini`.
 
 1. Install the RTX Remix runtime into the game folder, then rename its `d3d9.dll` to `d3d9_remix.dll`.
 2. Copy `d3d9.dll` and `remix-comp-proxy.ini` from a release into the game folder.
-3. Add `exposeRemixApi = True` to `.trexridge.conf`. The headlights are created through the Remix API.
+3. Add `exposeRemixApi = True` to `.trex\bridge.conf`. The headlights are created through the Remix API.
 4. Start `CARMA2_HW.EXE`.
 
 ## Building
