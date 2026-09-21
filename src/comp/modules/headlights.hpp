@@ -46,13 +46,13 @@ namespace comp
 			// beam
 			float pitch_down = 4.0f;        // degrees
 			float toe_out = 1.5f;           // degrees each lamp turns away from the centre line
-			float cone_angle = 38.0f;       // degrees, axis to edge
+			float cone_angle = 28.9f;       // degrees, axis to edge
 			float cone_softness = 0.30f;
 			float focus = 0.0f;
 
 			// lamp
 			float colour[3] = { 1.0f, 0.93f, 0.80f };
-			float brightness = 20.0f;       // radiance times emitter area, so the radius only softens shadows
+			float brightness = 10.06f;      // radiance times emitter area, so the radius only softens shadows
 			float emitter_radius = 0.012f;  // world units; a car is roughly 0.4 wide
 			float volumetric_scale = 1.0f;
 

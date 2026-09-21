@@ -2767,8 +2767,8 @@ clear of the start-line scrum.
 
 ### 33.9 Not verified in game yet
 
-The defaults (brightness 20, emitter radius 0.012, cone 38 degrees, 4 degrees down) are
-computed, not tuned; in daylight snow they read as a modest pool ahead of the car. The
+The defaults (brightness 10, emitter radius 0.012, cone 29 degrees, 4 degrees down) were
+tuned in game by the user from a computed brightness 20 and cone 38, which were too bright. The
 mode notice was not seen on screen. Whether distant, physics-inactive opponents keep a valid master
 matrix is inferred, not observed; "Range from camera" keeps their lights off beyond 12
 units either way.
