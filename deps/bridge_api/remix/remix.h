@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2023-2024, NVIDIA CORPORATION. All rights reserved.
+ * Copyright (c) 2023-2025, NVIDIA CORPORATION. All rights reserved.
  *
  * Permission is hereby granted, free of charge, to any person obtaining a
  * copy of this software and associated documentation files (the "Software"),
@@ -35,8 +35,23 @@
 #define REMIXAPI_ASSERT(mustBeTrue) assert(mustBeTrue)
 #endif
 
+
 namespace remix {
   namespace detail {
+    template<typename T, std::size_t Expected>
+    struct StaticSizeCheck {
+      static constexpr std::size_t expected = Expected;
+      static constexpr std::size_t actual = sizeof(T);
+
+      // When this fails, most compilers will print both `expected` and `actual`
+      // in the error message, so you see the real sizeof(T) in the build log.
+      static_assert(actual == expected,
+        "Static size check failed: sizeof(T) != Expected; "
+        "see StaticSizeCheck<T,Expected>::actual in this diagnostic.");
+    };
+
+#define STATIC_ASSERT_SIZEOF(Type, Expected) using StaticSizeCheck_##Type = remix::detail::StaticSizeCheck<Type, (Expected)>
+
     template< typename T >
     struct Result {
       Result(T&& value)
@@ -130,6 +145,12 @@ namespace remix {
     }
   }
 
+  enum class UIState {
+      None = REMIXAPI_UI_STATE_NONE,
+      Basic = REMIXAPI_UI_STATE_BASIC,
+      Advanced = REMIXAPI_UI_STATE_ADVANCED
+  };
+
   template< typename T >
   using Result = detail::Result< T >;
 
@@ -156,7 +177,7 @@ namespace remix {
   }
 
   struct Interface {
-    HMODULE            m_RemixDLL { nullptr };
+    remixapi_HMODULE   m_RemixDLL { nullptr };
     remixapi_Interface m_CInterface {};
 
     // Functions
@@ -166,13 +187,25 @@ namespace remix {
     Result< remixapi_MaterialHandle > CreateMaterial(const remixapi_MaterialInfo& info);
     Result< void >                    DestroyMaterial(remixapi_MaterialHandle handle);
     Result< remixapi_MeshHandle >     CreateMesh(const remixapi_MeshInfo& info);
+    // Batched variant: buffers the mesh data and materializes it on the render
+    // thread at the next DrawInstance / Present / AutoInstancePersistentLights
+    // flush. Useful for callers submitting meshes outside a frame boundary.
+    Result< remixapi_MeshHandle >     CreateMeshBatched(const remixapi_MeshInfo& info);
     Result< void >                    DestroyMesh(remixapi_MeshHandle handle);
     Result< void >                    SetupCamera(const remixapi_CameraInfo& info);
+    Result< void >                    SetCameraMediumMaterial(remixapi_MaterialHandle medium);
     Result< void >                    DrawInstance(const remixapi_InstanceInfo& info);
     Result< remixapi_LightHandle >    CreateLight(const remixapi_LightInfo& info);
+    Result< remixapi_LightHandle >    CreateLightBatched(const remixapi_LightInfo& info);
     Result< void >                    DestroyLight(remixapi_LightHandle handle);
     Result< void >                    DrawLightInstance(remixapi_LightHandle handle);
+    // Deferred update of an analytical light definition. Applied on render thread.
+    Result< void >                    UpdateLightDefinition(remixapi_LightHandle handle, const remixapi_LightInfo& info);
     Result< void >                    SetConfigVariable(const char* key, const char* value);
+    Result< void >                    SetGameValue(const char* key, const char* value);
+    remixapi_ErrorCode                GetGameValue(const char* key, char* out_buffer, uint32_t in_buffer_size, uint32_t* out_actual_size);
+    Result< void >                    AddTextureHash(const char* textureCategory, const char* textureHash);
+    Result< void >                    RemoveTextureHash(const char* textureCategory, const char* textureHash);
 
     // DXVK interoperability
     Result< IDirect3D9Ex* >                  dxvk_CreateD3D9(bool editorModeEnabled = false);
@@ -183,21 +216,29 @@ namespace remix {
                                                                       remixapi_dxvk_CopyRenderingOutputType type);
     Result< void >                           dxvk_SetDefaultOutput(remixapi_dxvk_CopyRenderingOutputType type,
                                                                    const remixapi_Float4D& color);
+    Result< uint64_t >                       dxvk_GetTextureHash(IDirect3DTexture9* texture);
     // Object picking utils
     template< typename CallbackLambda > // void( remix::Span<uint32_t> objectPickingValues )
     Result< void >                           pick_RequestObjectPicking(const Rect2D& region, CallbackLambda &&callback);
     Result< void >                           pick_HighlightObjects(const uint32_t* objectPickingValues_values,
                                                                    uint32_t objectPickingValues_count,
                                                                    uint8_t colorR, uint8_t colorG, uint8_t colorB);
+    // TODO Sub-feature 4: real impls. Match fork's C++ wrapper shape so the
+    // binary layout is stable; the C-interface slots are currently nullptr
+    // and calling these will guard on the nullptr pointer and return
+    // REMIXAPI_ERROR_CODE_NOT_INITIALIZED.
+    Result<UIState> GetUIState();
+    Result<void> SetUIState(UIState state);
   };
 
+#ifndef REMIX_WINAPI_NO_LIBRARY_LOADER
   namespace lib {
     // Helper function to load a .dll of Remix, and initialize it.
     // pRemixD3D9DllPath is a path to .dll file, e.g. "C:\dxvk-remix-nv\public\bin\d3d9.dll"
     [[nodiscard]] inline Result< Interface > loadRemixDllAndInitialize(const std::filesystem::path& remixD3D9DllPath) {
 
       remixapi_Interface interfaceInC = {};
-      HMODULE remixDll = nullptr;
+      remixapi_HMODULE remixDll = nullptr;
 
       remixapi_ErrorCode status =
         remixapi_lib_loadRemixDllAndInitialize(remixD3D9DllPath.c_str(),
@@ -208,7 +249,7 @@ namespace remix {
         return status;
       }
 
-      static_assert(sizeof(remixapi_Interface) == 168,
+      static_assert(sizeof(remixapi_Interface) == 328,
                     "Change version, update C++ wrapper when adding new functions");
 
       remix::Interface interfaceInCpp = {};
@@ -227,6 +268,7 @@ namespace remix {
       return remixapi_lib_shutdownAndUnloadRemixDll(&interfaceInCpp.m_CInterface, interfaceInCpp.m_RemixDLL);
     }
   }
+#endif // !REMIX_WINAPI_NO_LIBRARY_LOADER
 
 
 
@@ -251,11 +293,58 @@ namespace remix {
     return m_CInterface.SetConfigVariable(key, value);
   }
 
+  inline Result< void > Interface::SetGameValue(const char* key, const char* value) {
+    if (!m_CInterface.SetGameValue) {
+      return REMIXAPI_ERROR_CODE_NOT_INITIALIZED;
+    }
+    return m_CInterface.SetGameValue(key, value);
+  }
+
+  inline remixapi_ErrorCode Interface::GetGameValue(const char* key, char* out_buffer,
+                                                    uint32_t in_buffer_size,
+                                                    uint32_t* out_actual_size) {
+    if (!m_CInterface.GetGameValue) {
+      return REMIXAPI_ERROR_CODE_NOT_INITIALIZED;
+    }
+    return m_CInterface.GetGameValue(key, out_buffer, in_buffer_size, out_actual_size);
+  }
+
+  inline Result< void > Interface::AddTextureHash(const char* textureCategory, const char* textureHash) {
+    if (!m_CInterface.AddTextureHash) {
+      return REMIXAPI_ERROR_CODE_NOT_INITIALIZED;
+    }
+    return m_CInterface.AddTextureHash(textureCategory, textureHash);
+  }
+
+  inline Result< void > Interface::RemoveTextureHash(const char* textureCategory, const char* textureHash) {
+    if (!m_CInterface.RemoveTextureHash) {
+      return REMIXAPI_ERROR_CODE_NOT_INITIALIZED;
+    }
+    return m_CInterface.RemoveTextureHash(textureCategory, textureHash);
+  }
+
   inline Result< void > Interface::Present(const remixapi_PresentInfo* info) {
     if (!m_CInterface.Present) {
       return REMIXAPI_ERROR_CODE_NOT_INITIALIZED;
     }
     return m_CInterface.Present(info);
+  }
+
+  inline Result<UIState> Interface::GetUIState() {
+    if (!m_CInterface.GetUIState) {
+        return REMIXAPI_ERROR_CODE_NOT_INITIALIZED;
+    }
+
+    remixapi_UIState state = m_CInterface.GetUIState();
+    return static_cast<UIState>(state);
+  }
+
+  inline Result<void> Interface::SetUIState(UIState state) {
+      if (!m_CInterface.SetUIState) {
+          return REMIXAPI_ERROR_CODE_NOT_INITIALIZED;
+      }
+
+      return m_CInterface.SetUIState(static_cast<remixapi_UIState>(state));
   }
 
 
@@ -283,7 +372,7 @@ namespace remix {
       alphaTestType = 7;
       alphaReferenceValue = 0;
       displaceOut = 0.0f;
-      static_assert(sizeof remixapi_MaterialInfoOpaqueEXT == 112);
+      STATIC_ASSERT_SIZEOF(remixapi_MaterialInfoOpaqueEXT, 112);
     }
 
     MaterialInfoOpaqueEXT(const MaterialInfoOpaqueEXT& other)
@@ -347,7 +436,7 @@ namespace remix {
       roughnessTexture = cpp_roughnessTexture.c_str();
       metallicTexture = cpp_metallicTexture.c_str();
       heightTexture = cpp_heightTexture.c_str();
-      static_assert(sizeof remixapi_MaterialInfoOpaqueEXT == 112, "Recheck pointers");
+      STATIC_ASSERT_SIZEOF(remixapi_MaterialInfoOpaqueEXT, 112);
     }
 
     std::filesystem::path cpp_roughnessTexture {};
@@ -372,7 +461,7 @@ namespace remix {
       subsurfaceRadiusScale = 0.0f;
       subsurfaceMaxSampleRadius = 0.0f;
       subsurfaceRadiusTexture = {};
-      static_assert(sizeof remixapi_MaterialInfoOpaqueSubsurfaceEXT == 104);
+      STATIC_ASSERT_SIZEOF(remixapi_MaterialInfoOpaqueSubsurfaceEXT, 104);
     }
 
     MaterialInfoOpaqueSubsurfaceEXT(const MaterialInfoOpaqueSubsurfaceEXT& other)
@@ -439,7 +528,7 @@ namespace remix {
       subsurfaceThicknessTexture = cpp_subsurfaceThicknessTexture.c_str();
       subsurfaceSingleScatteringAlbedoTexture = cpp_subsurfaceSingleScatteringAlbedoTexture.c_str();
       subsurfaceRadiusTexture = cpp_subsurfaceRadiusTexture.c_str();
-      static_assert(sizeof remixapi_MaterialInfoOpaqueSubsurfaceEXT == 104, "Recheck pointers");
+      STATIC_ASSERT_SIZEOF(remixapi_MaterialInfoOpaqueSubsurfaceEXT, 104);
     }
 
     std::filesystem::path cpp_subsurfaceTransmittanceTexture {};
@@ -459,7 +548,7 @@ namespace remix {
       thinWallThickness_hasvalue = false;
       thinWallThickness_value = 0.001f;
       useDiffuseLayer = false;
-      static_assert(sizeof remixapi_MaterialInfoTranslucentEXT == 56);
+      STATIC_ASSERT_SIZEOF(remixapi_MaterialInfoTranslucentEXT, 56);
     }
 
     MaterialInfoTranslucentEXT(const MaterialInfoTranslucentEXT& other)
@@ -502,7 +591,7 @@ namespace remix {
   private:
     void cpp_fixPointers() {
       transmittanceTexture = cpp_transmittanceTexture.c_str();
-      static_assert(sizeof remixapi_MaterialInfoTranslucentEXT == 56, "Recheck pointers");
+      STATIC_ASSERT_SIZEOF(remixapi_MaterialInfoTranslucentEXT, 56);
     }
 
     std::filesystem::path cpp_transmittanceTexture {};
@@ -514,7 +603,7 @@ namespace remix {
       pNext = nullptr;
       rayPortalIndex = 0;
       rotationSpeed = 0.0f;
-      static_assert(sizeof remixapi_MaterialInfoPortalEXT == 24);
+      STATIC_ASSERT_SIZEOF(remixapi_MaterialInfoPortalEXT, 24);
     }
   };
 
@@ -535,7 +624,7 @@ namespace remix {
       filterMode = 1; // Linear
       wrapModeU = 1; // Repeat
       wrapModeV = 1; // Repeat
-      static_assert(sizeof remixapi_MaterialInfo == 80);
+      STATIC_ASSERT_SIZEOF(remixapi_MaterialInfo, 80);
     }
 
     MaterialInfo(const MaterialInfo& other)
@@ -602,7 +691,7 @@ namespace remix {
       normalTexture = cpp_normalTexture.c_str();
       tangentTexture = cpp_tangentTexture.c_str();
       emissiveTexture = cpp_emissiveTexture.c_str();
-      static_assert(sizeof remixapi_MaterialInfo == 80, "Recheck pointers");
+      STATIC_ASSERT_SIZEOF(remixapi_MaterialInfo, 80);
     }
 
     std::filesystem::path cpp_albedoTexture {};
@@ -633,13 +722,22 @@ namespace remix {
       hash = 0;
       surfaces_values = {};
       surfaces_count = 0;
-      static_assert(sizeof remixapi_MeshInfo == 40);
+      STATIC_ASSERT_SIZEOF(remixapi_MeshInfo, 40);
     }
   };
 
   inline Result< remixapi_MeshHandle > Interface::CreateMesh(const remixapi_MeshInfo& info) {
     remixapi_MeshHandle handle = nullptr;
     remixapi_ErrorCode status = m_CInterface.CreateMesh(&info, &handle);
+    if (status != REMIXAPI_ERROR_CODE_SUCCESS) {
+      return status;
+    }
+    return handle;
+  }
+
+  inline Result< remixapi_MeshHandle > Interface::CreateMeshBatched(const remixapi_MeshInfo& info) {
+    remixapi_MeshHandle handle = nullptr;
+    remixapi_ErrorCode status = m_CInterface.CreateMeshBatched(&info, &handle);
     if (status != REMIXAPI_ERROR_CODE_SUCCESS) {
       return status;
     }
@@ -668,7 +766,7 @@ namespace remix {
       aspect = 16.f / 9.f;
       nearPlane = 0.1f;
       farPlane = 1000.f;
-      static_assert(sizeof remixapi_CameraInfoParameterizedEXT == 80);
+      STATIC_ASSERT_SIZEOF(remixapi_CameraInfoParameterizedEXT, 80);
     }
   };
 
@@ -679,12 +777,24 @@ namespace remix {
       type = { REMIXAPI_CAMERA_TYPE_WORLD };
       view[0][0] = view[1][1] = view[2][2] = view[3][3] = 1.f;
       projection[0][0] = projection[1][1] = projection[2][2] = projection[3][3] = 1.f;
-      static_assert(sizeof remixapi_CameraInfo == 152);
+      STATIC_ASSERT_SIZEOF(remixapi_CameraInfo, 152);
     }
   };
 
   inline Result< void > Interface::SetupCamera(const remixapi_CameraInfo& info) {
     return m_CInterface.SetupCamera(&info);
+  }
+
+  inline Result< void > Interface::SetCameraMediumMaterial(remixapi_MaterialHandle medium) {
+    if (!m_CInterface.SetCameraMediumMaterial) {
+      return REMIXAPI_ERROR_CODE_NOT_INITIALIZED;
+    }
+
+    remixapi_CameraMediumInfo info {};
+    info.sType = REMIXAPI_STRUCT_TYPE_CAMERA_MEDIUM_INFO;
+    info.pNext = nullptr;
+    info.medium = medium;
+    return m_CInterface.SetCameraMediumMaterial(&info);
   }
 
 
@@ -695,7 +805,7 @@ namespace remix {
       pNext = nullptr;
       boneTransforms_count = 0;
       boneTransforms_values = {};
-      static_assert(sizeof remixapi_InstanceInfoBoneTransformsEXT == 32);
+      STATIC_ASSERT_SIZEOF(remixapi_InstanceInfoBoneTransformsEXT, 32);
     }
   };
 
@@ -723,7 +833,7 @@ namespace remix {
       tFactor = 0XFFFFFFFF;
       isTextureFactorBlend = false;
       isVertexColorBakedLighting = true;
-      static_assert(sizeof remixapi_InstanceInfoBlendEXT == 96);
+      STATIC_ASSERT_SIZEOF(remixapi_InstanceInfoBlendEXT, 96);
     }
   };
 
@@ -740,39 +850,54 @@ namespace remix {
       sType = REMIXAPI_STRUCT_TYPE_INSTANCE_INFO_PARTICLE_SYSTEM_EXT;
       pNext = nullptr;
       maxNumParticles = 10000;
-      spawnRatePerSecond = 0.f;
+      useTurbulence = false;
+      alignParticlesToVelocity = false;
+      useSpawnTexcoords = false;
+      enableCollisionDetection = false;
+      enableMotionTrail = false;
+      hideEmitter = false;
+      restrictVelocityX = false;
+      restrictVelocityY = false;
+      restrictVelocityZ = false;
+      minColor = { nullptr, 0 };
+      maxColor = { nullptr, 0 };
+      minRotationSpeed = { nullptr, 0 };
+      maxRotationSpeed = { nullptr, 0 };
+      minSize = { nullptr, 0 };
+      maxSize = { nullptr, 0 };
+      maxVelocity = { nullptr, 0 };
+      attractorPosition = { 0, 0, 0 };
       minTimeToLive = 1.0f;
       maxTimeToLive = 1.0f;
-      minSpawnSize = 10.0f;
-      maxSpawnSize = 10.0f;
-      minSpawnRotationSpeed = 0.0f;
-      maxSpawnRotationSpeed = 0.0f;
-      minSpawnColor = {1, 1, 1, 1};
-      maxSpawnColor = {1, 1, 1, 1};
-      minTargetSize = 0.0f;
-      maxTargetSize = 0.0f;
-      minTargetRotationSpeed = 0.0f;
-      maxTargetRotationSpeed = 0.0f;
-      minTargetColor = { 1, 1, 1, 0 };
-      maxTargetColor = { 1, 1, 1, 0 };
-      useSpawnTexcoords = false;
-      initialVelocityFromMotion = 0.0f;
       initialVelocityFromNormal = 0.0f;
       initialVelocityConeAngleDegrees = 0.0f;
-      maxSpeed = -1.0f;
+      dragCoefficient = 0.0f;
+      initialRotationDeviationDegrees = 0.0f;
       gravityForce = -0.98f;
-      useTurbulence = false;
-      turbulenceForce = 5.0f;
       turbulenceFrequency = 0.05f;
-      enableCollisionDetection = false;
-      collisionRestitution = 0.5f;
+      turbulenceForce = 5.0f;
+      spawnRatePerSecond = 0.f;
       collisionThickness = 5.0f;
-      alignParticlesToVelocity = false;
-      enableMotionTrail = false;
+      collisionRestitution = 0.5f;
       motionTrailMultiplier = 1.0f;
-      hideEmitter = false;
+      initialVelocityFromMotion = 0.0f;
+      spawnBurstDuration = 0.0f;
+      attractorRadius = 0.0f;
+      attractorForce = 0.0f;
       billboardType = 0;
-      static_assert(sizeof InstanceInfoParticleSystemEXT == 200);
+      spriteSheetMode = 0;
+      collisionMode = 0;
+      randomFlipAxis = 0;
+    }
+  };
+
+  struct InstanceInfoGpuInstancingEXT : remixapi_InstanceInfoGpuInstancingEXT {
+    InstanceInfoGpuInstancingEXT() {
+      sType = REMIXAPI_STRUCT_TYPE_INSTANCE_INFO_GPU_INSTANCING_EXT;
+      pNext = nullptr;
+      instanceTransforms_values = nullptr;
+      instanceTransforms_count = 0;
+      static_assert(sizeof remixapi_InstanceInfoGpuInstancingEXT == 32);
     }
   };
 
@@ -787,7 +912,7 @@ namespace remix {
       mesh = 0;
       transform = {};
       doubleSided = false;
-      static_assert(sizeof remixapi_InstanceInfo == 88);
+      STATIC_ASSERT_SIZEOF(remixapi_InstanceInfo, 88);
     }
   };
 
@@ -821,7 +946,7 @@ namespace remix {
       shaping_hasvalue = false;
       shaping_value = detail::defaultLightShaping();
       volumetricRadianceScale = 1.0f;
-      static_assert(sizeof remixapi_LightInfoSphereEXT == 64);
+      STATIC_ASSERT_SIZEOF(remixapi_LightInfoSphereEXT, 64);
     }
 
     void set_shaping(const std::optional< remixapi_LightInfoLightShaping >& v) {
@@ -842,7 +967,7 @@ namespace remix {
       shaping_hasvalue = false;
       shaping_value = detail::defaultLightShaping();
       volumetricRadianceScale = 1.0f;
-      static_assert(sizeof remixapi_LightInfoRectEXT == 104);
+      STATIC_ASSERT_SIZEOF(remixapi_LightInfoRectEXT, 104);
     }
 
     void set_shaping(const std::optional< remixapi_LightInfoLightShaping >& v) {
@@ -863,7 +988,7 @@ namespace remix {
       shaping_hasvalue = false;
       shaping_value = detail::defaultLightShaping();
       volumetricRadianceScale = 1.0f;
-      static_assert(sizeof remixapi_LightInfoDiskEXT == 104);
+      STATIC_ASSERT_SIZEOF(remixapi_LightInfoDiskEXT, 104);
     }
 
     void set_shaping(const std::optional< remixapi_LightInfoLightShaping >& v) {
@@ -880,7 +1005,7 @@ namespace remix {
       axis = { 1.0f, 0.0f, 0.0f };
       axisLength = 1.0f;
       volumetricRadianceScale = 1.0f;
-      static_assert(sizeof remixapi_LightInfoCylinderEXT == 56);
+      STATIC_ASSERT_SIZEOF(remixapi_LightInfoCylinderEXT, 56);
     }
   };
 
@@ -891,7 +1016,7 @@ namespace remix {
       direction = { 0.0f, -1.0f, 0.0f };
       angularDiameterDegrees = 0.5f;
       volumetricRadianceScale = 1.0f;
-      static_assert(sizeof remixapi_LightInfoDistantEXT == 40);
+      STATIC_ASSERT_SIZEOF(remixapi_LightInfoDistantEXT, 40);
     }
   };
 
@@ -901,7 +1026,7 @@ namespace remix {
       pNext = nullptr;
       transform = {};
       colorTexture = {};
-      static_assert(sizeof remixapi_LightInfoDomeEXT == 72);
+      STATIC_ASSERT_SIZEOF(remixapi_LightInfoDomeEXT, 72);
     }
 
     LightInfoDomeEXT(const LightInfoDomeEXT& other)
@@ -941,7 +1066,7 @@ namespace remix {
   private:
     void cpp_fixPointers() {
       colorTexture = cpp_colorTexture.c_str();
-      static_assert(sizeof remixapi_LightInfoDomeEXT == 72, "Recheck pointers");
+      STATIC_ASSERT_SIZEOF(remixapi_LightInfoDomeEXT, 72);
     }
 
     std::filesystem::path cpp_colorTexture {};
@@ -953,7 +1078,9 @@ namespace remix {
       pNext = nullptr;
       hash = 0;
       radiance = { 1.0f, 1.0f, 1.0f };
-      static_assert(sizeof remixapi_LightInfo == 40);
+      isDynamic = false;  // Default to static for temporal accumulation
+      ignoreViewModel = false;  // Default to affecting all geometry including view models
+      STATIC_ASSERT_SIZEOF(remixapi_LightInfo, 48);
     }
   };
 
@@ -966,12 +1093,28 @@ namespace remix {
     return handle;
   }
 
+  inline Result< remixapi_LightHandle > Interface::CreateLightBatched(const remixapi_LightInfo& info) {
+    remixapi_LightHandle handle = nullptr;
+    remixapi_ErrorCode status = m_CInterface.CreateLightBatched(&info, &handle);
+    if (status != REMIXAPI_ERROR_CODE_SUCCESS) {
+      return status;
+    }
+    return handle;
+  }
+
   inline Result< void > Interface::DestroyLight(remixapi_LightHandle handle) {
     return m_CInterface.DestroyLight(handle);
   }
 
   inline Result< void > Interface::DrawLightInstance(remixapi_LightHandle handle) {
     return m_CInterface.DrawLightInstance(handle);
+  }
+
+  inline Result< void > Interface::UpdateLightDefinition(remixapi_LightHandle handle, const remixapi_LightInfo& info) {
+    if (m_CInterface.UpdateLightDefinition) {
+      return m_CInterface.UpdateLightDefinition(handle, &info);
+    }
+    return REMIXAPI_ERROR_CODE_GET_PROC_ADDRESS_FAILURE;
   }
 
   namespace detail {
@@ -1028,6 +1171,18 @@ namespace remix {
   inline Result< void > Interface::dxvk_SetDefaultOutput(
       remixapi_dxvk_CopyRenderingOutputType type, const remixapi_Float4D& color) {
     return m_CInterface.dxvk_SetDefaultOutput(type, &color);
+  }
+
+  inline Result< uint64_t > Interface::dxvk_GetTextureHash(IDirect3DTexture9* texture) {
+    if (!m_CInterface.dxvk_GetTextureHash) {
+      return REMIXAPI_ERROR_CODE_NOT_INITIALIZED;
+    }
+    uint64_t hash = 0;
+    remixapi_ErrorCode status = m_CInterface.dxvk_GetTextureHash(texture, &hash);
+    if (status != REMIXAPI_ERROR_CODE_SUCCESS) {
+      return status;
+    }
+    return hash;
   }
 
   template< typename CallbackLambda >

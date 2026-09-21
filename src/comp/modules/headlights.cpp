@@ -411,6 +411,9 @@ namespace comp
 		info.hash = shared::utils::string_hash64(std::format("carma2-headlight-{:x}", key));
 		info.radiance = { s.colour[0] * radiance, s.colour[1] * radiance, s.colour[2] * radiance };
 
+		// Remix puts a light it takes for static to sleep; a lamp on a parked car would be one.
+		info.isDynamic = TRUE;
+
 		const auto& bridge = shared::common::remix_api::get().m_bridge;
 		lamp& l = m_lamps[key];
 

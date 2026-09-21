@@ -12,7 +12,7 @@ namespace shared::common
 	}
 
 	// called on device->BeginScene
-	void remix_api::begin_scene_callback_internal()
+	void REMIXAPI_CALL remix_api::begin_scene_callback_internal()
 	{
 		auto& api = get();
 		if (api.is_initialized())
@@ -131,7 +131,7 @@ namespace shared::common
 		}
 	}
 
-	void remix_api::end_scene_callback_internal()
+	void REMIXAPI_CALL remix_api::end_scene_callback_internal()
 	{
 		// external callback (if registered)
 		if (get().is_initialized() && get().end_scene_callback_external) {
@@ -139,7 +139,7 @@ namespace shared::common
 		}
 	}
 
-	void remix_api::present_callback_internal()
+	void REMIXAPI_CALL remix_api::present_callback_internal()
 	{
 		// external callback (if registered)
 		if (get().is_initialized() && get().present_callback_external) {
@@ -657,6 +657,14 @@ namespace shared::common
 			REMIXAPI_STRUCT_TYPE_INITIALIZE_LIBRARY_INFO, nullptr,
 			REMIXAPI_VERSION_MAKE(REMIXAPI_VERSION_MAJOR, REMIXAPI_VERSION_MINOR, REMIXAPI_VERSION_PATCH)
 		};
+		// The bridge copies its whole function table into the caller's struct without
+		// asking how big that struct is, and entries are inserted mid-table between API
+		// versions. Headers older than the runtime therefore overrun the stack here and
+		// call the wrong entry everywhere else. 0xA4 is what the deployed bridge client
+		// writes (d3d9_remix.dll, remixapi_InitializeLibrary: memset 0xA4, rep movsd 0x29).
+		static_assert(sizeof(remixapi_Interface) == 0xA4,
+			"deps/bridge_api does not match the deployed Remix runtime - replace both together");
+
 		remixapi_Interface iface{};
 		const auto status = pfn_init(&init_info, &iface);
 

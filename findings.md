@@ -2673,7 +2673,24 @@ frames, because damage reshapes the models.
   install. The headlights module retries the initialization a few times from the race
   frame, because the bridge is not necessarily up when the proxy first asks.
 
-### 33.4 Not verified in game yet
+### 33.4 The API headers have to be the runtime's own
+
+With the API exposed, the game died on boot: `FAST_FAIL_STACK_COOKIE_CHECK_FAILURE` in
+`remix_api::initialize`. The vendored headers were API 0.5.2, whose `remixapi_Interface` has
+21 entries. The deployed bridge client (`d3d9_remix.dll`, `remixapi_InitializeLibrary` at
+RVA 0x5E470) zeroes 0xA4 bytes and copies 0x29 dwords into the caller's struct without
+asking its size -- 41 entries, straight over the stack cookie.
+
+A bigger buffer would not have been a fix. Entries are inserted mid-table between versions
+(`CreateMeshBatched` at 4, `CreateLightBatched` at 9, four texture calls at 13), so under
+the old header every call past `CreateMesh` would have landed on the wrong function. The
+slots the client fills -- 1, 2, 3, 5, 7, 8, 10, 11, 12, 17, 18, 30, 31, 33, 34, 36, 40 --
+match the 0.1000.0 header of the runtime's own source tree exactly, including its
+`GetUIState` / `SetUIState` pair at 30 and 31. `deps/bridge_api` now holds that header set,
+and `initialize` carries a `static_assert` on the table size. Replace the headers only
+together with the runtime. `PFN_remixapi_BridgeCallback` became `__stdcall` in that version.
+
+### 33.5 Not verified in game yet
 
 The defaults (brightness 20, emitter radius 0.012, cone 38 degrees, 4 degrees down) are
 computed, not tuned. Whether distant, physics-inactive opponents keep a valid master
