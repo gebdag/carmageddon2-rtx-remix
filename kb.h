@@ -963,7 +963,9 @@ enum BrSurfaceToken {
 @ 0x00447b00 void RestoreMaterialTextures(void *store);     /* ecx=store; same PRELIT coupling, debug path */
 @ 0x00526940 void *BrMaterialAllocate_Defaults(void);       /* colour 0xFFFFFF, opacity 0xFF, ka 0.1, kd 0.7, ks 0, power 20, flags 1, index 10/31 */
 @ 0x00500d50 void MaterialStoreInit(void *store, int max, int a, int b, int c, int d);
-@ 0x005183f0 void BrMaterialSetPreset(void *material, int style); /* ka/kd/ks presets; style>3 gives ka=1.0 kd=0 ks=0 */
+@ 0x005182f0 void __fastcall BrMaterialSetPreset(br_material **materials, int count, int style); /* ecx/edx + stack style; style 4: ka 1.0 kd 0 ks 0, flags &= ~PRELIT, |= LIGHT|SMOOTH; used on every sprite-pool and flame material (0x004EAA7D, 0x004FC4CD) */
+@ 0x004fb910 void InitSmokeColours(void);                   /* fills $0x006b7840: [0] runtime 0x006aa5b4.., then 0x404040, 0x808080, 0xc8c8c8 x2, 0xfedf43 */
+$ 0x006b7840 uint32_t g_smoke_colours[16]                   /* 0x00RRGGBB per smoke type, drawn prelit */
 
 $ 0x00591374 int   g_texture_detail_mode  /* 0/1 = textures off (+PRELIT cleared), 2 = on (+PRELIT set) */
 $ 0x0075b960 void* g_car_material_store   /* +0x08 count, +0x38 br_material**, +0x40 stashed br_pixelmap** */

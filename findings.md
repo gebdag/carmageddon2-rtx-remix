@@ -2566,7 +2566,7 @@ antialias bits), +0x98 `stored`.
 
 ### 32.1 The two signals that are exact
 
-**Flags exactly `BR_MATF_ALWAYS_VISIBLE` (0x0800).** `InitSpriteParticlePool` (0x004EAA4E,
+**Flags exactly `BR_MATF_ALWAYS_VISIBLE` (0x0800).** *(Wrong at runtime: see 34.5. A preset call right after this sets ka 1.0 / kd 0 and turns LIGHT back on.)* `InitSpriteParticlePool` (0x004EAA4E,
 0x004EAA5F) and `InitFlames` (0x004FC4A5, 0x004FC4B2) both clear LIGHT and set 0x800 on a
 material `BrMaterialAllocate` had defaulted to flags 1, so the result is 0x0800 exactly:
 no LIGHT, no PRELIT. BrMaterialUpdate then publishes `LIGHTING_B = 0` with the colour taken
@@ -2866,4 +2866,37 @@ Consequences:
 
 `[Effects] EmissiveSprites=0` restores the alpha blend.
 
-Not verified in game yet.
+### 34.5 The full-bright test never matched, and why tagged particles go black (2026-09-23)
+
+In the first run with 34.4 the sparkle came out black and car smoke black, and the log had
+no `emissive sprite` line. The sprite materials had logged as "authored ambient 1.0"
+rather than "effect material", so their flags at draw time were not 0x800.
+
+Section 32.1 stopped reading too early. Both init routines pass the material on to the
+preset routine at **0x005182F0** (`ecx = &material`, `edx = count 1`, stack arg = style)
+right after the flag writes: `InitSpriteParticlePool` at 0x004EAA7D (style pushed at
+0x004EAA49) and `InitFlames` at 0x004FC4CD (style pushed at 0x004FC4A0). Style 4 sets
+`ka = 1.0`, `kd = 0`, `ks = 0`, clears PRELIT and sets LIGHT and SMOOTH. Depending on
+three option globals (0x0074CF38, 0x0074CF20, 0x0074CA54) it also ORs in 0x20000, 0x10000
+or 0x20. So the runtime recipe is **ALWAYS_VISIBLE | LIGHT | SMOOTH, ka 1.0, kd 0**: lit,
+but only by an ambient of 1.0, which is full brightness. `material_is_fullbright` now tests
+the 0x800 bit, `ka >= 1` and `kd == 0`. Styles 1-3 are other ambient/diffuse presets,
+and styles above 4 give ka 1.0 with LIGHT left alone. This is the `BrMaterialSetPreset` that
+kb.h has at 0x005183F0; 0x005183F0 is inside it, and the entry is 0x005182F0.
+
+**Why a tagged particle that is not emissive renders black.** `evaluateOpaqueApproximations`
+lights a particle as `albedo x evalVolumetricNEE(VolumeFilteredRadiance...)`, which is the
+froxel radiance cache. That cache is filled from sampled analytic lights only: nothing in
+`shaders/rtx/pass/volumetrics/` samples the sky. The sky is this port's only real light
+(section 33), so outside the headlight cones the cache holds almost nothing, and
+smoke, blood and any unemissive sprite come out near black. Before section 34 tagged them,
+they took the stochastic path, which the path tracer lights from the sky.
+
+Smoke is not meant to be black. `InitSmokeColours` at 0x004FB910 fills the per-type colour
+table at 0x006B7840: type 0 from the runtime globals 0x006AA5B4/B8/BC, then `0x404040`,
+`0x808080`, `0xC8C8C8` (x2) and `0xFEDF43` (from `.data` 0x00660160..0x0066018C). The game
+draws those colours prelit, so they are the final colour: dark to light grey smoke, and yellow.
+
+Remix has no particle mode that is unlit and also blocks what is behind it. An emissive blend
+has opacity 0, and the world-space-UI path emits the bare texture without the vertex tint.
+Blood (excluded from 34.4) and smoke therefore stay dark while they are tagged as particles.

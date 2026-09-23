@@ -235,21 +235,24 @@ namespace comp
 		 * nothing else. These are the two stand-ins it does have, and both are exact
 		 * rather than heuristic.
 		 *
-		 * Flags of exactly ALWAYS_VISIBLE means the material was built by one of the
-		 * effect systems, which clear LIGHT and set 0x800 (InitSpriteParticlePool
-		 * 0x004EAA5F, InitFlames 0x004FC4B2). BrMaterialUpdate then publishes
-		 * LIGHTING_B = 0 with the colour taken from the surface, i.e. a full-bright
-		 * unshaded texture: explosion fire, the powerup sparkle, blood, BANG marks and
-		 * the car flames.
+		 * ALWAYS_VISIBLE with ka 1.0 and kd 0 is what the effect systems build.
+		 * InitSpriteParticlePool (0x004EAA4E) and InitFlames (0x004FC4A5) clear LIGHT
+		 * and set 0x800, then hand the material to the preset routine at 0x005182F0 with
+		 * style 4, which sets ka 1.0, kd 0, ks 0 and turns LIGHT and SMOOTH back on
+		 * (plus option bits 0x20 / 0x10000 / 0x20000). Ambient 1.0 with no diffuse term
+		 * renders the texture at full brightness whatever the scene light: explosion
+		 * fire, the powerup sparkle, blood, BANG marks and the car flames.
 		 *
 		 * ka is the ambient coefficient, and at 1.0 the surface renders at full texture
 		 * brightness whatever the scene light does. Of the 4373 materials the game ships,
 		 * 4282 sit at BRender's 0.1 default and exactly 19 are at 1.0 -- tunnel lights,
-		 * a street lamp, cinema and vault interiors. Nothing writes it at runtime.
+		 * a street lamp, cinema and vault interiors. At runtime only the preset routine
+		 * above writes it.
 		 */
 		bool material_is_fullbright(const game::br_material* material)
 		{
-			return material && material->flags == game::BR_MATF_ALWAYS_VISIBLE;
+			return material && (material->flags & game::BR_MATF_ALWAYS_VISIBLE)
+				&& material->ka >= 1.0f && material->kd == 0.0f;
 		}
 
 		bool material_is_self_lit(const game::br_material* material)
