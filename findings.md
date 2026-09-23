@@ -2933,3 +2933,92 @@ are never NEE lights. They reach other surfaces, and reflections, only through
 `rtx.enableUnorderedEmissiveParticlesInIndirectRays`, which the user's `user.conf` turns on.
 
 Not verified in game yet.
+
+---
+
+## 35. Distorted headlight shadows on walls: Remix's scene scale, not the normals (2026-09-23)
+
+Reported: with the headlights on inside the Runway Runaway airport (`AIRPORT1.TXT`, 
+`Airport1.TWT`), the shadows on the walls look distorted. The flat-normals change in the
+working tree (per-face plane normals for non-`SMOOTH` materials) was meant to fix this and
+did not.
+
+### 35.1 The flat-normals path never runs, and the premise was wrong
+
+Every material the game loads passes through the preset routine at 0x005182F0 (section
+34.5), and styles 1-4 all OR in `SMOOTH`:
+
+- The material-file loader 0x00502060 hands its whole batch to the preset routine with the
+  style in the global **0x00660CB8** (-1 means 1). Its callers set that global:
+  0x004F6640 (common store 0x0074D400, style 1), 0x004F6740 (cars, style 2),
+  0x00502CF0 (caller's style: 3 for the ped gibs, 2 elsewhere) and 0x00502AD0.
+- In 16-bit colour mode (`[0x0074CA60] == 0x10`, which is this port's Glide path),
+  0x004F6640 then forces `flags = (flags & ~PRELIT) | LIGHT | SMOOTH` on the whole common
+  store, and 0x004F67A0 does the same to each car's materials.
+
+So BRender Gouraud-shades the track with the prepared vertex normals. Those normals are
+what the original game displayed, and `!(flags & SMOOTH)` is false for practically every
+material. The flat path was dead code. Had it run, it would have faceted surfaces the game
+draws smooth.
+
+The authored normals are also sound. `Airport1.dat` (209 models) was parsed and the
+vertex normals rebuilt the way BRender does it (face-normal sum over faces that share the
+vertex and overlap in the `smoothing` mask). Only 1.5% of the surface area has a corner normal
+more than 10 degrees off its face, and most of that is props (powerups, luggage, trolley,
+chopper). The runtime report agrees: `normals: 8192 sampled, 0 with no direction, 0 not unit
+length`, `4096 of 4096 sampled triangles wind outward`.
+
+### 35.2 The shadow-terminator offset is sized in centimetres of the wrong world
+
+`rtx.sceneScale` is unset, so it defaults to 1, meaning "one game unit = 1 cm"
+(`getMeterToWorldUnitScale() = 100 * sceneScale`). One BRender unit here is about 6.9 m
+(section 33.2), so Remix believes the world is about 690x smaller than it is.
+
+Remix offsets every shadow ray's origin along the interpolated vertex normals to hide the
+triangle-shaped terminator artefacts on low-poly curved surfaces
+(`calcShadowTerminatorOffset`, surface_interaction.slangh ~151; applied to the RTXDI
+visibility rays in RtxdiApplicationBridge.slangh:294/552). The offset is capped by
+`rtx.shadowTerminator.maxLength` (0.02 m) and skipped on faces larger than `maxArea`
+(0.05 m^2). Both are converted with the scale:
+
+| | default | at sceneScale 1 | what that really is here |
+|---|---|---|---|
+| maxLength | 0.02 m | 2 game units | ~14 m, five car lengths |
+| maxArea | 0.05 m^2 | 500 unit^2 | every track face qualifies |
+
+Evaluating the offset formula at each face centre of `Airport1.dat`: 9.8% of the area
+gets an offset > 0.003 units, 6.6% > 0.05 units, 2.7% > 0.2 units (half a car length), and
+the worst pieces reach 1.8 units. A headlight shadow ray starting that far off a wall
+misses the geometry near the wall, which moves and bends the shadows.
+
+At the true scale the limits are 0.0029 units and 0.00105 unit^2. That switches the offset
+off on every track face and keeps a sub-centimetre offset on car panels, which is the
+low-poly curved case the feature exists for.
+
+### 35.3 What changed
+
+`rtx.conf` (installed and `release/`) now sets the two limits to their true-scale values,
+leaving `sceneScale` alone:
+
+```
+rtx.shadowTerminator.maxLength = 0.000029      # 0.02 m / 6.9 m per unit / 100
+rtx.shadowTerminator.maxArea = 0.000000105     # 0.05 m^2 / 47.6 m^2 per unit^2 / 100^2
+```
+
+Fixing `rtx.sceneScale` itself (about 0.00145) would also correct the other metre-based
+settings: NRD's hit-distance parameters, the volumetric froxel range
+(`froxelMaxDistanceMeters` 20 m currently spans 2000 units, the whole map), the NEE-cache
+range and light-conversion radii. But it also changes geometry hashing: positions are
+rounded to `0.01 m * getMeterToWorldUnitScale()`, which is **one whole game unit** at scale
+1. Every mesh hash would change, and the mod's `mesh_EC5C7EFFFACAF8E7` replacement would
+need re-capturing. Left for a deliberate decision.
+
+### 35.4 Noted, not changed
+
+`bake_actor` carries normals through the placement matrix itself rather than its
+inverse-transpose and does not renormalize. That is wrong under non-uniform scale, but none
+of the 119,172 actor transforms the game ships (every `.ACT`, loose and in `.TWT` archives)
+is non-uniform. 20 carry a uniform scale other than 1, which only changes the normals'
+length.
+
+Not verified in game yet.
