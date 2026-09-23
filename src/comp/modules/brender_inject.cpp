@@ -1178,6 +1178,9 @@ namespace comp
 			state.blended = plan.blended;
 			state.blend_enabled = plan.blend_enabled;
 			state.alpha_tested = plan.alpha_tested;
+			state.emissive = state.blend_enabled && effects.emissive_sprites
+				&& material && readable(material, sizeof(game::br_material))
+				&& is_emissive_sprite(material);
 
 			if (state.blended) { queued.has_blended = true; }
 			else { queued.has_opaque = true; }
@@ -2879,6 +2882,7 @@ namespace comp
 		IDirect3DTexture9* bound_texture = nullptr;
 		bool texture_bound = false;
 		int bound_blend = -1;
+		int bound_dest_blend = -1;
 		int bound_alpha_test = -1;
 		int bound_opacity = -1;
 		const auto bind_texture = [&](IDirect3DTexture9* texture)
@@ -2898,6 +2902,14 @@ namespace comp
 			{
 				dev->SetRenderState(D3DRS_ALPHABLENDENABLE, alpha ? TRUE : FALSE);
 				bound_blend = wanted;
+			}
+		};
+		const auto bind_dest_blend = [&](const bool additive)
+		{
+			if (const int wanted = additive ? 1 : 0; wanted != bound_dest_blend)
+			{
+				dev->SetRenderState(D3DRS_DESTBLEND, additive ? D3DBLEND_ONE : D3DBLEND_INVSRCALPHA);
+				bound_dest_blend = wanted;
 			}
 		};
 		const auto bind_alpha_test = [&](const bool tested)
@@ -2952,6 +2964,7 @@ namespace comp
 			bind_opacity(chunk.opacity);
 			bind_cull(chunk.two_sided);
 			bind_blend(plan.blend_enabled);
+			bind_dest_blend(false);
 			bind_alpha_test(plan.alpha_tested);
 
 			if (SUCCEEDED(dev->DrawIndexedPrimitive(D3DPT_TRIANGLELIST, 0, 0,
@@ -2985,6 +2998,7 @@ namespace comp
 				bind_opacity(state.opacity);
 				bind_cull(state.two_sided);
 				bind_blend(state.blend_enabled);
+				bind_dest_blend(state.emissive);
 				bind_alpha_test(state.alpha_tested);
 
 				// Off for all but a handful of runs, so the stage state is only touched when
@@ -3309,6 +3323,46 @@ namespace comp
 				name, texture, reason),
 				shared::common::LOG_TYPE::LOG_TYPE_DEFAULT, false);
 		}
+	}
+
+	/*
+	 * Whether a sprite material is drawn additively, so that Remix lights it from its own
+	 * texture.
+	 *
+	 * Remix has no per-draw emission, but it has a blend-mode rule: SRCALPHA/ONE is
+	 * "emissive alpha" (rtx_instance_manager.cpp, BlendType::kAlphaEmissive), and with
+	 * rtx.enableEmissiveBlendEmissiveOverride on it emits albedo x alpha x
+	 * rtx.emissiveBlendOverrideEmissiveIntensity and blocks nothing behind it. That fits
+	 * fire and sparkle, which BRender draws unlit at full brightness. It does not fit blood,
+	 * which comes out of the same sprite pool on the same kind of material, so the
+	 * pixelmap name decides between them.
+	 */
+	bool brender_inject::is_emissive_sprite(const game::br_material* material)
+	{
+		if (!material_is_fullbright(material)) {
+			return false;
+		}
+
+		const auto pm = static_cast<const game::br_pixelmap*>(material->colour_map);
+		const std::string texture = readable(pm, sizeof(*pm)) && readable(pm->identifier, 1)
+			? pm->identifier : "";
+
+		for (const auto& prefix : shared::common::config::get().effects.emissive_sprite_exclude)
+		{
+			if (!prefix.empty() && texture.size() >= prefix.size()
+				&& _strnicmp(texture.c_str(), prefix.c_str(), prefix.size()) == 0)
+			{
+				return false;
+			}
+		}
+
+		if (m_emissive_sprites.insert(texture).second)
+		{
+			shared::common::log("BRender", std::format("emissive sprite: texture '{}' drawn additively",
+				texture.empty() ? "<none>" : texture),
+				shared::common::LOG_TYPE::LOG_TYPE_DEFAULT, false);
+		}
+		return true;
 	}
 
 	void brender_inject::note_untextured(const game::br_model* model, const game::br_material* material)

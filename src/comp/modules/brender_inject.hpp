@@ -175,6 +175,10 @@ namespace comp
 			// translucency is submitted unblended but still cut out by its alpha.
 			bool blend_enabled;
 			bool alpha_tested;
+
+			// Blend additively (SRCALPHA, ONE) instead of over what is behind it, which
+			// Remix reads as an emissive surface. Only ever set on a blended run.
+			bool emissive;
 		};
 
 		/*
@@ -559,11 +563,17 @@ namespace comp
 		void note_unsupported_style(const game::br_model* model, uint32_t style);
 
 		// Names a surface the engine renders unshaded, and the texture behind it. Remix
-		// takes emission from a replacement keyed on the texture, so the list of textures
-		// worth tagging is the useful output -- the injection cannot make a draw emissive
-		// itself (the per-draw D3DMATERIAL9 is not read for emission).
+		// ignores the per-draw D3DMATERIAL9 for emission, so a solid surface only glows
+		// through a replacement keyed on the texture, and the list of textures worth
+		// tagging is the useful output. Blended sprites are the exception: an additive
+		// blend is emissive to Remix (see draw_state::emissive).
 		void note_emissive_candidate(const game::br_material* material, const char* reason);
 		std::map<std::string, std::string> m_emissive_materials;
+
+		// Whether this full-bright sprite material goes out additively, and the log of
+		// every sprite texture that did, once per name.
+		bool is_emissive_sprite(const game::br_material* material);
+		std::set<std::string> m_emissive_sprites;
 		void note_scene_target(const game::br_actor* camera, const game::br_pixelmap* colour);
 		std::set<std::pair<const game::br_actor*, const game::br_pixelmap*>> m_scene_targets;
 

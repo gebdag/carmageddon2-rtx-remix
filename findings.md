@@ -2827,6 +2827,43 @@ backed up as `rtx.conf.pre-particles-bak`.
   scene instead of glowing. In BRender these materials are full-bright (flags exactly
   `BR_MATF_ALWAYS_VISIBLE`, section 32.1). Two ways to make them glow: an emissive
   replacement material on the same hashes, or drawing them with an emissive (additive)
-  blend so Remix classifies them as `emissiveBlend`. Neither is done yet.
+  blend so Remix classifies them as `emissiveBlend`. 34.4 does the second.
+
+The particle tag was confirmed in game on 2026-09-23: the sprites look better.
+
+### 34.4 Full-bright sprites go out additively (2026-09-23)
+
+Remix classifies a blended draw by its blend factors (`rtx_instance_manager.cpp` ~735).
+`SRCALPHA / ONE` is `BlendType::kAlphaEmissive`. With
+`rtx.enableEmissiveBlendEmissiveOverride` (default on), and a material that still uses the
+legacy alpha state, the instance's emissive texture becomes its albedo texture, at
+`rtx.emissiveBlendOverrideEmissiveIntensity` (default 0.2). In
+`calcOpaqueSurfaceMaterialOpacity`, `kAlphaEmissive` has opacity 0 and emissive influence
+= alpha. So the sprite glows by texture x alpha x intensity and blocks nothing behind it.
+`ONE / INVSRCALPHA` (premultiplied) lands on the same blend type, so there is no blend mode
+that both glows and occludes.
+
+`resolve_draw_state` sets `draw_state::emissive` on a blended run whose material is
+`material_is_fullbright` (flags exactly `BR_MATF_ALWAYS_VISIBLE`) and whose `colour_map`
+name does not start with an `[Effects] EmissiveSpriteExclude` prefix. `draw_pass` binds
+`D3DRS_DESTBLEND = ONE` for such a run and `INVSRCALPHA` otherwise. That covers the sprite
+pool (explosion `EX*`, sparkle `BING*` / `TWINK*`) and the car flames (`FLM*`). Blood
+(`BIGBL*`) comes from the same pool on the same kind of material, so it is excluded by
+name, and that exclusion is the default. Smoke (flags 0x27) and splashes are not
+full-bright and keep their alpha blend. The console logs each sprite texture once:
+`emissive sprite: texture '...' drawn additively`.
+
+Consequences:
+
+- The dark, smoky tail frames of the explosion (`EX00005..7`) now glow dimly instead of
+  darkening what is behind them.
+- The emissive override replaces the emission of a mod material on the same texture. The
+  user's hand-made emissive on `mat_B7FE737F9619BAF5` (`EX00001`) no longer applies. It
+  would come back if that material overrode the legacy alpha state.
+- `rtx.conf` sets `rtx.emissiveBlendOverrideEmissiveIntensity = 1`, the intensity the
+  user's hand-made emissives use. Nothing else in the port draws with an emissive blend,
+  so this global option only affects these sprites. It is tuned from the Remix menu.
+
+`[Effects] EmissiveSprites=0` restores the alpha blend.
 
 Not verified in game yet.

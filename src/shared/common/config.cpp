@@ -113,6 +113,25 @@ namespace shared::common
 		effects.fog_tint = get_float("Effects", "FogTint", 0.08f);
 		effects.decal_offset = get_float("Effects", "DecalOffset", 0.02f);
 		effects.spark_width = get_float("Effects", "SparkWidth", 0.004f);
+		effects.emissive_sprites = get_bool("Effects", "EmissiveSprites", true);
+
+		effects.emissive_sprite_exclude.clear();
+		{
+			const std::string list = get_string("Effects", "EmissiveSpriteExclude", "BIGBL");
+			size_t start = 0;
+			while (start <= list.size())
+			{
+				const size_t comma = list.find(',', start);
+				const size_t end = comma == std::string::npos ? list.size() : comma;
+				const size_t first = list.find_first_not_of(" \t", start);
+				if (first != std::string::npos && first < end)
+				{
+					const size_t last = list.find_last_not_of(" \t", end - 1);
+					effects.emissive_sprite_exclude.push_back(list.substr(first, last - first + 1));
+				}
+				start = end + 1;
+			}
+		}
 
 		log("Config", std::format("Loaded from: {}", ini_path_));
 		log("Config", std::format("FFP={} AlbedoStage={}", ffp.enabled ? 1 : 0, ffp.albedo_stage));

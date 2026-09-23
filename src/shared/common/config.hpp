@@ -187,6 +187,19 @@ namespace shared::common
 			// the player's own bodywork into slabs. Roughly 0.001 per pixel at a 60 degree
 			// vertical field of view.
 			float spark_width = 0.004f;
+
+			// Submit the game's full-bright sprites -- explosion fire, the powerup sparkle,
+			// the car flames -- with an additive blend (SRCALPHA, ONE) instead of an alpha
+			// blend. Remix reads that blend mode as emissive and lights the sprite from its
+			// own texture, which is what BRender did: these materials are built unlit
+			// (flags exactly BR_MATF_ALWAYS_VISIBLE). Under an alpha blend Remix lights
+			// them from the scene instead, so fire is dark wherever the road is.
+			bool emissive_sprites = true;
+
+			// Pixelmap name prefixes of full-bright sprites that keep their alpha blend.
+			// Blood clouds (BIGBL01..05) come out of the same sprite pool as the fire,
+			// but blood does not glow.
+			std::vector<std::string> emissive_sprite_exclude = { "BIGBL" };
 		} effects;
 
 	private:
