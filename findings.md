@@ -2772,3 +2772,61 @@ tuned in game by the user from a computed brightness 20 and cone 38, which were 
 mode notice was not seen on screen. Whether distant, physics-inactive opponents keep a valid master
 matrix is inferred, not observed; "Range from camera" keeps their lights off beyond 12
 units either way.
+
+## 34. Sprites look grainy and blobby: they were untagged, so Remix dithered them (2026-09-23)
+
+Reported: explosions, fire, blood and the pickup sparkle look "blobby and grainy" under
+Remix. Two causes. The main one is fixable in config; the other is the source art.
+
+### 34.1 An untagged blended surface gets stochastic alpha in primary rays
+
+The proxy draws every sprite with `SRCALPHA / INVSRCALPHA` blending. Remix sends a blended
+surface one of two ways (`rtx_instance_manager.cpp` ~1205):
+
+- **Tagged in `rtx.particleTextures`**: `isParticle` puts it in the unordered TLAS.
+  `evaluateOpaqueApproximations` (resolve.slangh:136) then blends it by its opacity and
+  lights it from the volumetric radiance cache. The result is smooth and has no noise.
+- **Untagged**: it is resolved as an ordinary surface. With `rtx.enableStochasticAlphaBlend`
+  (default on), every primary-ray hit with opacity in `(resolveTransparencyThreshold, 0.95]`
+  is randomly passed through or stopped (resolve.slangh:510). The "Stochastic Alpha Blend"
+  pass then fills the holes from neighbouring pixels. Dithering gives the grain, and the
+  neighbour search plus the denoiser give the blobs.
+
+`rtx.particleTextures` held one real entry: `SMOKE.PIX`. Every other sprite system from
+section 25 took the stochastic path. The second entry, `-0x7A7F97E979F35B95`, is a
+**removal**: in a hash list, a leading `-` removes the hash from the set
+(`util_hash_set_layer.h:143`). It is not a signed hash. The same applies to the `-0x…`
+entries in `decalTextures` and `worldSpaceUiTextures`.
+
+### 34.2 Remix texture hashes can be computed offline
+
+The hash is `XXH3_64bits` over mip 0 of the texture as uploaded
+(`D3D9CommonTexture::SetupForRtxFrom`, d3d9_common_texture.cpp:683). `upload_pixelmap` always
+uploads a tightly packed `A8R8G8B8`, so decoding a `.PIX` exactly as `upload_pixelmap` does
+and hashing its BGRA bytes reproduces the runtime hash. Two tags from the user's runtime
+confirm this: `SMOKE.PIX` = `0x4FF62ABC0E61D6A2` (particle) and `OILSMEAR.PIX` =
+`0x7FF529EA8568DA95` (decal).
+
+The sprite frames load as loose files from the `PIX16` folders, not from the `.TWT`
+archives. `General.txt` (DATA.TWT) and `PEDS/SETTINGS.TXT` name 22 emitter frames, and
+the track TXTs name none. `rtx.particleTextures` now tags 47 hashes:
+`EX00000..7`, `BING1..6`, `TWINK1..4` (COMMON/boom), `FLM01..20` (COMMON/flames),
+`BIGBL01..05` (PEDS/GIBLETS), `CSPLASH/CSPLISH/CSPLOSH` (COMMON/casplash) and `SMOKE`.
+These are set in both `release/rtx.conf` and the installed one. The installed file was
+backed up as `rtx.conf.pre-particles-bak`.
+
+### 34.3 What the tag cannot fix
+
+- **Resolution and bit depth.** Every sprite is `BR_PMT_RGBA_4444`, 16x16 (`TWINK`),
+  32x32 or 32x64 (`FLM`), or 64x64 (the rest), with at most 16 alpha levels. `FLM*` have
+  only 5-7 alpha levels, and the blood frames are stippled dots in the source art. Drawn
+  across a car-sized billboard at 1440p, they are soft whatever the renderer does.
+  The only remedy is replacement textures: upscaled or repainted, and keyed on the hashes
+  above.
+- **Brightness.** A particle takes albedo × volumetric radiance, so fire is lit by the
+  scene instead of glowing. In BRender these materials are full-bright (flags exactly
+  `BR_MATF_ALWAYS_VISIBLE`, section 32.1). Two ways to make them glow: an emissive
+  replacement material on the same hashes, or drawing them with an emissive (additive)
+  blend so Remix classifies them as `emissiveBlend`. Neither is done yet.
+
+Not verified in game yet.
