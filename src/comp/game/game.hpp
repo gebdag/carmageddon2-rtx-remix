@@ -104,6 +104,10 @@ namespace comp::game
 	// address here is where slot 0 keeps its br_actor*.
 	constexpr quad_pool SPRITE_PARTICLE_POOL{ 0x006A55D8u, 0x78u, 50u };
 
+	// InitSmokeStuff @ 0x004F9FC0 -- the two br_model* globals every smoke puff is drawn
+	// with: gBlend_model (4-vertex quad) and gBlend_model2 (6 vertices, 4 faces).
+	constexpr uint32_t SMOKE_MODELS[] = { 0x0074CF30u, 0x0074CF94u };
+
 	typedef void(__cdecl* BrZbSceneRender_t)(br_actor* world, br_actor* camera, void* colour, void* depth);
 	typedef void(__cdecl* BrZbSceneRenderEnd_t)();
 	typedef void(__cdecl* SceneSetupCameraMatrices_t)(br_actor* world, br_actor* camera);

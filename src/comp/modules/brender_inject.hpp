@@ -147,6 +147,21 @@ namespace comp
 		};
 
 		/*
+		 * How a blended sprite gets its colour when Remix would otherwise light it.
+		 *
+		 * An additive blend (SRCALPHA, ONE) is emissive to Remix: the run glows with its
+		 * texture x vertex colour x alpha and blocks nothing behind it. `unlit` pairs that
+		 * with the ordinary alpha-blended draw, which darkens what is behind by the run's
+		 * alpha; together they are BRender's unlit "colour over background" blend.
+		 */
+		enum class sprite_glow : uint8_t
+		{
+			lit,        // alpha blend only; Remix lights it
+			additive,   // additive only
+			unlit,      // alpha blend, then an additive copy
+		};
+
+		/*
 		 * How one run looks in one particular draw.
 		 *
 		 * Everything here the game rewrites between draws of the same model without
@@ -176,9 +191,9 @@ namespace comp
 			bool blend_enabled;
 			bool alpha_tested;
 
-			// Blend additively (SRCALPHA, ONE) instead of over what is behind it, which
-			// Remix reads as an emissive surface. Only ever set on a blended run.
-			bool emissive;
+			// How the run's own colour reaches Remix. Only ever other than `lit` on a
+			// blended run.
+			sprite_glow glow;
 		};
 
 		/*
@@ -256,6 +271,9 @@ namespace comp
 			// Geometry that is not one of the pooled sprite billboards or decal quads, so
 			// its translucency describes a surface rather than a composite.
 			bool solid;
+
+			// One of the two models every smoke puff is drawn with.
+			bool smoke;
 
 			// BrModelUpdate can fire mid-scene, after this geometry is already queued for
 			// submission. Marking instead of erasing keeps queued pointers valid; the
@@ -570,10 +588,10 @@ namespace comp
 		void note_emissive_candidate(const game::br_material* material, const char* reason);
 		std::map<std::string, std::string> m_emissive_materials;
 
-		// Whether this full-bright sprite material goes out additively, and the log of
-		// every sprite texture that did, once per name.
-		bool is_emissive_sprite(const game::br_material* material);
-		std::set<std::string> m_emissive_sprites;
+		// How a blended run of this geometry and material gets its colour, and the log of
+		// every sprite texture given a glow, once per name.
+		sprite_glow classify_glow(const model_geometry& geometry, const game::br_material* material);
+		std::set<std::string> m_glowing_sprites;
 		void note_scene_target(const game::br_actor* camera, const game::br_pixelmap* colour);
 		std::set<std::pair<const game::br_actor*, const game::br_pixelmap*>> m_scene_targets;
 

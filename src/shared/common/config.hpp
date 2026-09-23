@@ -196,10 +196,20 @@ namespace shared::common
 			// them from the scene instead, so fire is dark wherever the road is.
 			bool emissive_sprites = true;
 
-			// Pixelmap name prefixes of full-bright sprites that keep their alpha blend.
-			// Blood clouds (BIGBL01..05) come out of the same sprite pool as the fire,
-			// but blood does not glow.
+			// Pixelmap name prefixes of full-bright sprites that are drawn unlit instead of
+			// additively. Blood clouds (BIGBL01..05) come out of the same sprite pool as the
+			// fire, but blood covers what is behind it rather than glowing over it.
 			std::vector<std::string> emissive_sprite_exclude = { "BIGBL" };
+
+			// Draw smoke and the excluded full-bright sprites twice: the ordinary alpha
+			// blend, which darkens what is behind them, then an additive copy that adds
+			// their own colour. Remix lights a tagged particle only from its volumetric
+			// radiance cache, which holds no sky light, so without this they are near black.
+			bool unlit_sprites = true;
+
+			// Scale on the additive copy's alpha, 0..1: how brightly the unlit sprites show
+			// their own colour. rtx.emissiveBlendOverrideEmissiveIntensity scales it too.
+			float unlit_sprite_brightness = 1.0f;
 		} effects;
 
 	private:

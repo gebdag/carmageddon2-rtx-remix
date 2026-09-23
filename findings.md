@@ -2900,3 +2900,36 @@ draws those colours prelit, so they are the final colour: dark to light grey smo
 Remix has no particle mode that is unlit and also blocks what is behind it. An emissive blend
 has opacity 0, and the world-space-UI path emits the bare texture without the vertex tint.
 Blood (excluded from 34.4) and smoke therefore stay dark while they are tagged as particles.
+
+### 34.6 Unlit sprites: one alpha-blended draw plus one additive copy (2026-09-23)
+
+In the texture-stage evaluation (opaque_surface_material_interaction.slangh ~724), Remix
+passes the emissive colour through the same colour op as the albedo. With
+`MODULATE(TEXTURE, DIFFUSE)` a run's emission is therefore texture x vertex colour.
+`emissiveBlendOverrideInfluence` is the stage's alpha (texture x TFACTOR). So an
+additive draw glows in its own tint, scaled by an alpha the proxy sets per draw.
+
+To draw smoke and blood unlit (BRender's full-bright colour over background), the
+blended pass draws the run twice:
+
+1. The ordinary alpha blend. As a particle it takes `1 - alpha` off what is behind it, and
+   its own lighting (volumetric cache, section 34.5) adds almost nothing.
+2. The same triangles with `DESTBLEND = ONE` and TFACTOR alpha = opacity x
+   `[Effects] UnlitSpriteBrightness`. This adds colour x alpha x
+   `rtx.emissiveBlendOverrideEmissiveIntensity`.
+
+The sum is `colour x alpha + background x (1 - alpha)`, i.e. the original blend. The unordered resolve
+accumulates any-hits without sorting. If the darkening draw is hit first, the glow is also
+attenuated by `1 - alpha`, so an unlit sprite lands between `c x a` and `c x a x (1 - a)`.
+
+`classify_glow` picks one of three glow modes per blended run. `unlit` is used for the
+smoke models (`gBlend_model` / `gBlend_model2`, the `br_model*` globals at 0x0074CF30 /
+0x0074CF94) and for full-bright sprites that match `EmissiveSpriteExclude` (blood).
+`additive` is used for the remaining full-bright sprites. `lit` is used for everything
+else. The log names each glowing texture once: `emissive sprite: ...` / `unlit sprite: ...`.
+
+Whether a glowing particle lights anything else is a global Remix setting. Emissive particles
+are never NEE lights. They reach other surfaces, and reflections, only through
+`rtx.enableUnorderedEmissiveParticlesInIndirectRays`, which the user's `user.conf` turns on.
+
+Not verified in game yet.

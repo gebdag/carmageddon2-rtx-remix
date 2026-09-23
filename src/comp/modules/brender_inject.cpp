@@ -469,6 +469,18 @@ namespace comp
 			return false;
 		}
 
+		bool is_smoke_model(const game::br_model* model)
+		{
+			for (const uint32_t global : game::SMOKE_MODELS)
+			{
+				const auto slot = reinterpret_cast<game::br_model* const*>(game::rebase(global));
+				if (model && readable(slot, sizeof(*slot)) && *slot == model) {
+					return true;
+				}
+			}
+			return false;
+		}
+
 		/*
 		 * Whether a model is one of the game's ground decal quads.
 		 *
@@ -999,6 +1011,7 @@ namespace comp
 		// Pool membership is a property of the model, so it is resolved with the geometry
 		// rather than on every draw -- the pools are walked with VirtualQuery behind them.
 		geometry.solid = !is_decal_model(model) && !in_quad_pool(game::SPRITE_PARTICLE_POOL, model);
+		geometry.smoke = is_smoke_model(model);
 
 		// 16-bit indices are enough for any single model this game ships; anything larger is
 		// corrupt data rather than a real mesh.
@@ -1181,9 +1194,9 @@ namespace comp
 			state.blended = plan.blended;
 			state.blend_enabled = plan.blend_enabled;
 			state.alpha_tested = plan.alpha_tested;
-			state.emissive = state.blend_enabled && effects.emissive_sprites
-				&& material && readable(material, sizeof(game::br_material))
-				&& is_emissive_sprite(material);
+			state.glow = state.blend_enabled && material && readable(material, sizeof(game::br_material))
+				? classify_glow(geometry, material)
+				: sprite_glow::lit;
 
 			if (state.blended) { queued.has_blended = true; }
 			else { queued.has_opaque = true; }
@@ -2886,6 +2899,8 @@ namespace comp
 		bool texture_bound = false;
 		int bound_blend = -1;
 		int bound_dest_blend = -1;
+		const float unlit_brightness = std::clamp(
+			shared::common::config::get().effects.unlit_sprite_brightness, 0.0f, 1.0f);
 		int bound_alpha_test = -1;
 		int bound_opacity = -1;
 		const auto bind_texture = [&](IDirect3DTexture9* texture)
@@ -3001,7 +3016,7 @@ namespace comp
 				bind_opacity(state.opacity);
 				bind_cull(state.two_sided);
 				bind_blend(state.blend_enabled);
-				bind_dest_blend(state.emissive);
+				bind_dest_blend(state.glow == sprite_glow::additive);
 				bind_alpha_test(state.alpha_tested);
 
 				// Off for all but a handful of runs, so the stage state is only touched when
@@ -3022,6 +3037,21 @@ namespace comp
 					geometry.vertex_count, part.index_start, part.triangle_count)))
 				{
 					++draws;
+				}
+
+				// The glowing half of an unlit run: the same triangles again, adding the
+				// run's own colour on top of the darkening the draw above did. Its alpha is
+				// what scales the glow, so the brightness setting rides in the factor.
+				if (state.glow == sprite_glow::unlit)
+				{
+					bind_dest_blend(true);
+					bind_opacity(static_cast<uint8_t>(std::lround(state.opacity * unlit_brightness)));
+
+					if (SUCCEEDED(dev->DrawIndexedPrimitive(D3DPT_TRIANGLELIST, 0, 0,
+						geometry.vertex_count, part.index_start, part.triangle_count)))
+					{
+						++draws;
+					}
 				}
 			}
 		}
@@ -3329,43 +3359,63 @@ namespace comp
 	}
 
 	/*
-	 * Whether a sprite material is drawn additively, so that Remix lights it from its own
-	 * texture.
+	 * How a blended run gets its colour to Remix.
 	 *
 	 * Remix has no per-draw emission, but it has a blend-mode rule: SRCALPHA/ONE is
-	 * "emissive alpha" (rtx_instance_manager.cpp, BlendType::kAlphaEmissive), and with
-	 * rtx.enableEmissiveBlendEmissiveOverride on it emits albedo x alpha x
-	 * rtx.emissiveBlendOverrideEmissiveIntensity and blocks nothing behind it. That fits
-	 * fire and sparkle, which BRender draws unlit at full brightness. It does not fit blood,
-	 * which comes out of the same sprite pool on the same kind of material, so the
-	 * pixelmap name decides between them.
+	 * "emissive alpha" (rtx_instance_manager.cpp, BlendType::kAlphaEmissive). With
+	 * rtx.enableEmissiveBlendEmissiveOverride on, the run emits its texture through the
+	 * same texture stage as its colour -- so times the vertex colour -- times its alpha
+	 * (texture x TFACTOR) times rtx.emissiveBlendOverrideEmissiveIntensity, and blocks
+	 * nothing behind it.
+	 *
+	 * That alone fits fire and sparkle, which BRender draws at full brightness. Blood and
+	 * smoke are also drawn unlit, but they cover what is behind them, and a tagged particle
+	 * that is not emissive is lit only from Remix's volumetric radiance cache, which holds
+	 * no sky light and so leaves them near black. Those two get the unlit pair instead.
+	 * Blood shares the sprite pool and the material recipe with fire, so the pixelmap
+	 * name decides between them.
 	 */
-	bool brender_inject::is_emissive_sprite(const game::br_material* material)
+	brender_inject::sprite_glow brender_inject::classify_glow(const model_geometry& geometry,
+		const game::br_material* material)
 	{
-		if (!material_is_fullbright(material)) {
-			return false;
+		const auto& effects = shared::common::config::get().effects;
+
+		sprite_glow glow = sprite_glow::lit;
+		if (geometry.smoke) {
+			glow = effects.unlit_sprites ? sprite_glow::unlit : sprite_glow::lit;
+		}
+		else if (material_is_fullbright(material)) {
+			glow = effects.emissive_sprites ? sprite_glow::additive : sprite_glow::lit;
+		}
+		else {
+			return sprite_glow::lit;
 		}
 
 		const auto pm = static_cast<const game::br_pixelmap*>(material->colour_map);
 		const std::string texture = readable(pm, sizeof(*pm)) && readable(pm->identifier, 1)
 			? pm->identifier : "";
 
-		for (const auto& prefix : shared::common::config::get().effects.emissive_sprite_exclude)
+		if (glow == sprite_glow::additive)
 		{
-			if (!prefix.empty() && texture.size() >= prefix.size()
-				&& _strnicmp(texture.c_str(), prefix.c_str(), prefix.size()) == 0)
+			for (const auto& prefix : effects.emissive_sprite_exclude)
 			{
-				return false;
+				if (!prefix.empty() && texture.size() >= prefix.size()
+					&& _strnicmp(texture.c_str(), prefix.c_str(), prefix.size()) == 0)
+				{
+					glow = effects.unlit_sprites ? sprite_glow::unlit : sprite_glow::lit;
+					break;
+				}
 			}
 		}
 
-		if (m_emissive_sprites.insert(texture).second)
+		if (glow != sprite_glow::lit && m_glowing_sprites.insert(texture).second)
 		{
-			shared::common::log("BRender", std::format("emissive sprite: texture '{}' drawn additively",
+			shared::common::log("BRender", std::format("{} sprite: texture '{}'",
+				glow == sprite_glow::additive ? "emissive" : "unlit",
 				texture.empty() ? "<none>" : texture),
 				shared::common::LOG_TYPE::LOG_TYPE_DEFAULT, false);
 		}
-		return true;
+		return glow;
 	}
 
 	void brender_inject::note_untextured(const game::br_model* model, const game::br_material* material)

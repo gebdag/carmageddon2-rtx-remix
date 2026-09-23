@@ -114,6 +114,8 @@ namespace shared::common
 		effects.decal_offset = get_float("Effects", "DecalOffset", 0.02f);
 		effects.spark_width = get_float("Effects", "SparkWidth", 0.004f);
 		effects.emissive_sprites = get_bool("Effects", "EmissiveSprites", true);
+		effects.unlit_sprites = get_bool("Effects", "UnlitSprites", true);
+		effects.unlit_sprite_brightness = get_float("Effects", "UnlitSpriteBrightness", 1.0f);
 
 		effects.emissive_sprite_exclude.clear();
 		{
