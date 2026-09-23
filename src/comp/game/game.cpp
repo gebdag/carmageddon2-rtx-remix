@@ -168,6 +168,29 @@ namespace comp::game
 		append_opponent_specs(out, ADDR_g_cops, ADDR_g_num_cops);
 	}
 
+	horizon_settings read_horizon()
+	{
+		horizon_settings horizon{};
+
+		const auto angle = [](const uint32_t addr) {
+			return static_cast<float>(*reinterpret_cast<const uint16_t*>(rebase(addr)));
+		};
+
+		const auto texture = *reinterpret_cast<const br_pixelmap* const*>(rebase(ADDR_g_sky_pixelmap));
+		const float repeat = angle(ADDR_g_sky_repeat_angle);
+		const float extent = angle(ADDR_g_sky_extent_angle);
+		if (!texture || repeat <= 0.0f || extent <= 0.0f) {
+			return horizon;
+		}
+
+		horizon.texture = texture;
+		horizon.repetitions = std::round(65536.0f / repeat);
+		horizon.degrees = extent * (360.0f / 65536.0f);
+		horizon.horizon_row = static_cast<float>(texture->height)
+			* (1.0f - angle(ADDR_g_sky_drop_angle) / extent);
+		return horizon;
+	}
+
 	scene_fog read_scene_fog()
 	{
 		scene_fog fog{};

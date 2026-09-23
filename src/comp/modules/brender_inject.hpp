@@ -1,4 +1,5 @@
 #pragma once
+#include "sky_dome.hpp"
 
 namespace comp
 {
@@ -608,6 +609,9 @@ namespace comp
 		IDirect3DTexture9* texture_for(IDirect3DDevice9* dev, const game::br_material* material);
 		IDirect3DTexture9* upload_pixelmap(IDirect3DDevice9* dev, const game::br_pixelmap* pm);
 
+		// A pixelmap's pixels as tightly packed A8R8G8B8, whatever BRender type they are stored in.
+		bool decode_pixelmap(const game::br_pixelmap* pm, std::vector<uint32_t>& argb);
+
 		std::vector<queued_model> m_queue;
 		std::vector<draw_state> m_draw_states;
 		std::vector<line_segment> m_lines;
@@ -727,6 +731,10 @@ std::vector<static_chunk> m_chunks;
 
 		IDirect3DTexture9* m_white_texture = nullptr;
 		IDirect3DVertexDeclaration9* m_vertex_decl = nullptr;
+
+		// The track's horizon as a sky Remix rasterizes, drawn first in every race submit.
+		void draw_sky(IDirect3DDevice9* dev);
+		sky_dome m_sky;
 
 		// Built on the first submit and re-captured each scene thereafter.
 		IDirect3DStateBlock9* m_saved_state = nullptr;

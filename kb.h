@@ -444,7 +444,6 @@ $ 0x0075d768 int    g_fogP2
 $ 0x0075d76c int    g_fogR
 $ 0x0075d770 int    g_fogG
 $ 0x0075d774 int    g_fogB
-$ 0x0075d778 void*  g_fogShadeTable         /* br_pixelmap* */
 $ 0x0074caa8 int    g_levelFogR             /* duplicate of g_depthCueR, written at 0x00505EB6 */
 $ 0x0074cf2c int    g_levelFogG
 $ 0x0074cad0 int    g_levelFogB
@@ -970,6 +969,15 @@ enum BrSurfaceToken {
 @ 0x004f67a0 void FixCarMaterials(void *store, void *car);  /* 16-bit mode: ka 0.6 kd 0.2, flags=(f&~PRELIT)|LIGHT|SMOOTH for the car's range */
 $ 0x00660cb8 int   g_material_load_style  /* -1 = default (1); preset style for LoadMaterialFileCB */
 $ 0x0074ca60 int   g_colour_depth         /* 0x10 on the Glide path; gates the SMOOTH forcing above */
+@ 0x00504bf0 void RaceTxtLoad(void);                          /* parses the race TXT, incl. HORIZON STUFF at 0x00505C30..0x00505E56 */
+@ 0x00445340 void SetDepthCue(void *sky /*edx*/);             /* [0x0075D778] = sky, HORIZON.MAT->colour_map = sky */
+@ 0x00445e20 void BuildHorizonModel(void);                    /* 22x4 band from fov/yon; u world-locked, 0 at -Z, clockwise from above */
+@ 0x00445500 void SetHorizonV(void);                          /* v: row horizon_row at elevation 0, one-texel inset */
+$ 0x0075d75c void* g_sky_pixelmap_loaded  /* br_pixelmap* from BrMapFind; NULL for "none" */
+$ 0x0075d778 void* g_sky_pixelmap         /* live sky (NOT a shade table); NULL when none or hidden by a special volume */
+$ 0x0079ec2e uint16 g_sky_repeat_angle    /* br_angle 65536 / repetitions */
+$ 0x0079ec2c uint16 g_sky_extent_angle    /* br_angle vertical extent of the texture */
+$ 0x0079ec30 uint16 g_sky_drop_angle      /* br_angle of the texture's bottom edge below the horizon */
 @ 0x004fb910 void InitSmokeColours(void);                   /* fills $0x006b7840: [0] runtime 0x006aa5b4.., then 0x404040, 0x808080, 0xc8c8c8 x2, 0xfedf43 */
 $ 0x006b7840 uint32_t g_smoke_colours[16]                   /* 0x00RRGGBB per smoke type, drawn prelit */
 

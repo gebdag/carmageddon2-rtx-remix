@@ -3080,3 +3080,81 @@ and never baked into a static chunk (`vanishes_outright`).
 `Oil_Slick` (0x0065EC78, used at 0x004DE048) is a powerup's name, unrelated.
 
 Not verified in game yet.
+
+---
+
+## 37. A synthesized sky for stock Remix (2026-09-23)
+
+The port's only light is the sky. On a Remix runtime without a physical atmosphere, nothing
+drew one: the horizon scene is captured but never submitted (section 27), so the sky was
+black and the track unlit. The proxy now draws a sky Remix rasterizes itself, following
+the OpenJKDF2 port's `sithRenderSkybox` design.
+
+### 37.1 What the game has (RaceTxtLoad 0x00504BF0, from disassembly)
+
+Each race TXT's "HORIZON STUFF" block gives a sky texture, a horizontal repetition count,
+the texture's vertical extent in degrees, and the pixel row of the horizon. At runtime:
+
+| global | what | written at |
+|---|---|---|
+| `[0x0075D75C]` | the loaded sky `br_pixelmap*` (`BrMapFind(name)`; NULL for "none") | 0x00505DDE |
+| `[0x0075D778]` | the **live** sky, copied from 0x75D75C by `CommitLevelDepthCue` (0x0044723B); NULL while the camera is in a special volume that hides the sky | 0x00445361 |
+| `[0x0079EC2E]` u16 | `65536 / repetitions` (a br_angle) | 0x00505E18 |
+| `[0x0079EC2C]` u16 | vertical extent, `degrees * 182.044` | 0x00505E30 |
+| `[0x0079EC30]` u16 | bottom edge below the horizon, `(H - horizon_row) * extent / H` | 0x00505E56 |
+
+`SetDepthCue` (0x00445340) puts the same pixelmap in HORIZON.MAT's `colour_map`. On the
+hardware path there is no shade table on the horizon. kb.h had `0x0075D778` as
+"g_fogShadeTable": it is the sky. A `.FLI` sky name gives an animated pixelmap that a
+FLIC player rewrites; no shipped track uses one.
+
+`DrawHorizon` places the texture world-locked. u = 0 faces world -Z, u increases clockwise
+seen from above (`u = reps * atan2(dx, -dz) / 2pi`), and the scroll matches yaw exactly.
+The model builder (0x00445E20) and the v generator (0x00445500) put elevation 0 at row
+`horizon_row`, with the texture spanning `extent` degrees (less a one-texel inset). The
+hardware horizon itself is a 22x4 band sized to the screen, with caps that clamp the edge
+rows. With no sky, the frame is filled with a DRRENDER.PAL index (0 = black, or 255
+when fog type 1), not the depth-cue colour (0x004E5A35..0x004E5A56).
+
+All 23 shipped sky textures are 256x256 RGB565. Seven tracks have "none" (silos,
+arena, nuke), and they get no synthesized sky, matching the game's black fill.
+
+### 37.2 What Remix needs
+
+A draw Remix classifies as sky is re-rasterized into a screen-sized sky matte and into a
+cube probe around the camera (`RtxContext::rasterizeSky`: the game's projection with the
+frustum forced to 90 degrees and the far plane dropped, viewed from
+`inverse(view).translation`), then hidden from the acceleration structure. The probe is
+the sky's lighting. So the geometry has to make sense seen from the camera in every
+direction.
+
+A draw is sky when its texture is in `rtx.skyBoxTextures`, **or when its viewport's
+MinZ >= `rtx.skyMinZThreshold` (default 1.0)** (`shouldBakeSky`, rtx_types.cpp:551). The
+proxy uses the viewport route, so no per-track hash has to be tagged.
+
+### 37.3 What the proxy draws (`sky_dome`, `brender_inject::draw_sky`)
+
+- **Shell**: a unit lat/long sphere, 64 columns x 32 rings, one static VB/IB, drawn with
+  `DrawIndexedPrimitive` (Remix replays sky draws against the bound buffers). Eye position
+  and radius (midway between hither and yon) are in WORLD, so the mesh hash is the same on
+  every track. It is drawn first in the race submit with Z test/write off, blend/alpha test
+  off, fog off, cull none, and a viewport of MinZ = MaxZ = 1. The viewport is restored
+  afterwards.
+- **Panorama**: 2048x1024 equirectangular, full box-filtered mip chain, opaque, wrap U /
+  clamp V, anisotropic. Between the texture's top and bottom rows it is the game's
+  layout exactly. Beyond them, the edge row is box-filtered over a widening arc of azimuth
+  (prefix sums over the row) until, 75% of the way to the pole, it is the row's
+  average. That gives a flat zenith and nadir colour with no streaks converging on the
+  poles.
+- **Rebake**: keyed on the pixelmap's pixel pointer, dimensions and the three layout
+  numbers, so a track load rebakes and a restart does not. The console log reports each
+  bake: `sky: baked panorama from '<name>' (...)`. The panorama hash is a pure
+  function of those inputs, so a sky replacement made from a capture keeps applying.
+- `decode_pixelmap` was split out of `upload_pixelmap` so both use one decoder.
+- `[Sky] Synthesize` (default 1) turns it off, for runtimes that bring their own sky.
+
+The mapping was checked offline by running the same bake in Python over `skyblue_01`,
+`cityskape` and `twinpink`: skylines on the horizon, the right repeat count, and flat
+poles.
+
+Not verified in game yet.

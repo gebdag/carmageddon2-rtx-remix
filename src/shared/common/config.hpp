@@ -212,6 +212,15 @@ namespace shared::common
 			float unlit_sprite_brightness = 1.0f;
 		} effects;
 
+		struct sky_settings
+		{
+			// Draw a sky Remix rasterizes itself: a sphere around the camera carrying a
+			// panorama baked from the track's horizon texture. This is what lights the
+			// track on a stock Remix runtime, whose sky is otherwise black. Turn it off where
+			// the runtime supplies a sky of its own (a physical atmosphere).
+			bool synthesize = true;
+		} sky;
+
 	private:
 		std::string ini_path_;
 		bool loaded_ = false;

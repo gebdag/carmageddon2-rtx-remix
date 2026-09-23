@@ -2581,15 +2581,20 @@ namespace comp
 		dev->SetVertexShader(nullptr);
 		dev->SetPixelShader(nullptr);
 
+		dev->SetTransform(D3DTS_VIEW, &view);
+		dev->SetTransform(D3DTS_PROJECTION, &projection);
+		dev->SetRenderState(D3DRS_LIGHTING, FALSE);
+
+		// First, so that it is the first sky Remix sees after the frame's clear. Everything
+		// the sky changes is set again below, except fog, which it leaves off -- as the
+		// injected draws want it unless apply_fog turns it on.
+		draw_sky(dev);
+
 		if (!m_vertex_decl) {
 			dev->CreateVertexDeclaration(INJECT_DECL, &m_vertex_decl);
 		}
 		dev->SetVertexDeclaration(m_vertex_decl);
 
-		dev->SetTransform(D3DTS_VIEW, &view);
-		dev->SetTransform(D3DTS_PROJECTION, &projection);
-
-		dev->SetRenderState(D3DRS_LIGHTING, FALSE);
 		dev->SetRenderState(D3DRS_ZENABLE, D3DZB_TRUE);
 		dev->SetRenderState(D3DRS_CULLMODE, D3DCULL_NONE);
 		dev->SetRenderState(D3DRS_SRCBLEND, D3DBLEND_SRCALPHA);
@@ -2631,6 +2636,7 @@ namespace comp
 		dev->SetSamplerState(0, D3DSAMP_ADDRESSV, D3DTADDRESS_WRAP);
 		dev->SetSamplerState(0, D3DSAMP_MAGFILTER, D3DTEXF_LINEAR);
 		dev->SetSamplerState(0, D3DSAMP_MINFILTER, D3DTEXF_LINEAR);
+		dev->SetSamplerState(0, D3DSAMP_MIPFILTER, D3DTEXF_NONE);
 
 		// Stale bindings from the Glide path would otherwise be captured as this geometry's
 		// material by Remix.
@@ -3063,6 +3069,53 @@ namespace comp
 		}
 
 		return draws;
+	}
+
+	/*
+	 * Draws the track's horizon as a sky, baking its panorama when the track changes.
+	 *
+	 * Runs inside the race scene's end, where the horizon texture the track loaded is
+	 * alive. The bake is keyed on the texture's pixels and the TXT's layout numbers, so a
+	 * restart of the same track reuses it and a new track rebakes it.
+	 */
+	void brender_inject::draw_sky(IDirect3DDevice9* dev)
+	{
+		if (!shared::common::config::get().sky.synthesize) {
+			return;
+		}
+
+		const game::horizon_settings horizon = game::read_horizon();
+		const game::br_pixelmap* pm = horizon.texture;
+		if (!readable(pm, sizeof(*pm))) {
+			return;
+		}
+
+		const sky_dome::source_key key{ pm->pixels, pm->width, pm->height,
+			horizon.repetitions, horizon.degrees, horizon.horizon_row };
+
+		if (m_sky.needs_bake(key))
+		{
+			std::vector<uint32_t> pixels;
+			if (!decode_pixelmap(pm, pixels)) {
+				return;
+			}
+
+			const sky_dome::horizon source{ pixels.data(), pm->width, pm->height,
+				horizon.repetitions, horizon.degrees, horizon.horizon_row };
+			const char* name = readable(pm->identifier, 1) ? pm->identifier : "<null>";
+			const bool baked = m_sky.bake(dev, source, key);
+
+			shared::common::log("BRender", std::format(
+				"sky: {} panorama from '{}' ({}x{}, {} repetitions, {} degrees, horizon at row {})",
+				baked ? "baked" : "failed to bake", name, pm->width, pm->height,
+				horizon.repetitions, horizon.degrees, horizon.horizon_row),
+				baked ? shared::common::LOG_TYPE::LOG_TYPE_DEFAULT : shared::common::LOG_TYPE::LOG_TYPE_ERROR, false);
+		}
+
+		// Anywhere between the near and far planes will do: the sky is drawn without depth,
+		// and Remix re-renders it from the camera position for its probe.
+		const auto cam = static_cast<const game::br_camera*>(m_camera->type_data);
+		m_sky.draw(dev, m_view_inverse.m[3], 0.5f * (cam->hither_z + cam->yon_z));
 	}
 
 	/*
@@ -3502,12 +3555,48 @@ namespace comp
 
 	IDirect3DTexture9* brender_inject::upload_pixelmap(IDirect3DDevice9* dev, const game::br_pixelmap* pm)
 	{
+		std::vector<uint32_t> argb;
+		if (!decode_pixelmap(pm, argb)) {
+			return nullptr;
+		}
+
+		const uint32_t w = pm->width;
+		const uint32_t h = pm->height;
+
+		IDirect3DTexture9* tex = nullptr;
+		if (FAILED(dev->CreateTexture(w, h, 1, 0, D3DFMT_A8R8G8B8, D3DPOOL_MANAGED, &tex, nullptr)) || !tex) {
+			return nullptr;
+		}
+
+		D3DLOCKED_RECT rect{};
+		if (FAILED(tex->LockRect(0, &rect, nullptr, 0)))
+		{
+			tex->Release();
+			return nullptr;
+		}
+
+		for (uint32_t y = 0; y < h; ++y)
+		{
+			std::memcpy(static_cast<uint8_t*>(rect.pBits) + static_cast<size_t>(y) * rect.Pitch,
+				argb.data() + static_cast<size_t>(y) * w, static_cast<size_t>(w) * sizeof(uint32_t));
+		}
+
+		tex->UnlockRect(0);
+		return tex;
+	}
+
+	bool brender_inject::decode_pixelmap(const game::br_pixelmap* pm, std::vector<uint32_t>& argb)
+	{
+		if (!readable(pm, sizeof(*pm))) {
+			return false;
+		}
+
 		const uint32_t w = pm->width;
 		const uint32_t h = pm->height;
 
 		if (w == 0 || h == 0 || w > 4096 || h > 4096
 			|| !readable(pm->pixels, static_cast<size_t>(pm->row_bytes) * h)) {
-			return nullptr;
+			return false;
 		}
 
 		// An indexed pixelmap is only half the image; the palette it names holds the colours.
@@ -3521,7 +3610,7 @@ namespace comp
 					"indexed pixelmap '{}' has no usable palette", pm->identifier ? pm->identifier : "<null>"),
 					shared::common::LOG_TYPE::LOG_TYPE_ERROR, true);
 			}
-			return nullptr;
+			return false;
 		}
 
 		// Bytes per pixel implied by the type must agree with row_bytes, otherwise the
@@ -3541,30 +3630,20 @@ namespace comp
 				shared::common::log("BRender", std::format("unhandled pixelmap type {:#04x} ({}x{}, row_bytes={})",
 					pm->type, w, h, pm->row_bytes), shared::common::LOG_TYPE::LOG_TYPE_ERROR, true);
 			}
-			return nullptr;
+			return false;
 		}
 
 		if (pm->row_bytes < w * bpp) {
-			return nullptr;
+			return false;
 		}
 
-		IDirect3DTexture9* tex = nullptr;
-		if (FAILED(dev->CreateTexture(w, h, 1, 0, D3DFMT_A8R8G8B8, D3DPOOL_MANAGED, &tex, nullptr)) || !tex) {
-			return nullptr;
-		}
-
-		D3DLOCKED_RECT rect{};
-		if (FAILED(tex->LockRect(0, &rect, nullptr, 0)))
-		{
-			tex->Release();
-			return nullptr;
-		}
+		argb.resize(static_cast<size_t>(w) * h);
 
 		const auto src_base = static_cast<const uint8_t*>(pm->pixels);
 		for (uint32_t y = 0; y < h; ++y)
 		{
 			const uint8_t* src = src_base + static_cast<size_t>(y) * pm->row_bytes;
-			auto dst = reinterpret_cast<uint32_t*>(static_cast<uint8_t*>(rect.pBits) + static_cast<size_t>(y) * rect.Pitch);
+			uint32_t* dst = argb.data() + static_cast<size_t>(y) * w;
 
 			for (uint32_t x = 0; x < w; ++x, src += bpp)
 			{
@@ -3623,8 +3702,7 @@ namespace comp
 			}
 		}
 
-		tex->UnlockRect(0);
-		return tex;
+		return true;
 	}
 
 	IDirect3DTexture9* brender_inject::solid_colour_texture(IDirect3DDevice9* dev, const uint32_t rgb)

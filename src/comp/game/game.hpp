@@ -183,6 +183,34 @@ namespace comp::game
 	scene_fog read_scene_fog();
 
 	/*
+	 * The race TXT's "HORIZON STUFF", as RaceTxtLoad (0x00504BF0) leaves it.
+	 *
+	 * The live sky is the pixelmap SetDepthCue (0x00445340) also puts in HORIZON.MAT's
+	 * colour_map; it is null for a track whose sky is "none", and while the camera is in a
+	 * special volume that hides the sky (FrameDepthCueUpdate, 0x004465C2). The three layout
+	 * numbers are stored as br_angles: 65536 / repetitions (0x00505E18), the texture's
+	 * vertical extent (0x00505E30), and how far below the horizon its bottom edge lies,
+	 * (height - horizon_row) * extent / height (0x00505E56).
+	 *
+	 * DrawHorizon (0x00445CB0) lays the texture out world-locked: u = 0 faces world -Z and
+	 * u grows clockwise seen from above, `repetitions` times a turn.
+	 */
+	constexpr uint32_t ADDR_g_sky_pixelmap = 0x0075D778u;       // br_pixelmap*
+	constexpr uint32_t ADDR_g_sky_repeat_angle = 0x0079EC2Eu;   // uint16 br_angle
+	constexpr uint32_t ADDR_g_sky_extent_angle = 0x0079EC2Cu;   // uint16 br_angle
+	constexpr uint32_t ADDR_g_sky_drop_angle = 0x0079EC30u;     // uint16 br_angle
+
+	struct horizon_settings
+	{
+		const br_pixelmap* texture;  // null when there is no sky to draw
+		float repetitions;           // times the texture wraps the horizon
+		float degrees;               // elevation the texture spans, top row to bottom row
+		float horizon_row;           // texture row at elevation 0
+	};
+
+	horizon_settings read_horizon();
+
+	/*
 	 * Cars. The player's tCar_spec is a global struct, not an allocation: GetCarSpec
 	 * (0x004AE7E0) returns the constant for category 0, and BuildCarShadows (0x004E74D0)
 	 * loads the same address. Opponents and cops live in two tOpponent_spec arrays with a
