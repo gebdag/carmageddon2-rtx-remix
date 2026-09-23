@@ -482,7 +482,8 @@ namespace comp
 		}
 
 		/*
-		 * Whether a model is one of the game's ground decal quads.
+		 * Whether a model is one of the game's ground decal quads: a tyre track, smear or
+		 * shadow, or an oil spill.
 		 *
 		 * Translucency is not the test. Glass, smoke, sprites and water are translucent too,
 		 * and none of them overlays a surface it could fight with -- lifting those off their
@@ -490,7 +491,8 @@ namespace comp
 		 */
 		bool is_decal_model(const game::br_model* model)
 		{
-			return model && in_quad_pool(game::GROUND_DECAL_POOL, model);
+			return model && (in_quad_pool(game::GROUND_DECAL_POOL, model)
+				|| in_quad_pool(game::OIL_SPILL_POOL, model));
 		}
 
 		/*

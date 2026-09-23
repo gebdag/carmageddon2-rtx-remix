@@ -3034,3 +3034,49 @@ is non-uniform. 20 carry a uniform scale other than 1, which only changes the no
 length.
 
 Not verified in game yet.
+
+---
+
+## 36. Oil slicks: a second decal pool the proxy did not know (2026-09-23)
+
+Reported: oil slicks on the ground have a white border. Capture
+`capture_2026-09-23_14-20-37.usd`: the slick's thumbnail shows the whole quad drawn,
+with its transparent area opaque white.
+
+The slick texture is `OIL.PIX`, Remix hash `0x7A7F97E979F35B95`, with exactly two
+values: opaque black (2700 texels) and `(0,0,0,0)` (1396). There is no white in the
+texture or the capture, and the mod has no override for it. In the capture the instance
+is tagged `decal_Static` (rtx.conf lists the hash), but its draw state is
+`alphaBlendEnabled False` with only an alpha test (`GREATER 0`). Its 0.82-unit quad lies
+flush with the road (world y 2.01..2.08 on a sloped surface), with no lift.
+
+Why that renders white:
+
+- Remix reads decal categories only on a blended draw (`rtx_instance_manager.cpp` ~853,
+  inside the `blendEnabled` branch). Unblended, the tag is inert and the quad is an
+  ordinary alpha-tested surface.
+- The proxy sent it unblended because `geometry.solid` was true. The proxy called the quad
+  "solid" because it was in neither the ground-decal pool nor the sprite pool, and
+  `SolidTranslucency` turns a solid alpha-carrying run into an alpha test.
+- An alpha-tested quad exactly coplanar with the road: a primary ray that hits one of its
+  transparent texels continues from just past the hit. That is past the road plane too, so
+  the ray escapes under the track. What shows there is the fog and sky, white on this
+  track.
+
+**The pool.** `InitOilSpills` @ **0x004A6A10** builds 32 slots at **0x00690C90**, stride
+**0x54**, each beginning with its `br_actor*`. Each slot gets its own
+`BrModelAllocate(NULL, 4, 2)` quad (`x,z in -1..1`, normals +Y), its own material
+(`colour_map = OIL.PIX`, `IDENTITY.TAB` shade table, preset style 2), and
+`BrActorAdd(0x0074D64C, actor)`. That parent is one of the backdrop actors
+`RenderView` draws under a screen-space depth bias (section 27). The bias is how BRender
+kept the pool on top of the road it lies flush with.
+
+The `GROUND_DECAL_POOL` comment claimed that pool covered oil spills and that nothing
+else lays a quad flat on the ground. Both were wrong. `game::OIL_SPILL_POOL
+{ 0x00690C90, 0x54, 32 }` now joins it in `is_decal_model`, so an oil spill is non-solid
+(blended, which makes Remix's decal tag take effect), lifted by `[Effects] DecalOffset`,
+and never baked into a static chunk (`vanishes_outright`).
+
+`Oil_Slick` (0x0065EC78, used at 0x004DE048) is a powerup's name, unrelated.
+
+Not verified in game yet.

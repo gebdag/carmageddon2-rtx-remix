@@ -80,8 +80,8 @@ namespace comp::game
 		return fn(material) != 0;
 	}
 
-	// Two pools of pooled quad actors, both built once at startup and recycled for the
-	// rest of the session. Each entry holds a br_actor* whose model is the quad.
+	// Pools of pooled quad actors, all built once at startup and recycled for the rest of
+	// the session. Each entry holds a br_actor* whose model is the quad.
 	struct quad_pool
 	{
 		uint32_t address;
@@ -89,11 +89,17 @@ namespace comp::game
 		uint32_t count;
 	};
 
-	// InitSpillsAndSkids @ 0x004E9C40 -- tyre tracks, oil spills, smears, car shadows.
-	// Membership here is what "is a decal" means: nothing else in the game lays a quad
-	// flat onto another surface, so this pool is the authority on which geometry needs
-	// lifting clear of what it overlays.
+	// InitSpillsAndSkids @ 0x004E9C40 -- tyre tracks, smears, car shadows. With the oil
+	// spill pool below, membership is what "is a decal" means: nothing else in the game
+	// lays a quad flat onto another surface, so these two pools are the authority on which
+	// geometry needs lifting clear of what it overlays.
 	constexpr quad_pool GROUND_DECAL_POOL{ 0x006A27F0u, 0x1Cu, 100u };
+
+	// InitOilSpills @ 0x004A6A10 -- the pools of oil a wrecked car leaks (OIL.PIX). Each of
+	// the 32 slots owns its quad and its material, and hangs under the backdrop actor
+	// [0x0074D64C], which BRender draws with a screen-space depth bias to keep the pool
+	// above the road it lies flush with.
+	constexpr quad_pool OIL_SPILL_POOL{ 0x00690C90u, 0x54u, 32u };
 
 	// InitSpriteParticlePool @ 0x004EA880 -- the camera-facing sprite billboards: explosion
 	// fire, powerup sparkle, blood clouds, impact "BANG!" marks. One shared pool for every
