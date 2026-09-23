@@ -2995,23 +2995,35 @@ At the true scale the limits are 0.0029 units and 0.00105 unit^2. That switches 
 off on every track face and keeps a sub-centimetre offset on car panels, which is the
 low-poly curved case the feature exists for.
 
-### 35.3 What changed
+### 35.3 What changed: rtx.sceneScale = 0.001449
 
-`rtx.conf` (installed and `release/`) now sets the two limits to their true-scale values,
-leaving `sceneScale` alone:
+`rtx.conf` (installed and `release/`) now sets `rtx.sceneScale = 0.001449`: 1 cm per 6.9 m
+unit, so `getMeterToWorldUnitScale()` = 0.145 units per metre. The shadow-terminator
+defaults then mean what they say: 0.0029 units and 0.00105 unit^2. The same fix also
+corrects every other metre-based setting: NRD's hit-distance parameters, the NEE-cache
+range, the neural radiance cache bounds and the fog-remap distances.
 
-```
-rtx.shadowTerminator.maxLength = 0.000029      # 0.02 m / 6.9 m per unit / 100
-rtx.shadowTerminator.maxArea = 0.000000105     # 0.05 m^2 / 47.6 m^2 per unit^2 / 100^2
-```
+Two rtx.conf values were tuned under the old scale and were rescaled to keep their look:
 
-Fixing `rtx.sceneScale` itself (about 0.00145) would also correct the other metre-based
-settings: NRD's hit-distance parameters, the volumetric froxel range
-(`froxelMaxDistanceMeters` 20 m currently spans 2000 units, the whole map), the NEE-cache
-range and light-conversion radii. But it also changes geometry hashing: positions are
-rounded to `0.01 m * getMeterToWorldUnitScale()`, which is **one whole game unit** at scale
-1. Every mesh hash would change, and the mod's `mesh_EC5C7EFFFACAF8E7` replacement would
-need re-capturing. Left for a deliberate decision.
+| option | was | now | why |
+|---|---|---|---|
+| `rtx.volumetrics.transmittanceMeasurementDistanceMeters` | 15 | 10350 | 15 m at scale 1 was 1500 units, nearly clear air across a track; 1500 units x 6.9 m keeps that. At 15 true metres the track would drown in haze. |
+| `rtx.freeCameraSpeed` | 7.4 | 5100 | the speed is multiplied by `sceneScale` (rtx_camera.cpp:443) |
+
+What changes and was left at defaults:
+
+- `rtx.volumetrics.froxelMaxDistanceMeters` (20 m) now reaches about 2.9 units, where it
+  used to reach 2000 units (the whole map). The volumetric grid, and so the particle
+  lighting cache (section 34.5), now covers 20 real metres around the camera, at far finer
+  resolution.
+- **Geometry hashes change.** `hashRegionLegacy` rounds positions to
+  `0.01 m * getMeterToWorldUnitScale()` before hashing (rtx_hashing.cpp:180). At scale 1 that
+  was a whole game unit; now it is 0.00145 units. Every mesh hash moves, so the mod's
+  `mesh_EC5C7EFFFACAF8E7` (a car glass pane whose normals were replaced with its plane
+  normal) no longer applies and has to be re-captured and re-keyed. Texture hashes, and so
+  every texture tag and material replacement, are unaffected. Recomputing the new hash
+  offline was not attempted: it depends on the exact vertex-buffer region, stride and index
+  data of the draw.
 
 ### 35.4 Noted, not changed
 
