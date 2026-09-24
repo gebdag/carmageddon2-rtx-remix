@@ -3174,4 +3174,4 @@ now calls `SetProcessDPIAware()` first thing in `DllMain`. It is loaded before t
 creates `Carma2MainWndClass` (main.cpp waits for that window), so that has the same effect
 as the override, whatever the EXE is called.
 
-Not verified in game yet.
+Verified in game on 2026-09-24: the game runs at 3840x2160.
