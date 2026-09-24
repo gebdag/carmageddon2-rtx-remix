@@ -3406,4 +3406,4 @@ The fix applies to everything the proxy builds: baked static chunks, dynamic act
 cars, including cars rebuilt after damage. Simulated on the capture, corner deviation
 p50/p90/p99 becomes 2.9/13.8/23.7 at 45 degrees (2.0/9.2/15.6 at 30, 3.3/18.2/30.8 at 60).
 
-Not verified in game yet.
+Reported working in game.
