@@ -3175,3 +3175,65 @@ creates `Carma2MainWndClass` (main.cpp waits for that window), so that has the s
 as the override, whatever the EXE is called.
 
 Verified in game on 2026-09-24: the game runs at 3840x2160.
+
+---
+
+## 39. Opened car doors z-fight: the game makes them two-sided (2026-09-24)
+
+Reported: the Thunderbucket's doors, once they fly open, show the outer paint and the
+interior texture clashing, and the original game does it too. Research only; nothing is
+changed yet.
+
+### 39.1 How a flap opens (static, CARMA2_HW0.EXE)
+
+- WAM crush entries are parsed by 0x0042A550 into 0x40-byte records hung off car+0x578.
+  Keyword tables: crush type `boring`/`flap`/`detach` at 0x0058F848. A `flap` gets a 0x2C
+  record at +0x30: hinge vertex indices at +0x0A/+0x0E/+0x10, Kev-o-flap byte at +0x20,
+  current angle at +0x04, limits at +0x06/+0x08 (0x3FFC, about 90 degrees), and
+  "is a door" (+0x28, name contains "door"/"dor").
+- The swing is a **rotation of the door actor**. 0x004321D0, reached from the crush entry
+  0x00431E20 when Kev-o-flap is 0, rebuilds actor+0x2C as translate(-hinge0), rotate
+  about hinge0->hinge1, translate(the parent body's matching vertex). The same routine
+  also bends the door's vertices slightly along the door plane's normal.
+- Deformed models get `model->custom = 0x00431590` (0x00432E53), which calls
+  `BrModelUpdate(model, 1)` at render time. That path rebuilds the prepared face planes
+  (`BuildOnlineFacePlanes` 0x0051F6A0), so **culling stays correct**. Vertex normals are
+  recomputed before the planes, so they lag one update behind (lighting only).
+
+### 39.2 The cause: TWO_SIDED is set on the door's materials
+
+The first time a normal flap opens, 0x004381B0 walks the door model's prepared groups and
+ORs **`BR_MATF_TWO_SIDED` (0x1000)** into each group's material, then
+`BrMaterialUpdate(mat, 2)` (0x0043829D). The Kev-o-flap hinge-joint path (0x004372DB),
+detaching (0x004335B5) and splitting a car (0x0042E2E0, every LOD) do the same. It is only
+cleared (0x0042DEB0, 0x0042D9B0) for materials whose name starts with `S`. The flag is set
+on the shared material object, so other parts using the same material become two-sided
+too. The Thunderbucket's `tbseats` and `tbrearwing` are shared with the body, hardtop,
+front clip and engine.
+
+Why that shows as z-fighting: in capture `capture_2026-09-24_13-28-05.usd` the open right
+door's outer skin (`TBRDOOR`) and inner panel (`TBSEATS`) lie in the same plane with
+**zero gap, facing opposite ways**. The door is a thin closed wedge (16 faces) that the
+crush flattened. With back-face culling, coincident opposite faces are harmless: the skin
+shows from outside and the panel from inside. With culling off, both are candidates from
+both sides, in BRender's Z-buffer and in Remix's ray tracing alike. In the capture exactly
+the flagged parts are `doubleSided` (`TBRDOOR`, `TBSEATS`, `TBREARWING`, `TBGRADS`). The
+closed left door's `TBLDOOR` is not.
+
+The texture hashes computed offline match the capture: TBLDOOR 30F014CFBF97458D, TBRDOOR
+E7EF14948891D712, TBSEATS 189B674CF23020F4, TBREARWING 5B6191E7C062311E, TBGRADS2
+0CED9367C58AF9D7 (the mod's metallic material).
+
+### 39.3 Why the flag cannot simply be dropped
+
+Of the 118 flapping parts across all cars (every car TWT's WAM `flap` actors, their models
+welded by position), **97 are open meshes**: single-sheet doors, hoods and boot lids with
+3 to 38 boundary edges, which would be see-through from inside once swung open without it.
+21 are closed: the Thunderbucket's doors, Fair, Newhawk, the Ford pickup's tailgate, the
+Mini's boot, Wideboy's and Zee's bonnets. Patching out 0x0043829D would fix the closed ones
+and break the open ones.
+
+A closed mesh never needs two-sided drawing: each face's back is hidden behind another face
+of the same mesh. So the proxy can decide per model: honour TWO_SIDED only when the model
+has open edges. That fixes the doors of the 21 closed parts, and the spill-over onto the
+Thunderbucket body if the body is closed, and leaves the 97 open parts as the game draws them.

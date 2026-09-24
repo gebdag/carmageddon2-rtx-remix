@@ -978,6 +978,9 @@ $ 0x0075d778 void* g_sky_pixelmap         /* live sky (NOT a shade table); NULL 
 $ 0x0079ec2e uint16 g_sky_repeat_angle    /* br_angle 65536 / repetitions */
 $ 0x0079ec2c uint16 g_sky_extent_angle    /* br_angle vertical extent of the texture */
 $ 0x0079ec30 uint16 g_sky_drop_angle      /* br_angle of the texture's bottom edge below the horizon */
+@ 0x0042a550 void ParseWamCrushEntry(void *file /*ecx*/, void *record /*edx*/); /* 0x40 record; +0x30 flap (0x2C), +0x34 detach */
+@ 0x004321d0 void SwingFlap(...);                            /* door actor matrix = T(-hinge0) R(hinge axis, angle) T(body vertex) */
+@ 0x004381b0 void ProcessFlapQueue(void);                    /* first opening ORs BR_MATF_TWO_SIDED into the door's materials (0x0043829D) */
 @ 0x004fb910 void InitSmokeColours(void);                   /* fills $0x006b7840: [0] runtime 0x006aa5b4.., then 0x404040, 0x808080, 0xc8c8c8 x2, 0xfedf43 */
 $ 0x006b7840 uint32_t g_smoke_colours[16]                   /* 0x00RRGGBB per smoke type, drawn prelit */
 
