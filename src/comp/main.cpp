@@ -79,6 +79,13 @@ BOOL APIENTRY DllMain(HMODULE hmodule, const DWORD ul_reason_for_call, LPVOID)
 {
 	if (ul_reason_for_call == DLL_PROCESS_ATTACH)
 	{
+		// Before the game creates its window. A process Windows considers DPI-unaware has
+		// its window and back buffer scaled by the display's scale factor, so on a 250%
+		// display nGlide's 3840x2160 becomes a 1536x864 swap chain -- and Remix renders at
+		// that. The compatibility override users set for this is keyed on the EXE's path,
+		// which the Remix launcher changes when it renames CARMA2_HW.EXE.
+		SetProcessDPIAware();
+
 		shared::common::console();
 		shared::globals::setup_dll_module(hmodule);
 		shared::globals::setup_exe_module();
