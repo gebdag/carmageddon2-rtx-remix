@@ -15,6 +15,9 @@ copy /y "%~dp0build\bin\release\d3d9.dll"     "%OUT%\" >nul || exit /b 1
 copy /y "%~dp0package\remix-comp-proxy.ini"   "%OUT%\" >nul || exit /b 1
 rem The Remix settings and texture tags this game needs.
 copy /y "%~dp0package\rtx.conf"               "%OUT%\" >nul || exit /b 1
+rem The Remix mod: emissive maps for the fire and flame frames and the material overrides
+rem for water, glass and chrome, as one replacement layer (mod.usd) with its textures.
+xcopy "%~dp0package\rtx-remix" "%OUT%\rtx-remix\" /e /i /q /y >nul || exit /b 1
 rem The bridge keeps the Remix API switched off unless .trex\bridge.conf turns it on, and
 rem no Remix release ships that file - without it the headlights have no API to call.
 mkdir "%OUT%\.trex" || exit /b 1

@@ -62,7 +62,8 @@ src/comp/modules/headlights.*       car headlights through the Remix API, their 
 src/comp/game/                      Carmageddon 2 addresses, structures and the ESC crash patch
 src/comp/, src/shared/              remix-comp-proxy framework
 deps/                               vendored dependencies
-package/                            release files: proxy settings, rtx.conf, .trex/bridge.conf, player README
+package/                            release files: proxy settings, rtx.conf, .trex/bridge.conf, player README,
+                                    and the Remix mod (rtx-remix/mods/carma2rtx: emissive maps, material overrides)
 findings.md                         research notes
 kb.h                                knowledge base for the reverse engineering tools
 save-run.ps1                        saves a finished run's logs and settings into runs\<name>
