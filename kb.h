@@ -1086,3 +1086,26 @@ $ 0x00691744 int    g_num_cops
 $ 0x0074c7c0 tCar_spec* g_active_car_list[]
 $ 0x0074c9ec int    g_num_active_cars
 $ 0x0068b918 int    g_net_mode             /* 0 = single player */
+
+/* --- Sun / global directional light (findings.md section 43) --- */
+@ 0x0048f2e0 void __fastcall LoadInLight(char *path /*ecx, unused*/);  /* REG\LIGHTS callback: BrActorAllocate(2), DIRECT, colour from g_light_rgb, RotateX(0xD558) PostRotateY(0x1554); appends to g_lights and enables */
+@ 0x00486dc0 void __fastcall ParseGlobalLighting(void *file /*ecx*/);  /* race TXT GLOBAL LIGHTING DATA: RGB ints then 3 ambient,diffuse float pairs */
+@ 0x00486e10 void LoadInRegistees(void);                /* REG\PALETTES, SHADETAB, PIXELMAP, MATERIAL, MODELS, ACTORS, LIGHTS via DRForEveryFile */
+@ 0x0048f360 void __fastcall DRForEveryFile(char *dir /*ecx*/, char *sub /*edx*/, void *cb); /* cb is __fastcall(char *path); ret 4 */
+@ 0x0047dd20 void InitialiseWorld(void);                /* one-time: allocates g_world_root_actor, LoadInRegistees (0x0047DFA3), AddLightsToWorld (0x0047E136) */
+@ 0x0047e500 void AddLightsToWorld(void);               /* BrActorAdd(g_world_root_actor, light), frees any children, BrLightEnable */
+@ 0x0047d6a0 void DisableLights(void);                  /* BrLightDisable on every g_lights entry (effects pass, 0x004E94C2) */
+@ 0x0047d6d0 void EnableLights(void);                   /* BrLightEnable on every g_lights entry */
+@ 0x00524e30 void BrLightEnable(br_actor *light);
+@ 0x00524ec0 void BrLightDisable(br_actor *light);
+@ 0x005250e0 void BrSetupLights(br_actor *world, br_matrix34 *world_to_view, int w2v_type); /* args as in BRender 1.3, not verified; from SceneSetupCameraMatrices 0x00521DBF; DIRECT -> BRT_DIRECTION_V3 = column 2 of view_to_light */
+@ 0x005327f0 void BrMatrix34RotateX(br_matrix34 *mat, unsigned short rx);
+@ 0x00533a60 void BrMatrix34PostRotateY(br_matrix34 *mat, unsigned short ry);   /* mat = mat * RotY */
+@ 0x005325d0 void BrMatrix34Copy(br_matrix34 *dest, br_matrix34 *src);
+@ 0x004924a0 void InitialiseDeathRace(void);            /* one-time startup; calls InitialiseWorld at 0x0049252A */
+
+$ 0x0074b3e0 br_actor* g_lights[]               /* light actors; only LoadInLight appends */
+$ 0x0068c720 int    g_num_lights                /* 1 in the shipped data (REG\LIGHTS.TWT holds only SIMPLE.LIT) */
+$ 0x006572cc int    g_light_rgb[3]              /* race TXT main light RGB; default 255,255,255; read only at LoadInLight (startup) */
+$ 0x006572d8 float  g_ambient_diffuse[3][2]     /* race TXT ambient/diffuse pairs, stored in reverse: 0x6572E8 first pair, 0x6572E0 second, 0x6572D8 third */
+$ 0x0079f40c br_actor** g_enabled_lights        /* v1db.enabled_lights; count at 0x0079F400, max at 0x0079F3FC */

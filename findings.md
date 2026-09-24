@@ -3407,3 +3407,82 @@ cars, including cars rebuilt after damage. Simulated on the capture, corner devi
 p50/p90/p99 becomes 2.9/13.8/23.7 at 45 degrees (2.0/9.2/15.6 at 30, 3.3/18.2/30.8 at 60).
 
 Reported working in game.
+
+## 43. Sun direction (2026-09-24)
+
+Static analysis only (Ghidra headless, capstone). Answer: there is exactly one directional
+light, created once at startup with a hard-coded orientation. No track sets a direction, and
+the light does not follow the camera or the car.
+
+### 43.1 Where the light comes from
+
+- `InitialiseDeathRace` 0x004924A0 calls `InitialiseWorld` 0x0047DD20 once. That function
+  allocates `g_world_root_actor`, runs `LoadInRegistees` 0x00486E10 (0x0047DFA3), and later
+  runs `AddLightsToWorld` 0x0047E500 (0x0047E136).
+- `LoadInRegistees` walks `DATA\REG\{PALETTES,SHADETAB,PIXELMAP,MATERIAL,MODELS,ACTORS,LIGHTS}`
+  with `DRForEveryFile` 0x0048F360. For `LIGHTS` the per-file callback is `LoadInLight`
+  0x0048F2E0. `REG\LIGHTS.TWT` holds a single file, `SIMPLE.LIT`, so there is one light.
+- `LoadInLight` ignores the file (its path arrives in ecx and is never read; nothing is loaded).
+  It does this:
+  - `BrActorAllocate(2 /*LIGHT*/, NULL)`
+  - `light->type = 1`: BR_LIGHT_DIRECT, with the BR_LIGHT_VIEW bit clear, so the light is in
+    model/world space.
+  - `colour = g_light_rgb` 0x006572CC..D4 packed as 0xRRGGBB, `attenuation_c = 1.0`.
+  - `BrMatrix34RotateX(&actor->t.mat, 0xD558)` at 0x005327F0. 0xD558 is -60.0 degrees.
+  - `BrMatrix34PostRotateY(&actor->t.mat, 0x1554)` at 0x00533A60. 0x1554 is +30.0 degrees,
+    and the function computes mat = mat * RotY via `BrMatrix34Mul` 0x00532620 and
+    `BrMatrix34Copy` 0x005325D0.
+  - Appends the actor to `g_lights` 0x0074B3E0 (`g_num_lights` 0x0068C720), then calls
+    `EnableLights` 0x0047D6D0, which calls `BrLightEnable` 0x00524E30.
+- `AddLightsToWorld` does `BrActorAdd(g_world_root_actor, light)`, frees any children, and
+  calls `BrLightEnable`. The light is a direct child of the world root. No code was found
+  writing the root's matrix. The check was a scan of every load of 0x0074D44C for an access
+  to +0x2C..+0x5B in the next 5 instructions; it found none.
+- `SIMPLE.LIT` has its own TRANSFORM_MATRIX34 chunk (Z row 0.8735, 0.4134, 0.2569), but the
+  game never reads it.
+
+### 43.2 The direction
+
+The two rotations were run through an FPU simulation of the game's own code:
+RotX = rows (1,0,0) (0,0.5002,-0.8659) (0,0.8659,0.5002), and RotY = rows
+(0.8661,0,-0.4999) (0,1,0) (0.4999,0,0.8661). Their product, the light's world matrix, is:
+
+```
+row0 X = ( 0.8661,  0.0000, -0.4999)
+row1 Y = (-0.4329,  0.5002, -0.7500)
+row2 Z = ( 0.2500,  0.8659,  0.4332)
+```
+
+`BrSetupLights` 0x005250E0 (called from `SceneSetupCameraMatrices`, 0x00521DBF) sends a
+DIRECT light's BRT_DIRECTION_V3 as column 2 of view_to_light. That is the light's +Z axis in
+view space. BRender treats it as the vector toward the light (N.L > 0 is lit), so the light
+shines down its local -Z.
+
+- **Toward the sun (world, Y up): (0.250, 0.866, 0.433)**, 60.0 degrees above the horizon
+  at azimuth atan2(x, z) = 30 degrees.
+- **Direction the light travels: (-0.250, -0.866, -0.433).**
+
+This is the same on every track and in every view.
+
+### 43.3 What the race TXT actually does
+
+`RaceTxtLoad` 0x00504BF0 calls `ParseGlobalLighting` 0x00486DC0 at 0x00505078. It reads the
+RGB into `g_light_rgb` (defaults 255,255,255 in .data) and the three ambient/diffuse pairs
+into 0x006572E8/EC, 0x006572E0/E4 and 0x006572D8/DC (defaults 0.2/0.8). The only other
+reader of `g_light_rgb` is `LoadInLight`, which runs at startup before any race loads. The
+per-track light colour is therefore dead data: the light stays at the .data default of white.
+Every shipped track uses white anyway. The ambient/diffuse pairs feed material ka/kd
+(`LoadCommonMaterials`/`FixCarMaterials` at 0x004F6703, 0x004F68BB and 0x004F6B1C) and the
+effects pass (0x004E91FD). They are not a light.
+
+### 43.4 Camera, car and other lights
+
+- Nothing re-orients the light. The only references to `g_lights` are `LoadInLight`,
+  `EnableLights`, `DisableLights` 0x0047D6A0 and `AddLightsToWorld`. The effects pass wraps
+  its `BrZbSceneBeginFrameSetup` call (0x004E94C2..0x004E94EA) in Disable/EnableLights.
+- The only other two `BrActorAllocate(2)` sites are outside the race scene:
+  - 0x004664DC is in the off-race model-preview renderer 0x00466460. It has its own root and
+    camera, and frees them afterwards.
+  - 0x0046E888 is in the menu-screen setup 0x0046E830. It stores the light in 0x00763844
+    and never adds or enables it.
+- Car headlights are not BRender lights (section 33).
