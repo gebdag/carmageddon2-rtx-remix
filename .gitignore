@@ -28,3 +28,6 @@ __pycache__/
 .claude/
 *.user
 *.suo
+
+# Assembled by package.bat
+release/

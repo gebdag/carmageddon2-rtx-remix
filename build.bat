@@ -210,12 +210,12 @@ if errorlevel 1 goto :fail
 if "!CUSTOM_COMP!"=="1" (
     if exist "!GAME_DIR!\remix-comp-proxy.ini" (
         copy /y "!GAME_DIR!\remix-comp-proxy.ini" "%GAME_OUT%\remix-comp-proxy.ini" >nul
-    ) else if exist "%ROOT%assets\remix-comp-proxy.ini" (
-        copy /y "%ROOT%assets\remix-comp-proxy.ini" "%GAME_OUT%\remix-comp-proxy.ini" >nul
+    ) else if exist "%ROOT%package\remix-comp-proxy.ini" (
+        copy /y "%ROOT%package\remix-comp-proxy.ini" "%GAME_OUT%\remix-comp-proxy.ini" >nul
     )
 ) else (
-    if exist "%ROOT%assets\remix-comp-proxy.ini" (
-        copy /y "%ROOT%assets\remix-comp-proxy.ini" "%GAME_OUT%\remix-comp-proxy.ini" >nul
+    if exist "%ROOT%package\remix-comp-proxy.ini" (
+        copy /y "%ROOT%package\remix-comp-proxy.ini" "%GAME_OUT%\remix-comp-proxy.ini" >nul
     )
 )
 

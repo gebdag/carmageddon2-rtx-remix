@@ -37,9 +37,10 @@ All options are documented in `remix-comp-proxy.ini`.
 ## Installing
 
 1. Install the RTX Remix runtime into the game folder, then rename its `d3d9.dll` to `d3d9_remix.dll`.
-2. Copy `d3d9.dll` and `remix-comp-proxy.ini` from a release into the game folder.
-3. Add `exposeRemixApi = True` to `.trex\bridge.conf`. The headlights are created through the Remix API.
-4. Start `CARMA2_HW.EXE`. If the game crashes on launch or the soundtrack does not play, rename it to `CARMA2_HW0.EXE` and start that; the proxy works with either name.
+2. Copy everything from a release into the game folder: `d3d9.dll`, `remix-comp-proxy.ini`, `rtx.conf` and
+   `.trex\bridge.conf`, which sets `exposeRemixApi = True` (the headlights are created through the Remix API).
+   `carma2-rtx_README.txt` in the release has the details.
+3. Start `CARMA2_HW.EXE`. If the game crashes on launch or the soundtrack does not play, rename it to `CARMA2_HW0.EXE` and start that; the proxy works with either name.
 
 ## Building
 
@@ -47,9 +48,11 @@ Needs Visual Studio 2022 with the C++ x86 toolset.
 
 ```bat
 build.bat
+package.bat
 ```
 
-Output: `build\bin\release\d3d9.dll` and `remix-comp-proxy.ini`.
+`build.bat` builds `build\bin\release\d3d9.dll`. `package.bat` builds and assembles `release\`, exactly what
+a player copies into the game folder, from the DLL and the files in `package\`.
 
 ## Repository layout
 
@@ -59,7 +62,7 @@ src/comp/modules/headlights.*       car headlights through the Remix API, their 
 src/comp/game/                      Carmageddon 2 addresses, structures and the ESC crash patch
 src/comp/, src/shared/              remix-comp-proxy framework
 deps/                               vendored dependencies
-assets/remix-comp-proxy.ini         default configuration
+package/                            release files: proxy settings, rtx.conf, .trex/bridge.conf, player README
 findings.md                         research notes
 kb.h                                knowledge base for the reverse engineering tools
 save-run.ps1                        saves a finished run's logs and settings into runs\<name>
