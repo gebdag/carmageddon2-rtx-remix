@@ -2932,7 +2932,7 @@ Whether a glowing particle lights anything else is a global Remix setting. Emiss
 are never NEE lights. They reach other surfaces, and reflections, only through
 `rtx.enableUnorderedEmissiveParticlesInIndirectRays`, which the user's `user.conf` turns on.
 
-Not verified in game yet.
+Reported working in game.
 
 ---
 
@@ -3033,7 +3033,7 @@ of the 119,172 actor transforms the game ships (every `.ACT`, loose and in `.TWT
 is non-uniform. 20 carry a uniform scale other than 1, which only changes the normals'
 length.
 
-Not verified in game yet.
+Reported working in game.
 
 ---
 
@@ -3079,7 +3079,7 @@ and never baked into a static chunk (`vanishes_outright`).
 
 `Oil_Slick` (0x0065EC78, used at 0x004DE048) is a powerup's name, unrelated.
 
-Not verified in game yet.
+Reported working in game.
 
 ---
 
@@ -3157,7 +3157,7 @@ The mapping was checked offline by running the same bake in Python over `skyblue
 `cityskape` and `twinpink`: skylines on the horizon, the right repeat count, and flat
 poles.
 
-Not verified in game yet.
+Reported working in game.
 
 ---
 
@@ -3253,7 +3253,7 @@ edges), `hardtop`, `frontclip` and the rest are open, so the spill-over of TWO_S
 `tbseats`/`tbrearwing` leaves those parts two-sided as before. Their one coincident face
 is the door jamb, hidden while the door is shut.
 
-Not verified in game yet.
+Reported working in game.
 
 ---
 
@@ -3374,5 +3374,36 @@ material triggers). Per track:
 - Timber: petrol pumps (9).
 - Silo: 12 cylinder models (2 each) and gas pipes (13); the mission adds gasometers (3),
   hatches (4) and the missile centre (2).
+
+Reported working in game.
+
+## 42. Ground shades wavy: the game's vertex normals average across hard edges (2026-09-24)
+
+### 42.1 Symptom and cause
+
+Flat ground, most visibly a tunnel road under the headlights, shows wavy light and shadow in
+Remix. In capture_2026-09-24_15-27-23 the road faces (texture 0013076B066A42A7) have face
+normals with y about 0.98, but their vertex normals lean 40 to 63 degrees off. The road
+shares its edge vertices with the tunnel walls, and BRender's prepared normals average every
+face at a vertex, the 90-degree wall faces included. A rasterizer lighting per vertex hides
+this. Remix shades per pixel, so the normal swinging across a wide road face reads as waves.
+
+Across the whole capture, the angle between each face corner's normal and its face plane
+was p50/p90/p99 = 15.3/55.7/87 degrees. The angles between adjacent faces cluster below
+5 degrees, with a second cluster at 85 to 95 degrees (3021 edges) and more above 95 (1978).
+Those are real hard edges, and they were being smoothed.
+
+### 42.2 The fix
+
+`extract_geometry` now computes its own shading normals (`crease_normals`). Vertices are
+welded by position across all of a model's groups, because the faces on either side of a
+crease often carry different materials. Each face corner then averages the planes of the
+faces at that vertex that lie within `[Effects] CreaseAngle` (default 45) of its own face.
+A source vertex is emitted once per distinct normal, so it splits only along a crease.
+Degenerate faces keep the game's normal. CreaseAngle=0 keeps the game's normals.
+
+The fix applies to everything the proxy builds: baked static chunks, dynamic actors, and
+cars, including cars rebuilt after damage. Simulated on the capture, corner deviation
+p50/p90/p99 becomes 2.9/13.8/23.7 at 45 degrees (2.0/9.2/15.6 at 30, 3.3/18.2/30.8 at 60).
 
 Not verified in game yet.

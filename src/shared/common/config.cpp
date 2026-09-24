@@ -120,6 +120,7 @@ namespace shared::common
 		effects.fog_volumetrics = get_bool("Effects", "FogVolumetrics", true);
 		effects.fog_tint = get_float("Effects", "FogTint", 0.08f);
 		effects.decal_offset = get_float("Effects", "DecalOffset", 0.02f);
+		effects.crease_angle = get_float("Effects", "CreaseAngle", 45.0f);
 		effects.spark_width = get_float("Effects", "SparkWidth", 0.004f);
 		effects.emissive_sprites = get_bool("Effects", "EmissiveSprites", true);
 		effects.additive_car_flames = get_bool("Effects", "AdditiveCarFlames", true);

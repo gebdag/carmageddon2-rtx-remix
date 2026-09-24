@@ -190,6 +190,13 @@ namespace shared::common
 			// have to be separated geometrically instead. World units. 0 disables it.
 			float decal_offset = 0.02f;
 
+			// Largest angle, in degrees, between two faces meeting at a vertex that still
+			// share a smooth shading normal. BRender averages every face at a vertex, so a
+			// flat road that shares its edge vertices with a wall leans towards the wall
+			// and shades in waves under a path tracer. Beyond this angle the edge is kept
+			// sharp. Applied when a model's geometry is built. 0 keeps the game's normals.
+			float crease_angle = 45.0f;
+
 			// Width of the camera-facing quad a BRender line segment expands into, as a
 			// fraction of the distance from the camera to that segment. BRender drew these
 			// as one-pixel screen-space lines, so scaling with distance is what keeps their

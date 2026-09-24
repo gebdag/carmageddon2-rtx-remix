@@ -278,6 +278,115 @@ namespace comp
 				[](const auto& edge) { return edge.second == 2; });
 		}
 
+		/*
+		 * Shading normals that keep a model's creases sharp: one normal per face corner.
+		 *
+		 * BRender prepares a vertex normal by averaging every face that meets at the vertex,
+		 * across hard edges as well. A rasterizer lighting per vertex hides that; a path
+		 * tracer shading per pixel does not -- a flat road that shares its edge vertices
+		 * with the tunnel walls beside it came out with normals leaning 45 to 60 degrees
+		 * towards the walls, and the light across its wide faces swung with them. Here each
+		 * corner averages only the faces at that vertex whose plane lies within
+		 * `crease_degrees` of its own face, which keeps a flat surface flat and a faceted
+		 * curve smooth. Vertices are welded by position across all of the model's groups,
+		 * since the faces on either side of a crease often carry different materials.
+		 *
+		 * A face's plane is taken in the order its indices are emitted, which the winding
+		 * check confirms is outward. Degenerate faces, and every face when `crease_degrees`
+		 * is 0, keep BRender's own normals.
+		 */
+		std::vector<std::vector<std::array<float, 3>>> crease_normals(
+			const std::vector<const game::v1_group*>& groups, const float crease_degrees)
+		{
+			struct position_hash
+			{
+				size_t operator()(const std::array<int32_t, 3>& p) const
+				{
+					return (static_cast<size_t>(p[0]) * 73856093u) ^ (static_cast<size_t>(p[1]) * 19349663u)
+						^ (static_cast<size_t>(p[2]) * 83492791u);
+				}
+			};
+
+			std::vector<std::vector<std::array<float, 3>>> corners(groups.size());
+			std::vector<std::vector<std::array<float, 3>>> planes(groups.size());
+			std::vector<std::vector<uint32_t>> welded_corner(groups.size());
+			std::unordered_map<std::array<int32_t, 3>, uint32_t, position_hash> welded;
+			std::vector<std::vector<std::pair<uint32_t, uint32_t>>> faces_at;  // welded id -> (group, face)
+
+			const bool enabled = crease_degrees > 0.0f;
+			const float min_cos = cosf(std::clamp(crease_degrees, 0.0f, 180.0f) * 0.01745329252f);
+
+			for (size_t g = 0; g < groups.size(); ++g)
+			{
+				const game::v1_group& group = *groups[g];
+				corners[g].resize(static_cast<size_t>(group.nfaces) * 3u);
+				planes[g].resize(group.nfaces);
+				welded_corner[g].resize(static_cast<size_t>(group.nfaces) * 3u);
+
+				for (uint16_t f = 0; f < group.nfaces; ++f)
+				{
+					const uint16_t* v = group.faces[f].v;
+					const auto& a = group.vertices[v[0]];
+					const auto& b = group.vertices[v[1]];
+					const auto& c = group.vertices[v[2]];
+					const float ab[3] = { b.px - a.px, b.py - a.py, b.pz - a.pz };
+					const float ac[3] = { c.px - a.px, c.py - a.py, c.pz - a.pz };
+					float plane[3];
+					cross(ab, ac, plane);
+					const bool has_plane = enabled && normalize(plane);
+					planes[g][f] = has_plane ? std::array<float, 3>{ plane[0], plane[1], plane[2] }
+					                         : std::array<float, 3>{ 0.0f, 0.0f, 0.0f };
+
+					for (int k = 0; k < 3; ++k)
+					{
+						const auto& src = group.vertices[v[k]];
+						corners[g][f * 3u + k] = { src.nx, src.ny, src.nz };
+						if (!has_plane) {
+							continue;
+						}
+
+						const auto q = [](const float x) { return static_cast<int32_t>(std::lround(x * 16384.0f)); };
+						const auto [it, inserted] = welded.try_emplace({ q(src.px), q(src.py), q(src.pz) },
+							static_cast<uint32_t>(faces_at.size()));
+						if (inserted) {
+							faces_at.emplace_back();
+						}
+						faces_at[it->second].emplace_back(static_cast<uint32_t>(g), f);
+						welded_corner[g][f * 3u + k] = it->second;
+					}
+				}
+			}
+
+			for (size_t g = 0; g < groups.size(); ++g)
+			{
+				for (uint32_t f = 0; f < groups[g]->nfaces; ++f)
+				{
+					const auto& own = planes[g][f];
+					if (own[0] == 0.0f && own[1] == 0.0f && own[2] == 0.0f) {
+						continue;
+					}
+
+					for (int k = 0; k < 3; ++k)
+					{
+						float sum[3] = { 0.0f, 0.0f, 0.0f };
+						for (const auto& [og, of] : faces_at[welded_corner[g][f * 3u + k]])
+						{
+							const auto& other = planes[og][of];
+							if (own[0] * other[0] + own[1] * other[1] + own[2] * other[2] >= min_cos)
+							{
+								sum[0] += other[0]; sum[1] += other[1]; sum[2] += other[2];
+							}
+						}
+						if (normalize(sum)) {
+							corners[g][f * 3u + k] = { sum[0], sum[1], sum[2] };
+						}
+					}
+				}
+			}
+
+			return corners;
+		}
+
 		// Two-sided as BRender draws it, less the closed meshes that never need it.
 		bool draws_two_sided(const game::br_material* material, const bool closed_mesh)
 		{
@@ -1469,7 +1578,7 @@ namespace comp
 		{
 			const game::v1_group* group;
 			game::br_material* material;
-			uint32_t vertex_base;
+			std::vector<uint32_t> corners;   // emitted vertex of each face corner
 			bool needs_alpha;
 			bool prelit;
 			bool inherited;   // took the render call's material for want of one of its own
@@ -1479,7 +1588,6 @@ namespace comp
 		groups.reserve(prepared->ngroups);
 
 		const uint32_t vertex_base = static_cast<uint32_t>(vertices.size());
-		uint32_t total_vertices = 0;
 
 		for (uint16_t g = 0; g < prepared->ngroups; ++g)
 		{
@@ -1526,16 +1634,20 @@ namespace comp
 				}
 			}
 
-			groups.push_back({ &group, material, vertex_base + total_vertices,
+			groups.push_back({ &group, material, {},
 			                   needs_alpha, prelit, group.material_token == 0, opacity });
-			total_vertices += group.nvertices;
 		}
 
-		if (groups.empty() || total_vertices == 0) {
+		if (groups.empty()) {
 			return false;
 		}
 
-		vertices.resize(vertex_base + total_vertices);
+		std::vector<const game::v1_group*> sources;
+		sources.reserve(groups.size());
+		for (const auto& ref : groups) {
+			sources.push_back(ref.group);
+		}
+		const auto normals = crease_normals(sources, shared::common::config::get().effects.crease_angle);
 
 		// Tyre tracks, shadows and impact smears are quads laid flat on the surface they mark.
 		// BRender kept them out of it by depth-sorting them into a bucket drawn after the
@@ -1547,26 +1659,46 @@ namespace comp
 			? shared::common::config::get().effects.decal_offset
 			: 0.0f;
 
-		for (const auto& ref : groups)
+		for (size_t g = 0; g < groups.size(); ++g)
 		{
+			group_ref& ref = groups[g];
+
 			// BrModelUpdate fills this from br_vertex::red/green/blue whenever it is asked
 			// for BR_MODU_VERTEX_COLOURS (0x0051FB66), which is every time the smoke system
 			// recolours a particle. Null means the model was prepared without colours.
 			const uint32_t* colours = ref.prelit && readable(ref.group->vertex_colours,
 				sizeof(uint32_t) * ref.group->nvertices) ? ref.group->vertex_colours : nullptr;
 
-			for (uint16_t v = 0; v < ref.group->nvertices; ++v)
+			// A source vertex is emitted once per distinct shading normal its corners carry,
+			// so it splits only along a crease.
+			std::unordered_map<uint64_t, uint32_t> emitted;
+			ref.corners.resize(normals[g].size());
+
+			for (size_t corner = 0; corner < normals[g].size(); ++corner)
 			{
+				const uint16_t v = ref.group->faces[corner / 3u].v[corner % 3u];
+				const auto& n = normals[g][corner];
+				const auto q = [](const float x) {
+					return static_cast<uint64_t>(static_cast<uint16_t>(std::lround(x * 32767.0f)));
+				};
+				const uint64_t key = v | (q(n[0]) << 16) | (q(n[1]) << 32) | (q(n[2]) << 48);
+
+				const auto [it, inserted] = emitted.try_emplace(key, static_cast<uint32_t>(vertices.size()));
+				ref.corners[corner] = it->second;
+				if (!inserted) {
+					continue;
+				}
+
 				const game::v1_online_vertex& src = ref.group->vertices[v];
-				ffp_vertex& dst = vertices[ref.vertex_base + v];
+				ffp_vertex& dst = vertices.emplace_back();
 				// BrModelUpdate subtracts the pivot when it builds the prepared block;
 				// adding it back restores true model space.
-				dst.x = src.px + model->pivot.v[0] + src.nx * lift;
-				dst.y = src.py + model->pivot.v[1] + src.ny * lift;
-				dst.z = src.pz + model->pivot.v[2] + src.nz * lift;
-				dst.nx = src.nx;
-				dst.ny = src.ny;
-				dst.nz = src.nz;
+				dst.x = src.px + model->pivot.v[0] + n[0] * lift;
+				dst.y = src.py + model->pivot.v[1] + n[1] * lift;
+				dst.z = src.pz + model->pivot.v[2] + n[2] * lift;
+				dst.nx = n[0];
+				dst.ny = n[1];
+				dst.nz = n[2];
 				dst.u = src.u;
 				dst.v = src.v;
 				dst.diffuse = colours ? to_d3d_colour(colours[v]) : 0xFFFFFFFFu;
@@ -1578,19 +1710,20 @@ namespace comp
 		}
 
 		// Emit indices grouped by material so each material forms one contiguous draw.
-		std::vector<group_ref> ordered;
+		std::vector<const group_ref*> ordered;
 		for (const auto& ref : groups)
 		{
 			const auto seen = std::find_if(ordered.begin(), ordered.end(),
-				[&](const group_ref& o) { return o.material == ref.material; });
+				[&](const group_ref* o) { return o->material == ref.material; });
 
 			if (seen == ordered.end()) {
-				ordered.push_back(ref);
+				ordered.push_back(&ref);
 			}
 		}
 
-		for (const group_ref& entry : ordered)
+		for (const group_ref* entry_ptr : ordered)
 		{
+			const group_ref& entry = *entry_ptr;
 			game::br_material* material = entry.material;
 			IDirect3DTexture9* texture = texture_for(dev, material);
 
@@ -1621,13 +1754,7 @@ namespace comp
 
 				part.inherits_material |= ref.inherited;
 
-				for (uint16_t f = 0; f < ref.group->nfaces; ++f)
-				{
-					const game::v1_online_face& face = ref.group->faces[f];
-					indices.push_back(ref.vertex_base + face.v[0]);
-					indices.push_back(ref.vertex_base + face.v[1]);
-					indices.push_back(ref.vertex_base + face.v[2]);
-				}
+				indices.insert(indices.end(), ref.corners.begin(), ref.corners.end());
 			}
 
 			part.triangle_count = (static_cast<uint32_t>(indices.size()) - part.index_start) / 3u;
