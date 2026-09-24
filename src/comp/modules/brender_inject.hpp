@@ -276,6 +276,9 @@ namespace comp
 			// One of the two models every smoke puff is drawn with.
 			bool smoke;
 
+			// The quad every car flame is drawn with.
+			bool flame;
+
 			// Every edge borders exactly two faces, so it never needs drawing two-sided.
 			bool closed;
 

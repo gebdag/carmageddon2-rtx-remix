@@ -527,6 +527,12 @@ namespace comp
 			return false;
 		}
 
+		bool is_flame_model(const game::br_model* model)
+		{
+			const auto slot = reinterpret_cast<game::br_model* const*>(game::rebase(game::ADDR_g_flame_model));
+			return model && readable(slot, sizeof(*slot)) && *slot == model;
+		}
+
 		bool is_smoke_model(const game::br_model* model)
 		{
 			for (const uint32_t global : game::SMOKE_MODELS)
@@ -561,7 +567,7 @@ namespace comp
 		 * pickups disappear the instant they are taken -- a pickup is any actor whose
 		 * identifier carries 0xA3 ('£') as its second character, the test
 		 * SpecialActorEnumCallback (0x0040D1F0) uses -- and the pooled decal and sprite
-		 * quads are recycled at a new placement rather than moved to it.
+		 * quads and the car flames are recycled at a new placement rather than moved to it.
 		 */
 		bool vanishes_outright(const game::br_actor* actor, const game::br_model* model)
 		{
@@ -569,7 +575,8 @@ namespace comp
 			const bool pickup = readable(name, 2)
 				&& name[0] && static_cast<uint8_t>(name[1]) == 0xA3;
 
-			return pickup || is_decal_model(model) || in_quad_pool(game::SPRITE_PARTICLE_POOL, model);
+			return pickup || is_decal_model(model) || in_quad_pool(game::SPRITE_PARTICLE_POOL, model)
+				|| is_flame_model(model);
 		}
 
 		// bounds is min[3] then max[3] in model space. The camera sits at the origin in view
@@ -1072,6 +1079,7 @@ namespace comp
 		// rather than on every draw -- the pools are walked with VirtualQuery behind them.
 		geometry.solid = !is_decal_model(model) && !in_quad_pool(game::SPRITE_PARTICLE_POOL, model);
 		geometry.smoke = is_smoke_model(model);
+		geometry.flame = is_flame_model(model);
 		geometry.closed = model->prepared && mesh_is_closed(*model->prepared);
 
 		// 16-bit indices are enough for any single model this game ships; anything larger is
@@ -1251,7 +1259,11 @@ namespace comp
 				}
 			}
 
-			const blend_plan plan = plan_blending(has_alpha, state.opacity, geometry.solid);
+			// A car flame is either a sprite, blended so the additive path can make it glow, or
+			// the alpha-tested surface the game's quad otherwise counts as, which is what lets
+			// a mod's emissive mask apply. Decided per draw, so the switch takes effect live.
+			const bool solid = geometry.solid && !(geometry.flame && effects.additive_car_flames);
+			const blend_plan plan = plan_blending(has_alpha, state.opacity, solid);
 			state.blended = plan.blended;
 			state.blend_enabled = plan.blend_enabled;
 			state.alpha_tested = plan.alpha_tested;

@@ -114,6 +114,12 @@ namespace comp::game
 	// with: gBlend_model (4-vertex quad) and gBlend_model2 (6 vertices, 4 faces).
 	constexpr uint32_t SMOKE_MODELS[] = { 0x0074CF30u, 0x0074CF94u };
 
+	// InitFlames @ 0x004FC3A0 -- the br_model* global ("Lollipop") every car flame is drawn
+	// with: 10 burning-car slots x 3 child actors, all on this one quad, animated by
+	// rewriting each child material's colour_map through FLM01..FLM20 (UpdateFlameSlot
+	// @ 0x004FBDD0). Not a pool, so it has to be named on its own.
+	constexpr uint32_t ADDR_g_flame_model = 0x006AA380u;
+
 	typedef void(__cdecl* BrZbSceneRender_t)(br_actor* world, br_actor* camera, void* colour, void* depth);
 	typedef void(__cdecl* BrZbSceneRenderEnd_t)();
 	typedef void(__cdecl* SceneSetupCameraMatrices_t)(br_actor* world, br_actor* camera);

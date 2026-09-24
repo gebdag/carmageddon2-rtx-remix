@@ -3254,3 +3254,58 @@ edges), `hardtop`, `frontclip` and the rest are open, so the spill-over of TWO_S
 is the door jamb, hidden while the door is shut.
 
 Not verified in game yet.
+
+---
+
+## 40. Fire and flame emissives (2026-09-24)
+
+**Car flames.** In capture `capture_2026-09-24_13-28-05.usd` every car-flame frame
+(`FLM12` = `846391EFE2F996E0`) reached Remix unblended and alpha-tested. The flame quad
+(`"Lollipop"`, the `br_model*` at `0x006AA380`, InitFlames 0x004FC3A0) is in neither quad
+pool, so SolidTranslucency treated it as solid and it never reached section 34's additive
+path, even though its materials are full-bright (0x800 + preset 4, section 34.5).
+
+`[Effects] AdditiveCarFlames` (default 1; also a checkbox in the F4 Effects tab, saved
+back to the ini) treats the flame quad as a sprite. `model_geometry::flame` is set from
+`ADDR_g_flame_model`, and `resolve_draw_state` passes `solid && !(flame && switch)` to
+`plan_blending`. The flames then go out blended, the full-bright test makes them
+additive, and they glow like the explosion frames. The choice is made per draw, so the switch takes effect at once. The
+flame quad is in `vanishes_outright` regardless, so it is never baked. The splash quad
+(`0x006A8758`) is left solid: splashes are not full-bright, and blending them would make
+them particle-lit (dark, section 34.5).
+
+With the switch off the flames are alpha-tested surfaces, and the mod's emissive masks for
+them (below) apply. With it on they are inert: Remix replaces the emission of any blended
+draw with its emissive-blend override. The same is true of the Emissive Helper's `EX00001`
+mask, since the sprite pool is always additive (section 34.4).
+
+**Other fire in the data.** Pixelmap names matching fire/flame/burn/expl/spark across every
+TWT and loose PIX:
+
+- `FIRE1..3` (Timber) are a stone fireplace wall; `FLAMING_DRUM01/03` (Junkyard) are the
+  barrel's rust.
+- `37FLAME1..3` are hot-rod paint, `BURNTBASE`, `NODDY_BURNT` and `ZEBURN` are scorch
+  textures, and `AFTERBURNER`, `DISMEMBER` and `EXPLOPEDS` are powerup icons.
+- Funfair's own `FLM01..FLM10` (FUNF.TWT, different pixels from the car flames) are the
+  funk-animated `!=hoopflame` track material (funfair1.txt "frames ... Flm01..Flm10",
+  "no fucking lighting"). It is alpha-tested track geometry, so masks are its only route.
+
+**The masks.** They live in `rtxmod/emissives_fire.usda`, sublayered from `mod.usda` next to
+the Emissive Helper's own `emissives.usda`, which the helper rewrites. There is one
+`mat_<hash>` per frame, with masks in `assets/generated/<hash>_emissive.e.dds`
+(A8R8G8B8, full mip chain). Each mask is the frame's own colour x smoothstep of its max
+channel, **cut out only where alpha is 0**: an alpha-tested draw shows every texel with
+alpha > 0 as solid, and these frames are mostly partial alpha.
+
+- Car flames `FLM01..FLM20`: smoothstep 0.05..0.60, x1.0.
+- Hoop flame: smoothstep 0.10..0.80, x0.8.
+
+| family | frames | how it glows |
+|---|---|---|
+| explosion, powerup sparkle | EX00000..07, BING1..6, TWINK1..4 | additive (proxy) |
+| car flames | FLM01..FLM20 | additive (proxy); masks when AdditiveCarFlames=0 |
+| Funfair hoop flame | FUNF FLM01..FLM10 | masks |
+
+**F4 menu.** A new "Effects" tab toggles `CullClosedMeshes` and `AdditiveCarFlames` live
+and writes them back to the ini (`config::set_bool`). Culling changes reach dynamic models
+immediately; baked chunks keep the value they were baked with until the next track load.

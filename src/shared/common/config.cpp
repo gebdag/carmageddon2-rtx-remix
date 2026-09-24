@@ -54,6 +54,13 @@ namespace shared::common
 		return get_int(section, key, default_val ? 1 : 0) != 0;
 	}
 
+	void config::set_bool(const char* section, const char* key, const bool value) const
+	{
+		if (loaded_) {
+			WritePrivateProfileStringA(section, key, value ? "1" : "0", ini_path_.c_str());
+		}
+	}
+
 	void config::parse_all()
 	{
 		// [Remix]
@@ -115,6 +122,7 @@ namespace shared::common
 		effects.decal_offset = get_float("Effects", "DecalOffset", 0.02f);
 		effects.spark_width = get_float("Effects", "SparkWidth", 0.004f);
 		effects.emissive_sprites = get_bool("Effects", "EmissiveSprites", true);
+		effects.additive_car_flames = get_bool("Effects", "AdditiveCarFlames", true);
 		effects.unlit_sprites = get_bool("Effects", "UnlitSprites", true);
 		effects.unlit_sprite_brightness = get_float("Effects", "UnlitSpriteBrightness", 1.0f);
 

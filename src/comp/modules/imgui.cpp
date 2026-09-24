@@ -273,6 +273,35 @@ namespace comp
 		}
 	}
 
+	void imgui::tab_effects()
+	{
+		auto& config = shared::common::config::get();
+		auto& effects = config.effects;
+
+		if (ImGui::Checkbox("Cull closed meshes", &effects.cull_closed_meshes)) {
+			config.set_bool("Effects", "CullClosedMeshes", effects.cull_closed_meshes);
+		}
+		ImGui::TextWrapped(
+			"Keeps backface culling on for closed meshes the game has made two-sided. "
+			"A car door that flaps open is made two-sided; when it is a closed shell "
+			"crushed flat, its paint and interior panel otherwise flicker against each other. "
+			"Takes effect at once on cars and anything moving; baked scenery follows on the "
+			"next track load. Saved as [Effects] CullClosedMeshes in remix-comp-proxy.ini.");
+		if (!effects.backface_culling) {
+			ImGui::TextDisabled("Backface culling is off ([Effects] BackfaceCulling), so this does nothing.");
+		}
+
+		ImGui::Separator();
+
+		if (ImGui::Checkbox("Additive car flames", &effects.additive_car_flames)) {
+			config.set_bool("Effects", "AdditiveCarFlames", effects.additive_car_flames);
+		}
+		ImGui::TextWrapped(
+			"On: car flames (FLM01..FLM20) glow through the additive sprite path, like the "
+			"explosions. Off: they stay solid cut-outs lit by the mod's emissive masks. "
+			"Takes effect at once. Saved as [Effects] AdditiveCarFlames.");
+	}
+
 	void imgui::tab_ffp()
 	{
 		auto& ffp = shared::common::ffp_state::get();
@@ -657,6 +686,7 @@ namespace comp
 			ImGui::PopStyleColor();
 			ImGui::PopStyleVar(1);
 			ADD_TAB("Headlights", tab_headlights);
+			ADD_TAB("Effects", tab_effects);
 			ADD_TAB("FFP", tab_ffp);
 			ADD_TAB("Diagnostics", tab_diagnostics);
 			ADD_TAB("Tracer", tab_tracer);

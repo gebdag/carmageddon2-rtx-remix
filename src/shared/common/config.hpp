@@ -15,6 +15,9 @@ namespace shared::common
 		float get_float(const char* section, const char* key, float default_val) const;
 		bool get_bool(const char* section, const char* key, bool default_val) const;
 
+		// Writes a value back to the ini, so a setting changed at runtime survives a restart.
+		void set_bool(const char* section, const char* key, bool value) const;
+
 		struct ffp_settings
 		{
 			bool enabled = true;
@@ -202,6 +205,12 @@ namespace shared::common
 			// (flags exactly BR_MATF_ALWAYS_VISIBLE). Under an alpha blend Remix lights
 			// them from the scene instead, so fire is dark wherever the road is.
 			bool emissive_sprites = true;
+
+			// Treat the car flames (FLM01..FLM20) as sprites, so they go out blended and take
+			// the additive path above. Off leaves them the alpha-tested surfaces the game's quad
+			// is otherwise submitted as, which is what a mod's emissive mask needs: Remix
+			// replaces the emission of any blended draw.
+			bool additive_car_flames = true;
 
 			// Pixelmap name prefixes of full-bright sprites that are drawn unlit instead of
 			// additively. Blood clouds (BIGBL01..05) come out of the same sprite pool as the
