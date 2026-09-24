@@ -28,8 +28,10 @@ Requirements
 
   - Carmageddon II: Carpocalypse Now. Developed against the GOG version, which ships
     with nGlide.
-  - An RTX Remix runtime for x86 games. The proxy is built against Remix API 0.1000.0;
-    a runtime with a different API version will not work with the headlights.
+  - An RTX Remix runtime for x86 games: NVIDIA's RTX Remix, or Remix Plus 1.4 or newer.
+    The proxy recognises which one it is running on (rtx_comp\console.log names it) and
+    creates the headlights and the sun through it. On a runtime it does not recognise,
+    it leaves the headlights and the sun off rather than risk a crash.
   - A GPU that can run RTX Remix.
 
 
@@ -85,8 +87,10 @@ Troubleshooting
 
   rtx_comp\console.log in the game folder is the proxy's log.
 
-  - "Failed to initialize the remixApi - Code: 11": exposeRemixApi = True is missing
-    from .trex\bridge.conf.
+  - "The Remix API is switched off": exposeRemixApi = True is missing from
+    .trex\bridge.conf.
+  - "Unrecognised Remix API table": this Remix runtime lays out its API in a way the
+    proxy does not know. Everything but the headlights and the sun still works.
   - The picture is rasterized, not path-traced: nGlide's resolution does not match the
     desktop resolution.
   - The Headlights tab says why the player's car is dark when its lights are missing.

@@ -569,7 +569,8 @@ namespace comp
 		}
 		else
 		{
-			ImGui::TextDisabled("%u car(s) lit, %u Remix light(s)", m_lit_cars, static_cast<uint32_t>(m_lamps.size()));
+			ImGui::TextDisabled("%s: %u car(s) lit, %u Remix light(s)", shared::common::remix_api::runtime(),
+				m_lit_cars, static_cast<uint32_t>(m_lamps.size()));
 			if (m_mode != mode::off) {
 				ImGui::TextDisabled("Player car: %s", m_player_status.c_str());
 			}

@@ -631,7 +631,108 @@ namespace shared::common
 
 	// ---
 
-	namespace { constexpr uint32_t MAX_ATTEMPTS = 5; }
+	namespace
+	{
+		constexpr uint32_t MAX_ATTEMPTS = 5;
+
+		/*
+		 * Which Remix runtime's function table the bridge handed back.
+		 *
+		 * The bridge client never checks the API version it is asked for: it answers success
+		 * and fills the table laid out as its own header lays it out. NVIDIA's runtime and
+		 * the Remix Plus lines insert entries mid-table, so read through the wrong layout
+		 * every call lands in another function -- on NVIDIA's, CreateLight would run
+		 * DestroyLight with an argument too many, unbalance the __stdcall stack and take the
+		 * game down.
+		 *
+		 * The light structs are compatible across all of them: Remix Plus only appends
+		 * isDynamic and ignoreViewModel to remixapi_LightInfo, which an older bridge does
+		 * not serialise, and the sphere and distant extensions and their sType values are
+		 * identical. So only where the four entry points the proxy calls sit differs, and
+		 * that is recognisable: each bridge fills a fixed set of slots and leaves the rest
+		 * null, and slots 1..13 are filled differently by every one. Slot 0 is always null.
+		 */
+		struct remix_table_layout
+		{
+			const char* name;
+			uint32_t filled;   // bit n set: slot n is filled
+			int create_light, destroy_light, draw_light_instance, set_config_variable;
+			bool native;       // laid out exactly as deps/bridge_api's remixapi_Interface
+		};
+
+		constexpr uint32_t slots(const std::initializer_list<int> list)
+		{
+			uint32_t mask = 0;
+			for (const int slot : list) {
+				mask |= 1u << slot;
+			}
+			return mask;
+		}
+
+		constexpr int PROBED_SLOTS = 14;
+
+		constexpr remix_table_layout TABLE_LAYOUTS[] =
+		{
+			// deps/bridge_api's own header. Read from the Remix Plus 1.5 bridge client:
+			// 4, 6 and 9 are CreateMeshBatched, SetupCamera and CreateLightBatched, never filled.
+			{ "Remix Plus 1.5+, API 0.1000", slots({ 1, 2, 3, 5, 7, 8, 10, 11, 12 }), 8, 10, 11, 12, true },
+			// NVIDIA's own, API 0.6 (bridge/src/client/remix_api.cpp): no batched entries,
+			// SetupCamera at 5, and dxvk_CreateD3D9 / dxvk_RegisterD3D9Device at 11 and 12.
+			{ "NVIDIA RTX Remix, API 0.6", slots({ 1, 2, 3, 4, 6, 7, 8, 9, 10, 11, 12 }), 7, 8, 9, 10, false },
+			// Remix Plus 1.4, API 0.6.3: SetCameraMediumMaterial still at 7.
+			{ "Remix Plus 1.4, API 0.6", slots({ 1, 2, 3, 5, 8, 9, 11, 12, 13 }), 9, 11, 12, 13, false },
+		};
+
+		void* const* table_slots(const remixapi_Interface& table)
+		{
+			return reinterpret_cast<void* const*>(&table);
+		}
+
+		uint32_t filled_slots(const remixapi_Interface& table)
+		{
+			uint32_t filled = 0;
+			for (int i = 1; i < PROBED_SLOTS; ++i)
+			{
+				if (table_slots(table)[i]) {
+					filled |= 1u << i;
+				}
+			}
+			return filled;
+		}
+
+		const remix_table_layout* identify_table(const remixapi_Interface& table)
+		{
+			const uint32_t filled = filled_slots(table);
+			for (const auto& layout : TABLE_LAYOUTS)
+			{
+				if (layout.filled == filled) {
+					return &layout;
+				}
+			}
+			return nullptr;
+		}
+
+		/*
+		 * The table the rest of the proxy calls through. A foreign layout keeps only the
+		 * entries whose place in it is known, so anything else is null rather than a call
+		 * into the wrong function.
+		 */
+		remixapi_Interface map_table(const remixapi_Interface& table, const remix_table_layout& layout)
+		{
+			if (layout.native) {
+				return table;
+			}
+
+			void* const* entry = table_slots(table);
+			remixapi_Interface mapped{};
+			mapped.Shutdown = reinterpret_cast<PFN_remixapi_Shutdown>(entry[0]);
+			mapped.CreateLight = reinterpret_cast<PFN_remixapi_CreateLight>(entry[layout.create_light]);
+			mapped.DestroyLight = reinterpret_cast<PFN_remixapi_DestroyLight>(entry[layout.destroy_light]);
+			mapped.DrawLightInstance = reinterpret_cast<PFN_remixapi_DrawLightInstance>(entry[layout.draw_light_instance]);
+			mapped.SetConfigVariable = reinterpret_cast<PFN_remixapi_SetConfigVariable>(entry[layout.set_config_variable]);
+			return mapped;
+		}
+	}
 
 	bool remix_api::gave_up()
 	{
@@ -696,16 +797,31 @@ namespace shared::common
 			REMIXAPI_STRUCT_TYPE_INITIALIZE_LIBRARY_INFO, nullptr,
 			REMIXAPI_VERSION_MAKE(REMIXAPI_VERSION_MAJOR, REMIXAPI_VERSION_MINOR, REMIXAPI_VERSION_PATCH)
 		};
-		// The bridge copies its whole function table into the caller's struct without
-		// asking how big that struct is, and entries are inserted mid-table between API
-		// versions. Headers older than the runtime therefore overrun the stack here and
-		// call the wrong entry everywhere else. 0xA4 is what the deployed bridge client
-		// writes (d3d9_remix.dll, remixapi_InitializeLibrary: memset 0xA4, rep movsd 0x29).
+		// deps/bridge_api is the Remix Plus 1.5 header, whose bridge client writes 0xA4
+		// bytes (d3d9_remix.dll, remixapi_InitializeLibrary: memset 0xA4, rep movsd 0x29).
 		static_assert(sizeof(remixapi_Interface) == 0xA4,
-			"deps/bridge_api does not match the deployed Remix runtime - replace both together");
+			"deps/bridge_api is not the API 0.1000 header the table layouts below are keyed to");
 
-		remixapi_Interface iface{};
-		const auto status = pfn_init(&init_info, &iface);
+		// The bridge copies its whole table without asking how big the caller's is, so a
+		// runtime with a longer one must land in spare room rather than on the stack.
+		struct
+		{
+			remixapi_Interface table;
+			void* spare[64];
+		} candidate{};
+
+		const auto status = pfn_init(&init_info, &candidate.table);
+
+		// The bridge answers this for one reason only: .trex\bridge.conf leaves the API
+		// switched off, which is its default.
+		if (status == REMIXAPI_ERROR_CODE_NOT_INITIALIZED)
+		{
+			instance.m_init_attempts = MAX_ATTEMPTS;
+			shared::common::log("RemixApi",
+				"The Remix API is switched off - set 'exposeRemixApi = True' in .trex\\bridge.conf",
+				shared::common::LOG_TYPE::LOG_TYPE_ERROR, true);
+			return;
+		}
 
 		if (status != REMIXAPI_ERROR_CODE_SUCCESS)
 		{
@@ -715,7 +831,20 @@ namespace shared::common
 			return;
 		}
 
-		instance.m_bridge = iface;
+		const remix_table_layout* layout = identify_table(candidate.table);
+		if (!layout)
+		{
+			// Through a table of unknown layout every call may land in the wrong function.
+			instance.m_init_attempts = MAX_ATTEMPTS;
+			shared::common::log("RemixApi",
+				std::format("Unrecognised Remix API table (filled slots {:04X}) - headlights and sun off",
+					filled_slots(candidate.table)),
+				shared::common::LOG_TYPE::LOG_TYPE_ERROR, true);
+			return;
+		}
+
+		instance.m_bridge = map_table(candidate.table, *layout);
+		instance.m_runtime = layout->name;
 		instance.begin_scene_callback_external = begin_scene_callback;
 		instance.end_scene_callback_external = end_scene_callback;
 		instance.present_callback_external = present_callback;
@@ -730,6 +859,7 @@ namespace shared::common
 		instance.m_debug_circle_materials.reserve(512);
 		instance.m_initialized = true;
 
-		shared::common::log("RemixApi", "Initialized RemixApi", shared::common::LOG_TYPE::LOG_TYPE_STATUS, true);
+		shared::common::log("RemixApi", std::format("Initialized RemixApi ({})", instance.m_runtime),
+			shared::common::LOG_TYPE::LOG_TYPE_STATUS, true);
 	}
 }

@@ -193,6 +193,9 @@ namespace comp
 				ImGui::TextDisabled("The Remix API starts with the first race frame.");
 			}
 		}
+		else {
+			ImGui::TextDisabled("%s", shared::common::remix_api::runtime());
+		}
 
 		ImGui::Checkbox("Sun", &s.enabled);
 		ImGui::TextDisabled("The game's own sun: 60 deg up, 30 deg from +Z towards +X, white, on every track.");

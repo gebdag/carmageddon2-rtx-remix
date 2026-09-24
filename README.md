@@ -33,7 +33,7 @@ All options are documented in `remix-comp-proxy.ini`.
 
 - Carmageddon 2: Carpocalypse Now (developed against the GOG version; no game files are included)
 - nGlide (included with the GOG version)
-- RTX Remix runtime
+- RTX Remix runtime: NVIDIA's RTX Remix, or Remix Plus 1.4 or newer. The proxy recognises which one it is running on
 
 ## Installing
 

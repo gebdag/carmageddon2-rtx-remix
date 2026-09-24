@@ -54,6 +54,11 @@ namespace shared::common
 		// Every attempt has been spent without success.
 		static bool gave_up();
 
+		// Which runtime's function table the bridge handed back; empty until initialized.
+		// On any runtime but the one deps/bridge_api describes, m_bridge carries only
+		// CreateLight, DestroyLight, DrawLightInstance and SetConfigVariable.
+		static const char* runtime() { return get().m_runtime; }
+
 		PFN_remixapi_BridgeCallback begin_scene_callback_external = nullptr;
 		PFN_remixapi_BridgeCallback end_scene_callback_external = nullptr;
 		PFN_remixapi_BridgeCallback present_callback_external = nullptr;
@@ -91,6 +96,7 @@ namespace shared::common
 	private:
 		remix_api() : m_initialized(false) {}
 		bool m_initialized;
+		const char* m_runtime = "";
 		uint32_t m_init_attempts = 0;
 		uint32_t m_init_cooldown = 0;
 

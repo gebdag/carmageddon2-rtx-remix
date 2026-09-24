@@ -3507,3 +3507,40 @@ The F4 menu has a Sun tab. Its settings save to `carma2-sun.ini` in the game fol
 AngularDiameter and VolumetricScale.
 
 Not verified in game yet.
+
+## 44. One proxy for NVIDIA's RTX Remix and Remix Plus (2026-09-24)
+
+The bridge client's `remixapi_InitializeLibrary` never checks the requested API version. It
+returns success and copies its own function table into the caller's struct, in its own
+layout. NVIDIA's runtime (API 0.6) and the Remix Plus lines insert entries in the middle of
+the table. Read through the wrong layout, every call lands in another function. On
+NVIDIA's runtime, our `CreateLight` would run `DestroyLight` with one argument too many,
+which unbalances the __stdcall stack and crashes the game. GTA2's renderer solved the same
+problem (`gta2_dx9/renderer/dll/src/remix_api.cpp`), and this is its approach.
+
+`remix_api::initialize` receives the table into a struct padded with 64 spare slots. It
+then identifies the runtime from which of slots 1..13 are filled; slot 0 (Shutdown) is
+null in all of them:
+
+| Runtime | Filled slots | CreateLight | DestroyLight | DrawLightInstance | SetConfigVariable | Evidence |
+|---|---|---|---|---|---|---|
+| Remix Plus 1.5+, API 0.1000 (deps/bridge_api) | 1 2 3 5 7 8 10 11 12 | 8 | 10 | 11 | 12 | disassembly of the installed d3d9_remix.dll (0x1005E470) |
+| NVIDIA RTX Remix, API 0.6 | 1 2 3 4 6 7 8 9 10 11 12 | 7 | 8 | 9 | 10 | dxvk-remix bridge/src/client/remix_api.cpp:441-452 |
+| Remix Plus 1.4, API 0.6.3 | 1 2 3 5 8 9 11 12 13 | 9 | 11 | 12 | 13 | GTA2 renderer, tested there |
+
+On the native layout, `m_bridge` is the whole table. On the others it holds only the four
+entry points the proxy calls, and everything else is null. An unrecognised table stops
+initialization and logs the mask it found, so the headlights and the sun stay off. The API
+being switched off in bridge.conf (`REMIXAPI_ERROR_CODE_NOT_INITIALIZED`) now gets its own
+log line and is not retried.
+
+The structs we pass are compatible across all three runtimes:
+- `remixapi_LightInfo` in 0.1000 appends only `isDynamic` and `ignoreViewModel`, which an
+  0.6 bridge does not serialise.
+- The sphere and distant extensions, the light shaping struct and the sType values (6, 7,
+  11) are identical.
+- The fog keys `rtx.volumetrics.transmittanceColor` and `rtx.volumetrics.singleScatteringAlbedo`
+  exist in NVIDIA's runtime too.
+
+The runtime's name appears in the log, and in the Headlights and Sun tabs. Tested on Remix
+Plus only so far.
