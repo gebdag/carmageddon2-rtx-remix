@@ -6,6 +6,7 @@
 #include "tracer.hpp"
 #include "diagnostics.hpp"
 #include "headlights.hpp"
+#include "sun.hpp"
 #include "shared/common/imgui_helper.hpp"
 #include "shared/common/ffp_state.hpp"
 #include "shared/common/config.hpp"
@@ -270,6 +271,13 @@ namespace comp
 	{
 		if (const auto lights = headlights::get(); lights) {
 			lights->draw_menu();
+		}
+	}
+
+	void imgui::tab_sun()
+	{
+		if (const auto light = sun::get(); light) {
+			light->draw_menu();
 		}
 	}
 
@@ -686,6 +694,7 @@ namespace comp
 			ImGui::PopStyleColor();
 			ImGui::PopStyleVar(1);
 			ADD_TAB("Headlights", tab_headlights);
+			ADD_TAB("Sun", tab_sun);
 			ADD_TAB("Effects", tab_effects);
 			ADD_TAB("FFP", tab_ffp);
 			ADD_TAB("Diagnostics", tab_diagnostics);

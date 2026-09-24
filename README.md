@@ -24,6 +24,7 @@ CARMA2_HW.EXE (BRender) -> Glide -> nGlide -> d3d9.dll (this mod) -> d3d9_remix.
 - The race's depth cue passed on as fog and to Remix's volumetrics
 - A patch for the game's own out-of-bounds crash in the tint-poly code when pressing ESC
 - Headlights: two Remix spot lights per car. H cycles off, player car, all cars. Tuned from the F4 menu and saved to `carma2-headlights.ini`
+- The game's sun as a Remix distant light, at the angle the game gives its own light. Tuned from the F4 menu and saved to `carma2-sun.ini`
 - F4 debug overlay
 
 All options are documented in `remix-comp-proxy.ini`.
@@ -59,6 +60,7 @@ a player copies into the game folder, from the DLL and the files in `package\`.
 ```
 src/comp/modules/brender_inject.*   BRender hooks and Remix submission
 src/comp/modules/headlights.*       car headlights through the Remix API, their menu and ini
+src/comp/modules/sun.*              the game's sun as a Remix distant light, its menu and ini
 src/comp/game/                      Carmageddon 2 addresses, structures and the ESC crash patch
 src/comp/, src/shared/              remix-comp-proxy framework
 deps/                               vendored dependencies

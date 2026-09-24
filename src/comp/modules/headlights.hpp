@@ -5,9 +5,9 @@ namespace comp
 	/*
 	 * Two Remix spot lights on the nose of each car.
 	 *
-	 * The engine has no light sources of its own -- the port is lit by the sky alone -- so a
-	 * tunnel or an indoor section path-traces to black. Headlights are the light a driver
-	 * would expect to have there. They exist only on the Remix side: sphere lights with
+	 * The port is lit by the sky and the sun, neither of which reaches into a tunnel or an
+	 * indoor section, so those path-trace to black. Headlights are the light a driver would
+	 * expect to have there. They exist only on the Remix side: sphere lights with
 	 * cone shaping, created through the Remix API and re-described every race frame from
 	 * each car's master actor, which is the one matrix the game keeps car-to-world.
 	 *

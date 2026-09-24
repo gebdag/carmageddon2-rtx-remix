@@ -1,6 +1,7 @@
 #include "std_include.hpp"
 #include "brender_inject.hpp"
 #include "headlights.hpp"
+#include "sun.hpp"
 #include "shared/common/config.hpp"
 #include "shared/common/ffp_state.hpp"
 #include "shared/common/remix_api.hpp"
@@ -2179,6 +2180,9 @@ namespace comp
 		if (const auto lights = headlights::get(); lights) {
 			lights->on_frame_without_race();
 		}
+		if (const auto light = sun::get(); light) {
+			light->on_frame_without_race();
+		}
 
 		// Whatever camera the race was measured against is finished with. Keeping it would
 		// let a recycled camera pointer in the next track pass for the race view, and the
@@ -2799,6 +2803,9 @@ namespace comp
 		// left its lamps behind, inside the bodywork, by however far it travelled.
 		if (const auto lights = headlights::get(); lights) {
 			lights->on_race_frame(m_view_inverse.m[3]);
+		}
+		if (const auto light = sun::get(); light) {
+			light->on_race_frame();
 		}
 
 		if (m_in_frontend) {

@@ -183,6 +183,7 @@ namespace comp
 		void tab_about();
 		void tab_dev();
 		void tab_headlights();
+		void tab_sun();
 		void tab_effects();
 		void tab_ffp();
 		

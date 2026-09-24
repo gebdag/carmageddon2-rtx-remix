@@ -68,14 +68,16 @@ atmosphere), set [Sky] Synthesize=0 in remix-comp-proxy.ini.
 Keys
 ----
 
-  F4       proxy menu: Headlights, and Effects (culling of crushed doors, additive car
-           flames). Hold the right mouse button outside the menu to give input back to
-           the game.
+  F4       proxy menu: Headlights, Sun, and Effects (culling of crushed doors, additive
+           car flames). Hold the right mouse button outside the menu to give input back
+           to the game.
   H        headlights: off -> player car -> all cars -> off
   Alt+X    RTX Remix's own menu
 
 Headlight settings are adjusted in the F4 menu and saved to carma2-headlights.ini in the
-game folder with "Save to ini".
+game folder with "Save to ini". The sun works the same way and saves to carma2-sun.ini.
+It starts at the angle the game gives its own light: 60 degrees up, the same on every
+track.
 
 
 Troubleshooting
@@ -93,6 +95,6 @@ Troubleshooting
 Uninstalling
 ------------
 
-Delete d3d9.dll, remix-comp-proxy.ini, carma2-headlights.ini, rtx.conf,
+Delete d3d9.dll, remix-comp-proxy.ini, carma2-headlights.ini, carma2-sun.ini, rtx.conf,
 carma2-rtx_README.txt, rtx-remix\mods\carma2rtx and the rtx_comp folder from the game
 folder, then remove the RTX Remix runtime.

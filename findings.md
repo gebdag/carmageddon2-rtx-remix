@@ -3486,3 +3486,24 @@ effects pass (0x004E91FD). They are not a light.
   - 0x0046E888 is in the menu-screen setup 0x0046E830. It stores the light in 0x00763844
     and never adds or enables it.
 - Car headlights are not BRender lights (section 33).
+
+### 43.5 The sun in Remix
+
+The `sun` module (`src/comp/modules/sun.*`) gives Remix this light as an API distant light.
+It is described once, then described again only when a setting changes, since creating under
+the same hash replaces the light. It is drawn on every race frame, just after the headlights,
+and destroyed when the race is left. Its defaults are the game's: elevation 60, azimuth 30
+(from +Z towards +X) and white. Remix wants the direction the light travels,
+-(cos e sin a, sin e, cos e cos a).
+
+Brightness is the API radiance. Remix's distant-light sample divides it by sin^2 of the half
+angle (`distant_light.slangh`), so the irradiance comes out as pi x radiance whatever the
+angular diameter. At 1.0, a white surface facing the sun is lit to full brightness, the same
+as a legacy D3D9 directional light at `lightConversionDistantLightFixedIntensity` 1.0. The
+angular diameter only changes how soft the shadows are.
+
+The F4 menu has a Sun tab. Its settings save to `carma2-sun.ini` in the game folder, in a
+[Sun] section, with the keys Enabled, Elevation, Azimuth, ColourR/G/B, Brightness,
+AngularDiameter and VolumetricScale.
+
+Not verified in game yet.

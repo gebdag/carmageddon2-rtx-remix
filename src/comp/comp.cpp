@@ -4,6 +4,7 @@
 #include "modules/renderer.hpp"
 #include "modules/brender_inject.hpp"
 #include "modules/headlights.hpp"
+#include "modules/sun.hpp"
 #include "modules/diagnostics.hpp"
 #include "modules/skinning.hpp"
 #include "modules/tracer.hpp"
@@ -89,6 +90,7 @@ namespace comp
 		// screen-space triangles. This module supplies the model-space geometry instead.
 		shared::common::loader::module_loader::register_module(std::make_unique<brender_inject>());
 		shared::common::loader::module_loader::register_module(std::make_unique<headlights>());
+		shared::common::loader::module_loader::register_module(std::make_unique<sun>());
 
 		auto& cfg = shared::common::config::get();
 
