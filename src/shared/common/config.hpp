@@ -145,6 +145,13 @@ namespace shared::common
 			// spark billboards, stay double-sided.
 			bool backface_culling = true;
 
+			// Keep culling on for closed meshes the game has made two-sided. The game sets
+			// TWO_SIDED on a car part's materials the moment it flaps open, which an open
+			// sheet needs but a closed shell does not -- and a closed shell crushed flat
+			// (the Thunderbucket's doors) then shows its paint and its interior fighting in
+			// one plane. Only meaningful with backface_culling on.
+			bool cull_closed_meshes = true;
+
 			// Submit solid translucent surfaces -- glass, water, anything whose texture
 			// carries alpha and that is not a sprite or a decal -- as ordinary geometry
 			// with an alpha test rather than as blended draws. Remix forces every blended

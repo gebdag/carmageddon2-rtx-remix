@@ -228,6 +228,64 @@ namespace comp
 		}
 
 		/*
+		 * Whether a prepared mesh is closed: with its vertices welded by position, every edge
+		 * borders exactly two faces.
+		 *
+		 * The back of every face of a closed mesh is hidden behind another face of the same
+		 * mesh, so drawing it two-sided shows nothing culling would not -- except where two
+		 * of its faces coincide facing opposite ways, and then both sides fight. That is
+		 * what a crushed car door becomes: a thin closed wedge flattened until its paint and
+		 * its interior panel share a plane, made two-sided by the game the moment it flaps
+		 * open (0x0043829D). An open mesh -- a single-sheet door, bonnet or boot lid -- does
+		 * need both sides once it swings away from the body.
+		 */
+		bool mesh_is_closed(const game::v1_prepared& prepared)
+		{
+			std::map<std::tuple<int32_t, int32_t, int32_t>, uint32_t> welded;
+			std::unordered_map<uint64_t, uint32_t> edge_faces;
+
+			const auto weld = [&](const game::v1_online_vertex& v) {
+				const auto q = [](const float c) { return static_cast<int32_t>(std::lround(c * 16384.0f)); };
+				return welded.try_emplace({ q(v.px), q(v.py), q(v.pz) },
+					static_cast<uint32_t>(welded.size())).first->second;
+			};
+
+			for (uint16_t g = 0; g < prepared.ngroups; ++g)
+			{
+				const game::v1_group& group = prepared.groups[g];
+				if (!group.vertices || !group.faces) {
+					continue;
+				}
+
+				for (uint16_t f = 0; f < group.nfaces; ++f)
+				{
+					const uint16_t* v = group.faces[f].v;
+					const uint32_t id[3] = { weld(group.vertices[v[0]]), weld(group.vertices[v[1]]),
+						weld(group.vertices[v[2]]) };
+					if (id[0] == id[1] || id[1] == id[2] || id[2] == id[0]) {
+						continue;
+					}
+
+					for (int k = 0; k < 3; ++k)
+					{
+						const uint32_t a = id[k], b = id[(k + 1) % 3];
+						++edge_faces[(static_cast<uint64_t>(std::min(a, b)) << 32) | std::max(a, b)];
+					}
+				}
+			}
+
+			return !edge_faces.empty() && std::ranges::all_of(edge_faces,
+				[](const auto& edge) { return edge.second == 2; });
+		}
+
+		// Two-sided as BRender draws it, less the closed meshes that never need it.
+		bool draws_two_sided(const game::br_material* material, const bool closed_mesh)
+		{
+			return material_is_two_sided(material)
+				&& !(closed_mesh && shared::common::config::get().effects.cull_closed_meshes);
+		}
+
+		/*
 		 * The two ways this engine says "do not shade this surface".
 		 *
 		 * BRender has no emissive channel at all -- its material is colour, opacity, ka,
@@ -1014,10 +1072,11 @@ namespace comp
 		// rather than on every draw -- the pools are walked with VirtualQuery behind them.
 		geometry.solid = !is_decal_model(model) && !in_quad_pool(game::SPRITE_PARTICLE_POOL, model);
 		geometry.smoke = is_smoke_model(model);
+		geometry.closed = model->prepared && mesh_is_closed(*model->prepared);
 
 		// 16-bit indices are enough for any single model this game ships; anything larger is
 		// corrupt data rather than a real mesh.
-		if (!extract_geometry(dev, model, fallback_material, vertices, parts, indices)
+		if (!extract_geometry(dev, model, fallback_material, geometry.closed, vertices, parts, indices)
 			|| vertices.size() > 0xFFFF)
 		{
 			release_geometry(into);
@@ -1173,7 +1232,7 @@ namespace comp
 			game::br_material* material = part.inherits_material ? fallback_material : part.material;
 			if (material && readable(material, sizeof(game::br_material)))
 			{
-				state.two_sided = material_is_two_sided(material);
+				state.two_sided = draws_two_sided(material, geometry.closed);
 				IDirect3DTexture9* texture = texture_for(dev, material);
 				state.texture = texture && texture != m_white_texture
 					? texture
@@ -1336,7 +1395,7 @@ namespace comp
 	}
 
 	bool brender_inject::extract_geometry(IDirect3DDevice9* dev, game::br_model* model,
-		game::br_material* fallback_material, std::vector<ffp_vertex>& vertices,
+		game::br_material* fallback_material, const bool closed_mesh, std::vector<ffp_vertex>& vertices,
 		std::vector<geometry_part>& parts, std::vector<uint32_t>& indices)
 	{
 		const auto prepared = model->prepared;
@@ -1513,7 +1572,7 @@ namespace comp
 			part.triangle_count = (static_cast<uint32_t>(indices.size()) - part.index_start) / 3u;
 			if (part.triangle_count)
 			{
-				part.two_sided = material_is_two_sided(material);
+				part.two_sided = draws_two_sided(material, closed_mesh);
 
 				if (m_winding_agree + m_winding_disagree < WINDING_SAMPLES) {
 					sample_winding(vertices, indices, part.index_start);
@@ -1680,7 +1739,8 @@ namespace comp
 		std::vector<geometry_part> parts;
 		std::vector<uint32_t> indices;
 
-		if (!extract_geometry(dev, model, fallback_material, vertices, parts, indices))
+		const bool closed_mesh = model->prepared && mesh_is_closed(*model->prepared);
+		if (!extract_geometry(dev, model, fallback_material, closed_mesh, vertices, parts, indices))
 		{
 			note_placement_drift(model, "bake failed: no geometry");
 			return false;

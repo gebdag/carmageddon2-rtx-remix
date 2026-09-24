@@ -276,6 +276,9 @@ namespace comp
 			// One of the two models every smoke puff is drawn with.
 			bool smoke;
 
+			// Every edge borders exactly two faces, so it never needs drawing two-sided.
+			bool closed;
+
 			// BrModelUpdate can fire mid-scene, after this geometry is already queued for
 			// submission. Marking instead of erasing keeps queued pointers valid; the
 			// rebuild happens the next time the model is captured.
@@ -490,6 +493,7 @@ namespace comp
 		// Shared by the per-model buffers and the merged static batches.
 		bool extract_geometry(IDirect3DDevice9* dev, game::br_model* model,
 		                      game::br_material* fallback_material,
+		                      bool closed_mesh,
 		                      std::vector<ffp_vertex>& vertices,
 		                      std::vector<geometry_part>& parts,
 		                      std::vector<uint32_t>& indices);

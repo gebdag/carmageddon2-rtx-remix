@@ -107,6 +107,7 @@ namespace shared::common
 		effects.vertex_colour = get_bool("Effects", "VertexColour", true);
 		effects.material_opacity = get_bool("Effects", "MaterialOpacity", true);
 		effects.backface_culling = get_bool("Effects", "BackfaceCulling", true);
+		effects.cull_closed_meshes = get_bool("Effects", "CullClosedMeshes", true);
 		effects.solid_translucency = get_bool("Effects", "SolidTranslucency", true);
 		effects.fog = get_bool("Effects", "Fog", true);
 		effects.fog_volumetrics = get_bool("Effects", "FogVolumetrics", true);

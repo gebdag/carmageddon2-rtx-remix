@@ -3237,3 +3237,20 @@ A closed mesh never needs two-sided drawing: each face's back is hidden behind a
 of the same mesh. So the proxy can decide per model: honour TWO_SIDED only when the model
 has open edges. That fixes the doors of the 21 closed parts, and the spill-over onto the
 Thunderbucket body if the body is closed, and leaves the 97 open parts as the game draws them.
+
+### 39.4 What the proxy does now (2026-09-24)
+
+`[Effects] CullClosedMeshes` (default 1). `mesh_is_closed` welds a model's prepared
+vertices by position (1/16384 of a unit) and requires every edge to border exactly two
+faces. `draws_two_sided(material, closed)` then honours TWO_SIDED / ALWAYS_VISIBLE only
+for open meshes. It is applied at part build, which is what static chunks bake, and per
+draw in `resolve_draw_state`, which is what sees the flag the game sets mid-race.
+`model_geometry::closed` is computed with the geometry.
+
+For the Thunderbucket's models, only the doors (`ldoor`, `rdoor`), wheels, `drvbod.act`,
+`rearbumper` and `engine` are closed. The body (`thunderbucket`, three- and four-way seam
+edges), `hardtop`, `frontclip` and the rest are open, so the spill-over of TWO_SIDED onto
+`tbseats`/`tbrearwing` leaves those parts two-sided as before. Their one coincident face
+is the door jamb, hidden while the door is shut.
+
+Not verified in game yet.
