@@ -3158,3 +3158,20 @@ The mapping was checked offline by running the same bake in Python over `skyblue
 poles.
 
 Not verified in game yet.
+
+---
+
+## 38. Swap chain shrunk by display scaling (2026-09-24)
+
+Reported: with nGlide set to 3840x2160 the game ran at 1536x864. That is 3840x2160 / 2.5:
+Windows DPI virtualization at 250% display scaling. The resolution itself is nGlide's
+(`HKCU\Software\Zeus Software\nGlide2\Resolution`, set with `nglide_config.exe`). Remix's
+log shows the resulting swap chain (`D3D9DeviceEx::ResetSwapChain: Buffer size`).
+
+The user's AppCompatFlags carried `HIGHDPIAWARE` for `...\CARMA2_HW.EXE`, but the Remix
+launcher runs the renamed `CARMA2_HW0.EXE`, so the override no longer matched. The proxy
+now calls `SetProcessDPIAware()` first thing in `DllMain`. It is loaded before the game
+creates `Carma2MainWndClass` (main.cpp waits for that window), so that has the same effect
+as the override, whatever the EXE is called.
+
+Not verified in game yet.
