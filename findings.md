@@ -3309,3 +3309,70 @@ alpha > 0 as solid, and these frames are mostly partial alpha.
 **F4 menu.** A new "Effects" tab toggles `CullClosedMeshes` and `AdditiveCarFlames` live
 and writes them back to the ini (`config::set_bool`). Culling changes reach dynamic models
 immediately; baked chunks keep the value they were baked with until the next track load.
+
+---
+
+## 41. Destructible scenery was baked into the static world (2026-09-24)
+
+Reported: the static baker bakes destructible objects, e.g. the Ski Track ice statues.
+Capture `capture_2026-09-24_14-22-18.usd` confirms it. The two statues (`-icebear.act`, 96
+faces each, texture `ICEBEAR` = `F26D0340ACA7E2EB`) are one chunk draw of 192 triangles
+with an identity WORLD. So are the start gates (`STGATEPLNK`, `STGATEASPH`).
+
+### 41.1 How the game smashes scenery (static, CARMA2_HW0.EXE)
+
+- **Specs.** 0x004F0450 (from RaceTxtLoad 0x00505A09) parses each race TXT's "Smashable
+  environment specs" into an array at `[0x006A5138]`, stride 0x2E0, count `[0x006A55B4]`.
+  - +0x04: the resolved trigger (`br_model*` for kind 1, `br_material*` for kind 0).
+  - +0x08: the trigger kind. 1 = a model (the name ends .ACT/.DAT or starts with `&`),
+    2 = `&NN`, 0 = a material.
+  - +0x0C: the mode (table 0x0065FE88). 0 nochange, 1 decal, 2 texturechange,
+    3 remove, 4 replacemodel, 5 crush.
+  - +0x2C0: the replacement `br_model*`.
+
+  The "7" some mission TXTs show after an `&NN` trigger is not a mode but a bitmask byte
+  (+0x05); the real mode follows it.
+- **Marking.** At load 0x004F5CB0 renames every actor whose model is a kind-1 trigger to 11
+  bytes: `name[0..4] | (index+1) name[-4..]`, with `'|'` at [5] and the spec index + 1 as
+  the raw byte at [6]. The hit handler 0x004F1140 looks the spec up the same way
+  (0x004F17F7).
+- **remove** (SmashActor 0x004F4E20, case 3) writes `render_style = NONE` on the same
+  actor (0x004F4FEF). It is not unlinked, moved or re-modelled. The scene walk then skips
+  it and its children.
+- **replacemodel** (case 4) writes the spec's new model into the same actor's `model`
+  (0x004F4F2E) and sets every child to NONE (0x004F4FA2). The transform is untouched.
+- Specs are re-parsed and actors rebuilt on every race start (DoGame -> InitRace 0x00481830
+  -> RaceTxtLoad). Nothing restores a hidden actor during a race. Action replay swaps models
+  back and forth but skips hides.
+
+### 41.2 Why the baker missed them
+
+The baker demotes an actor on a transform change or a model swap it observes, and punches
+its triangles out of the chunk. It cannot see an actor that simply stops being walked, and
+deliberately has no "not seen any more" rule, since streamed scenery would erode the
+world. So a removed statue stayed in its chunk forever. A replaced model was caught by the
+swap check, but its children, hidden by the same smash, were not.
+
+### 41.3 The fix
+
+`vanishes_outright` now also excludes **destructible scenery and everything under it**
+(`destructible_ancestor`). It uses the game's own marking: an 11-byte identifier with '|' at
+[5] whose spec is kind 1 with mode 3 or 4. Nothing else about the baker changed. These
+actors are drawn dynamically from their first sighting, so when the game hides one it stops
+being drawn, and a re-modelled one is drawn with its new model. The log names each one
+once: `destructible scenery: '<model>' (removed when hit | re-modelled when hit) kept
+out of the static world`.
+
+Across all race TXTs the model-type remove/replacemodel specs are 200 entries (none are
+material triggers). Per track:
+
+- Ski Track: ice bears (2), start gates (2).
+- Airport: barrier gates (5).
+- Carrier: guns (8); plus WIGGLYBIT/CORE in net and mission.
+- Desert: gas cylinders (9); plus the flying saucer on desert3.
+- New City: petrol pumps (9-11); plus comsats on newcity4 and mission.
+- Timber: petrol pumps (9).
+- Silo: 12 cylinder models (2 each) and gas pipes (13); the mission adds gasometers (3),
+  hatches (4) and the missile centre (2).
+
+Not verified in game yet.

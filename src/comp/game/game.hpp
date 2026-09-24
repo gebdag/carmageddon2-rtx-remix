@@ -120,6 +120,25 @@ namespace comp::game
 	// @ 0x004FBDD0). Not a pool, so it has to be named on its own.
 	constexpr uint32_t ADDR_g_flame_model = 0x006AA380u;
 
+	/*
+	 * The race TXT's "Smashable environment specs", parsed by 0x004F0450 from RaceTxtLoad.
+	 *
+	 * At load, 0x004F5CB0 renames every actor whose model is a spec's trigger to an 11-byte
+	 * identifier with '|' at [5] and the spec's index + 1 as the raw byte at [6]; the hit
+	 * handler (0x004F17F7) finds the spec the same way. SmashActor (0x004F4E20) then acts
+	 * on that same actor: mode 3 (remove) writes render_style NONE (0x004F4FEF) and mode 4
+	 * (replacemodel) writes the spec's new model into actor->model (0x004F4F2E) and sets
+	 * every child to NONE (0x004F4FA2). Neither moves or unlinks anything.
+	 */
+	constexpr uint32_t ADDR_g_smash_specs = 0x006A5138u;       // spec array pointer
+	constexpr uint32_t ADDR_g_smash_spec_count = 0x006A55B4u;  // int
+	constexpr uint32_t SMASH_SPEC_STRIDE = 0x2E0u;
+	constexpr uint32_t SMASH_SPEC_TRIGGER_KIND = 0x08u;        // int: 1 = a br_model trigger
+	constexpr uint32_t SMASH_SPEC_MODE = 0x0Cu;                // int, see below
+	constexpr int SMASH_TRIGGER_MODEL = 1;
+	constexpr int SMASH_MODE_REMOVE = 3;
+	constexpr int SMASH_MODE_REPLACE_MODEL = 4;
+
 	typedef void(__cdecl* BrZbSceneRender_t)(br_actor* world, br_actor* camera, void* colour, void* depth);
 	typedef void(__cdecl* BrZbSceneRenderEnd_t)();
 	typedef void(__cdecl* SceneSetupCameraMatrices_t)(br_actor* world, br_actor* camera);

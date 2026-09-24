@@ -560,6 +560,52 @@ namespace comp
 		}
 
 		/*
+		 * The smash mode of an actor that is destructible scenery, or 0 for any other actor.
+		 *
+		 * Only the modes that change geometry count: remove, which hides the actor, and
+		 * replacemodel, which re-models it and hides its children. The game marks these
+		 * actors itself at load (see game::ADDR_g_smash_specs), so this reads its own list
+		 * rather than any name the proxy would have to know.
+		 */
+		int destructible_mode(const game::br_actor* actor)
+		{
+			const char* name = actor->identifier;
+			if (!readable(name, 12) || strnlen(name, 12) != 11 || name[5] != '|') {
+				return 0;
+			}
+
+			const auto specs = *reinterpret_cast<const uint8_t* const*>(game::rebase(game::ADDR_g_smash_specs));
+			const int count = *reinterpret_cast<const int*>(game::rebase(game::ADDR_g_smash_spec_count));
+			const int index = static_cast<uint8_t>(name[6]) - 1;
+			if (index < 0 || index >= count) {
+				return 0;
+			}
+
+			const uint8_t* spec = specs + static_cast<size_t>(index) * game::SMASH_SPEC_STRIDE;
+			if (!readable(spec, game::SMASH_SPEC_MODE + sizeof(int))) {
+				return 0;
+			}
+
+			const int kind = *reinterpret_cast<const int*>(spec + game::SMASH_SPEC_TRIGGER_KIND);
+			const int mode = *reinterpret_cast<const int*>(spec + game::SMASH_SPEC_MODE);
+			return kind == game::SMASH_TRIGGER_MODEL
+				&& (mode == game::SMASH_MODE_REMOVE || mode == game::SMASH_MODE_REPLACE_MODEL) ? mode : 0;
+		}
+
+		// Destructible scenery, or anything hanging under it: a replacemodel smash hides the
+		// smashed actor's children along with swapping its model.
+		const game::br_actor* destructible_ancestor(const game::br_actor* actor)
+		{
+			for (int depth = 0; actor && depth < 32 && readable(actor, sizeof(*actor)); ++depth, actor = actor->parent)
+			{
+				if (destructible_mode(actor)) {
+					return actor;
+				}
+			}
+			return nullptr;
+		}
+
+		/*
 		 * Whether the game removes this actor rather than ever moving it.
 		 *
 		 * Holding still proves an actor is not being driven, but it says nothing about one
@@ -568,6 +614,9 @@ namespace comp
 		 * identifier carries 0xA3 ('£') as its second character, the test
 		 * SpecialActorEnumCallback (0x0040D1F0) uses -- and the pooled decal and sprite
 		 * quads and the car flames are recycled at a new placement rather than moved to it.
+		 * Destructible scenery stands perfectly still until it is hit, and is then hidden
+		 * where it stands by a render style -- which stops the scene walk from reaching it,
+		 * so a baked copy would stay in the chunk for the rest of the race.
 		 */
 		bool vanishes_outright(const game::br_actor* actor, const game::br_model* model)
 		{
@@ -576,7 +625,7 @@ namespace comp
 				&& name[0] && static_cast<uint8_t>(name[1]) == 0xA3;
 
 			return pickup || is_decal_model(model) || in_quad_pool(game::SPRITE_PARTICLE_POOL, model)
-				|| is_flame_model(model);
+				|| is_flame_model(model) || destructible_ancestor(actor);
 		}
 
 		// bounds is min[3] then max[3] in model space. The camera sits at the origin in view
@@ -1640,7 +1689,19 @@ namespace comp
 			classify_actor(record, actor, model);
 			record.last_seen_scene = m_scene_walks;
 
-			if (!record.bakeable) {
+			if (!record.bakeable)
+			{
+				if (const auto destructible = destructible_ancestor(actor); destructible)
+				{
+					const auto own = destructible->model;
+					shared::common::log("BRender", std::format(
+						"destructible scenery: '{}'{} ({}) kept out of the static world",
+						model->identifier ? model->identifier : "<null>",
+						destructible == actor ? "" : std::format(" under '{}'",
+							readable(own, sizeof(*own)) && own->identifier ? own->identifier : "<null>"),
+						destructible_mode(destructible) == game::SMASH_MODE_REMOVE ? "removed when hit" : "re-modelled when hit"),
+						shared::common::LOG_TYPE::LOG_TYPE_DEFAULT, false);
+				}
 				return dynamic_reason::vanishing;
 			}
 
