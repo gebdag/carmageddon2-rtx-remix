@@ -280,6 +280,24 @@ enum br_matrix_token {
 /* 0x004EA880 is InitSpriteParticlePool -- see section 25; it is the shared sprite
  * particle pool, not a decal pool. */
 @ 0x00478930 void FunkApplyMapTransform(void);       /* copies a frame's br_matrix23 into material->map_transform */
+/* --- Funkotronics (findings 45). Funk slot stride 0x158: +0x00 owner (-999 free), +0x08 material,
+ * +0x50 texture mode (0 frames 1 flic 2 camera 3 mirror), +0x54 time mode (0 approximate 1 accurate),
+ * +0x5C speed mode (0 linear 1 harmonic 2 flash 3 controlled 4 absolute 5 continuous 6 texturebits),
+ * +0x60 period or texturebits spec*, +0x64 frame count, +0x68 current frame, +0x70 frame pixelmaps.
+ * texturebits spec (0x28 bytes): +0x00 u8 count, +0x01 u8 letter index into "THBVLRF", +0x24 tCar_spec*.
+ * frame = sum over i of ((car->light_bits >> letter[i]) & 1) << i  -- first letter is bit 0. */
+@ 0x00474ac0 void AddFunkotronics(void);             /* Funkgroo.c funk parser; texturebits letters at 0x00474FA2/0x0047509B/0x004755F5/0x00475807 */
+@ 0x00476470 void AddGroovidelics(void);             /* groove parser, same texturebits letter parse */
+@ 0x004771c0 void __fastcall DisposeFunkotronics(int owner /*ecx*/);  /* marks the owner's slots -999 */
+@ 0x00477230 void FunkThoseTronics(void);            /* per-frame funk update; texturebits frame decode at 0x00478808; called 0x004930C2 */
+@ 0x0041e5a0 void UpdateCarLightBits(void);          /* car->light_bits (0x18CC): 4 = brake (keys.brake || brake_force && |vcs.z|>1/13800), 8 = reverse (gear<0 || non-local-human vcs.z>0); called 0x00492F37 */
+@ 0x0048fa70 int  __fastcall GetKeywordIndex(void *file /*ecx*/, char **table /*edx*/, int count);  /* reads a word, returns its table index or -1 (name inferred) */
+@ 0x00533520 void BrMatrix34ApplyV(br_vector3 *out, br_vector3 *in, br_matrix34 *m);
+$ 0x00655d68 char   g_funk_bit_letters[]   /* "THBVLRF": bit 0..6 of car->light_bits; only B (2) and V (3) are ever set */
+$ 0x0068b84c void*  g_funkotronics_array   /* slots of 0x158 bytes */
+$ 0x0068b844 int    g_funkotronics_array_size
+$ 0x0074b584 tCar_spec* g_car_being_loaded /* set by LoadCar at 0x00488FA2; copied into texturebits specs */
+$ 0x00676914 int    g_action_replay_mode   /* inferred: skips light-bit update; FunkThoseTronics pairs it with ReplayIsPaused 0x00402360 */
 @ 0x005259b0 int  BrRendererBegin(br_device *device, br_renderer *renderer);
 @ 0x0051f950 void BrModelUpdate(br_model *model, unsigned short flags);
 @ 0x00522eb0 void BrZbBucketFlushAndSwap(void);
@@ -1019,7 +1037,8 @@ $ 0x006ad520 void* g_default_material     /* the object BrMaterialAllocate_Defau
  *    EARLITR (rear) and EALITL, EALITR (head) all ship as flags 0x0001, ka 0.1, colour
  *    0xFFFFFF -- identical to every other body panel. Only the rear pair is funked: the
  *    EAGLE3.TXT funk block gives them `texturebits` frames EBACKALL,2,x,2,y, a 2x2 atlas
- *    whose quadrant (off / brake / reverse / both) is chosen through map_transform only
+ *    whose quadrant is chosen through map_transform only. Frame order for "VB" is
+ *    0 off, 1 reverse, 2 brake, 3 both (findings 45: frame = sum(bit(letter i) << i))
  *    (see findings 6.4). Nothing about the material or its flags changes with the state.
  *    Headlights are not funked at all -- a static `eheadlig` texture.
  *    Naming is consistent across the fleet: materials ending LITL/LITR or containing
@@ -1060,6 +1079,11 @@ struct tCar_spec {
     /* 0x1D0 int active             -- physics-active / nearby, maintained by BuildActiveCarList */
     /* 0x1D4 int knackered          -- wasted */
     /* 0xE0C br_actor *car_model_actor -- the loaded .ACT, child of the master, identity transform */
+    /* 0x12AC float initial_brake, 0x12B0 float brake_increase, 0x12C0 float brake_force (C1 layout match, 0x00415618) */
+    /* 0x12D0 tCar_controls keys  -- 0x40000 acc, 0x80000 dec, 0x100000 brake (handbrake key in C1) */
+    /* 0x1340 float revs, 0x135C int gear (<0 reverse; net unpack 0x004C9692) */
+    /* 0x18CC unsigned light_bits -- funk texturebits source, written by UpdateCarLightBits 0x0041E5A0 */
+    /* physics_obj (+0x08): +0x68 br_vector3 v (world), +0x1A8 br_vector3 velocity_car_space (inferred; 0x004B7A67) */
 };
 
 struct tOpponent_spec {             /* stride 0x1A4 */

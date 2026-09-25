@@ -237,7 +237,7 @@ EBACKALL,2,1,2,1
 END OF FUNK
 ```
 
-`EBACKALL` is a **2x2 atlas holding all four states** (off, braking, reversing, both) and the
+`EBACKALL` is a **2x2 atlas holding all four states** (frames 0-3: off, reverse, brake, both; section 45) and the
 funk picks a quadrant by UV transform. The proxy ignored `map_transform` and explicitly set
 `D3DTTFF_DISABLE`, so the whole atlas was mapped onto the light panel — all four states
 visible at once. Fixed by folding `map_transform` into `D3DTS_TEXTURE0` with `D3DTTFF_COUNT2`,
@@ -3544,3 +3544,104 @@ The structs we pass are compatible across all three runtimes:
 
 The runtime's name appears in the log, and in the Headlights and Sun tabs. Tested on Remix
 Plus only so far.
+
+## 45. Funk texturebits: which frame is which light state (2026-09-25)
+
+Static analysis of CARMA2_HW0.EXE (Ghidra project + capstone). Not checked in game.
+
+**Parser.** `AddFunkotronics` (0x00474AC0; Funkgroo.c) reads each speed-control keyword from
+the 7-entry table at 0x00655B80: linear 0, harmonic 1, flash 2, controlled 3, absolute 4,
+continuous 5, **texturebits 6**. The texture section uses the tables at 0x00655B68 (frames 0,
+flic 1, camera 2, mirror 3) and 0x00655B78 (approximate 0, accurate 1). For texturebits the
+next line is read as a string, and the parser allocates a 0x28-byte bit spec (for example
+0x00474FA2 for the matrix section and 0x00475807 for the texture section):
+
+- `+0x00` byte: letter count.
+- `+0x01..` byte per letter: the letter's index in the string "THBVLRF" at 0x00655D68.
+  The lookup is case-sensitive. An unknown letter leaves its byte unset.
+- `+0x24`: the car. The parser copies g_car_being_loaded (0x0074B584, set by LoadCar at
+  0x00488FA2), so each car's funk reads its own car.
+
+The funk slot (stride 0x158, array 0x0068B84C) stores the texture mode at +0x50, the time
+mode at +0x54, the speed mode at +0x5C, the spec pointer at +0x60, the frame count at +0x64
+and the current frame at +0x68. The frame pixelmaps start at +0x70.
+
+**Frame index.** `FunkThoseTronics` (0x00477230, called from the main loop at 0x004930C2),
+texture mode frames, time mode accurate (+0x54 == 1), speed mode 6, at 0x00478808..0x0047885E:
+
+```
+bits = spec->car->light_bits;            // car + 0x18CC
+frame = 0;
+for (i = 0; i < spec->count; i++)
+    if (bits & (1 << spec->letter[i])) frame += 1 << i;
+funk->current_frame = frame;             // +0x68, then colour_map = frames[frame]
+```
+
+The first letter is bit 0 of the frame index. For "VB", frame = V + 2*B. The code does not
+check the index against the frame count. The same decode is used for matrix and lighting
+funks (0x00477595 ...) and for groovidelics (0x00479238, 0x004799E7 ...). In approximate
+mode the value at +0x60 is treated as a period float, so texturebits only works with
+`accurate`, as every car TXT uses it.
+
+**Light bits.** `UpdateCarLightBits` (0x0041E5A0) is called from the main loop at 0x00492F37,
+before the funk update in the same frame. For every car in g_active_car_list it does this:
+
+```
+if (car->car_master_actor->render_style == 1 /*hidden*/ || DAT_00676914) skip;  // bits keep last value
+car->light_bits = 0;
+if ((car->keys & 0x100000) ||                                   // keys.brake (C1: handbrake key)
+    (car->brake_force != 0.0f && fabs(phys->vcs.z) > 1/13800.0))  // 0x12C0; phys = car+0x08, +0x1B0
+    car->light_bits = 4;                                         // bit 2 = 'B'
+if (car->gear < 0 ||                                             // 0x135C
+    ((car == NULL || car->driver != 8) && phys->vcs.z > 0.0f))   // non-local-human car rolling backwards
+    car->light_bits |= 8;                                        // bit 3 = 'V'
+```
+
+The only other writer of +0x18CC is the network car-state unpack (0x004C96AF), which copies
+the sender's bits. The sender packs them at 0x004C6690. No code ever sets bits 0, 1, 4, 5
+or 6.
+
+| Letter | Bit | Meaning | Status |
+|---|---|---|---|
+| T | 0 | unknown, never set | always 0 |
+| H | 1 | unknown (headlights?), never set | always 0 |
+| **B** | 2 | brake lights: handbrake key, or brake_force non-zero while moving | proven |
+| **V** | 3 | reverse lights: gear < 0 (any car), or rolling backwards (AI and net cars only) | proven |
+| L | 4 | unknown (left indicator?), never set | always 0 |
+| R | 5 | unknown (right indicator?), never set | always 0 |
+| F | 6 | unknown, never set | always 0 |
+
+"VB" (EAGLE3 EARLITL/EARLITR: EBACKALL,2,x,2,y):
+
+| frame | V | B | state | atlas cell (x,y) |
+|---|---|---|---|---|
+| 0 | 0 | 0 | lights off | (0,0) |
+| 1 | 1 | 0 | reverse only | (1,0) |
+| 2 | 0 | 1 | brake only | (0,1) |
+| 3 | 1 | 1 | brake + reverse | (1,1) |
+
+"B" gives frame 0 when the brake light is off and frame 1 when it is on.
+
+Proven from code:
+- The letter table and its order.
+- The bit order: the first letter is bit 0.
+- The frame formula.
+- Only bits 2 (B) and 3 (V) are ever set, and the exact conditions that set them.
+- +0x18CC is sent over the network.
+
+Inferred:
+- Field names come from matching layouts in C1 (dethrace).
+  - 0x12C0 is brake_force: 0x00415618 sets it from initial_brake (0x12AC) and
+    brake_increase (0x12B0) on keys.dec, like C1 `ControlCar`.
+  - 0x12D0 is tCar_controls keys: the brake bit is 0x100000, dec 0x80000, acc 0x40000.
+  - 0x135C is gear: the net unpack stores `(packed >> 12) - 1`.
+- Physics object +0x1A8 is velocity_car_space. At 0x004B7A67 it is transformed into +0x68 by
+  BrMatrix34ApplyV (0x00533520). A car faces -Z, so z > 0 means moving backwards (C1 uses
+  the same test).
+- DAT_00676914 is gAction_replay_mode. FunkThoseTronics pairs it with 0x00402360
+  (ReplayIsPaused) the way C1 does.
+- The meanings of T, H, L, R and F are guesses from the letters (headlights, indicators and
+  so on). They have no effect in this build.
+
+The earlier kb.h note listed EBACKALL's quadrants as "off / brake / reverse / both". The
+frame order is actually off, reverse, brake, both.
