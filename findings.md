@@ -3855,5 +3855,5 @@ only, and nothing is dereferenced. A pickup is always drawn on its first frame, 
 culling is off until its model has been seen. The set is cleared with the rest of the
 track state.
 
-Not verified in game yet. The "vanishing" count in the scene stats should fall to roughly the
+Reported working in game: close to 60 fps. The "vanishing" count in the scene stats should fall to roughly the
 pickups in view.
