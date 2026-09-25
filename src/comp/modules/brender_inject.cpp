@@ -702,6 +702,35 @@ namespace comp
 				&& (mode == game::SMASH_MODE_REMOVE || mode == game::SMASH_MODE_REPLACE_MODEL) ? mode : 0;
 		}
 
+		/*
+		 * Whether the funkotronic system animates this material. The game lists these from
+		 * load, so the answer does not wait for the animation to show itself: a car's rear
+		 * light holds its lights-off cell through the whole countdown while the car stands
+		 * on the grid, and a chunk baked in that time draws it without its cell transform --
+		 * the whole atlas.
+		 */
+		bool funk_animates(const game::br_material* material)
+		{
+			const auto slots = *reinterpret_cast<const uint8_t* const*>(game::rebase(game::ADDR_g_funk_slots));
+			const int count = *reinterpret_cast<const int*>(game::rebase(game::ADDR_g_funk_slot_count));
+			if (!material || count <= 0
+				|| !readable(slots, static_cast<size_t>(count) * game::FUNK_SLOT_STRIDE))
+			{
+				return false;
+			}
+
+			for (int i = 0; i < count; ++i)
+			{
+				const uint8_t* slot = slots + static_cast<size_t>(i) * game::FUNK_SLOT_STRIDE;
+				if (*reinterpret_cast<const int*>(slot + game::FUNK_SLOT_OWNER) != game::FUNK_OWNER_FREE
+					&& *reinterpret_cast<const game::br_material* const*>(slot + game::FUNK_SLOT_MATERIAL) == material)
+				{
+					return true;
+				}
+			}
+			return false;
+		}
+
 		// Destructible scenery, or anything hanging under it: a replacemodel smash hides the
 		// smashed actor's children along with swapping its model.
 		const game::br_actor* destructible_ancestor(const game::br_actor* actor)
@@ -1947,11 +1976,12 @@ namespace comp
 			return false;
 		}
 
-		// A funk-animated material needs its UV transform re-read every frame, which only
-		// the dynamic path does.
+		// An animated material needs its colour map and UV transform re-read every frame,
+		// which only the dynamic path does. The funk table names what the game animates from
+		// load; m_animated_materials adds what has since been seen to change without one.
 		for (const auto& part : parts)
 		{
-			if (m_animated_materials.contains(part.material))
+			if (funk_animates(part.material) || m_animated_materials.contains(part.material))
 			{
 				note_placement_drift(model, "kept dynamic: animated material");
 				return false;

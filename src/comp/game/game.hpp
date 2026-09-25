@@ -139,6 +139,19 @@ namespace comp::game
 	constexpr int SMASH_MODE_REMOVE = 3;
 	constexpr int SMASH_MODE_REPLACE_MODEL = 4;
 
+	/*
+	 * The funkotronic slots (Funkgroo.c). Every material whose appearance the game animates
+	 * -- a scrolling UV, a flashing colour, a sign's frames, a car light's atlas cell -- has
+	 * a slot, filled by AddFunkotronics (0x00474AC0) as the track and each car load and
+	 * applied to the material by FunkThoseTronics (0x00477230) every frame.
+	 */
+	constexpr uint32_t ADDR_g_funk_slots = 0x0068B84Cu;       // slot array pointer, null before a load
+	constexpr uint32_t ADDR_g_funk_slot_count = 0x0068B844u;  // int
+	constexpr uint32_t FUNK_SLOT_STRIDE = 0x158u;
+	constexpr uint32_t FUNK_SLOT_OWNER = 0x00u;               // int: FUNK_OWNER_FREE for an unused slot
+	constexpr uint32_t FUNK_SLOT_MATERIAL = 0x08u;            // br_material*
+	constexpr int FUNK_OWNER_FREE = -999;
+
 	typedef void(__cdecl* BrZbSceneRender_t)(br_actor* world, br_actor* camera, void* colour, void* depth);
 	typedef void(__cdecl* BrZbSceneRenderEnd_t)();
 	typedef void(__cdecl* SceneSetupCameraMatrices_t)(br_actor* world, br_actor* camera);

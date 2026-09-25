@@ -3666,3 +3666,172 @@ Inferred:
 
 The earlier kb.h note listed EBACKALL's quadrants as "off / brake / reverse / both". The
 frame order is actually off, reverse, brake, both.
+
+## 46. Funk atlas frames at race start (2026-09-25)
+
+Static analysis only (Ghidra program `CARMA2_HW.EXE`, capstone on `CARMA2_HW0.EXE`, car data
+extracted from `DATA/CARS/EAGLE3.TWT`). Not checked in game. Question: why the Eagle's rear
+light panels show the whole `EBACKALL` atlas for the first frames of a race.
+
+**Where the frame matrices live.** The texture section of a funk slot:
+
+| offset | field |
+|---|---|
+| +0x58 | last frame-change time (approximate mode only) |
+| +0x64 | frame count (at most 8: the pixelmap array ends where the matrix table starts) |
+| +0x68 | current frame, set to 0 by the parser |
+| +0x6C | 1 if any frame line has sub-rectangle numbers, else 0 |
+| +0x70 | `br_pixelmap *frame_map[8]` |
+| +0x90 | `br_matrix23 frame_xform[8]`, stride 0x18 |
+
+Parser, frames loop at 0x004758C9..0x00475A1A (inside `AddFunkotronics`). Each line is split
+with `strtok(line, "\t ,/")` (0x0058F41C). Then:
+
+- `frame_map[i] = BrMapFind(name)` (0x0051EFF0). A missing map is fatal error 0x42.
+- `BrMatrix23Identity(&frame_xform[i])` (0x00534BA0, called at 0x00475911).
+- If a non-empty token follows, +0x6C is set to 1 and the next four tokens are read with
+  `sscanf("%d")` (0x0058F418) as xdiv, xidx, ydiv, yidx, in that order.
+  The matrix is written at 0x004759C7..0x004759FD:
+
+```
+m[0][0] = 1.0 / xdiv      m[0][1] = 0     (left over from the identity)
+m[1][0] = 0               m[1][1] = 1.0 / ydiv
+m[2][0] = xidx / xdiv     m[2][1] = yidx / ydiv
+```
+
+For `EBACKALL,2,x,2,y` this gives scale (0.5, 0.5) and translation (x/2, y/2).
+
+**The parser never touches the material.** For texture mode `frames`, `AddFunkotronics` does
+not write `colour_map` or `map_transform`. Only the `flic` branch sets `colour_map` and calls
+`BrMaterialUpdate(mat, 0x7FFF)`. So until the first `FunkThoseTronics`, the material keeps what
+`Eagle3.mat` gave it:
+- `EARLITL`/`EARLITR`: `colour_map` = **`ebacklig`**. In `PIXIES.P16` this is a 4x4 red
+  placeholder, not the atlas. The car's README calls it a placeholder, and EAGLE3.WAM names it
+  as the "pixelmap to use when intact".
+- `map_transform` = identity.
+
+**How the per-frame update applies it.** This is in `FunkThoseTronics` 0x00477230, texture
+mode 0. The kb.h entry "FunkApplyMapTransform 0x00478930" was not a function: 0x00478930 is
+in the middle of an instruction in this block, and nothing references it.
+
+```
+if (!(replay_mode && ReplayIsPaused() && trigger != 3 && trigger != 4)) {    // 0x004786xx
+    if (time_mode == accurate)            // texturebits: +0x68 = frame from car->light_bits,
+        funk->frame = ...;                //   recomputed every call (0x00478808..0x0047885E)
+    else if (now - funk->last >= period)  // approximate: 0x004788DA..0x00478902
+        { funk->last = now; if (++funk->frame >= count) funk->frame = 0; }
+    flags = 0;                                                   // 0x00478905
+    if (mat->colour_map != frame_map[frame])                     // 0x0047890D
+        { mat->colour_map = mat->[0x94] = frame_map[frame]; flags = 8; }
+    if (funk->has_xforms /*+0x6C*/) {                            // 0x00478923
+        m = &frame_xform[frame];              // esi + (frame+6)*0x18
+        if (m00 != mat.m00 || m11 != mat.m11 || m20 != mat.m20 || m21 != mat.m21)  // m01/m10 not compared
+            { BrMatrix23Copy(&mat->map_transform, m); flags |= 1; }             // 0x0047896F
+    }
+    if (flags) BrMaterialUpdate(mat, flags);                     // 0x00478987
+}
+```
+
+So the transform is applied **unconditionally every call**. It compares against the
+material's current values, not against the previous frame index. Frame 0 (lights off) is
+written on the very first call, because 0.5 != 1.0. Accurate/texturebits has no time guard
+and no first-frame early-out. `colour_map` and `map_transform` change in the same call, so
+there is no moment where the material has `colour_map = EBACKALL` with an identity transform.
+
+Before the texture section, the slot is skipped only in these cases:
+- `owner == -999`.
+- **`+0x04 != 0`**. This is a disable-flags word:
+  - bit 0 is set by 0x0047B250, called from the smash-damage texture swap 0x004ED2B0, and
+    cleared by 0x0047B280 when `SetSmashLevel` 0x004EF840 repairs to level 0;
+  - bit 1 is set by 0x0047B2B0 and cleared by 0x0047B2E0, from net-game / powerup code
+    (0x004F8CA0, 0x004F9020, 0x004FE360, the last gated by `[0x0074D3DC]`).
+  The parser clears only bit 0.
+- Trigger mode `+0x0C` is distance (1) with no visible proximity triangle, or is lap-gated
+  (2, 3). The Eagle funks use `constant` (0).
+
+None of these is set for a car in a single-player race at the start.
+
+**Order in the race loop.** `MainGameLoop` entry is **0x00492950**. 0x00492980, the kb.h
+address, is the body after a `jmp` over a small prologue; `DoGame` 0x00503C50 calls 0x00492950
+at 0x00503FD1. Every iteration runs, in straight-line code:
+
+```
+0x00492F37  UpdateCarLightBits      (inside if (!replay_mode))
+0x004930C2  FunkThoseTronics        (unconditional)
+0x00493A3F  0x004ECFB0 smash-damage queue    0x00493A44  0x004F00F0 repair tick
+0x00493AEA  RenderAFrame            (only when [0x0075B8F0] == 0 or its deadline has passed)
+```
+
+`[0x0075B8F0]` is a render-start delay. Before the loop it is converted to an absolute time
+(`+= GetTotalTime()`). While it is pending, the loop runs `FunkThoseTronics` without
+rendering. The funk update therefore always runs before the render in the same iteration.
+
+**No race-world render before the loop.** The direct callers of `RenderAFrame` are:
+- the loop (0x00493AEA);
+- replay code (0x004E69B0, 0x004E72E0, and 0x004E6FF0, which only renders when the replay
+  flag is set);
+- the movie-capture helper 0x004E1A20.
+
+`RenderView`/`RenderScene` are only called from `RenderAFrame`. The other `BrZbSceneRender`
+callers render their own worlds: the frontend 0x0046D8E0 / 0x00472B00, net HUD 0x00499A00,
+HUD 0x0047CAD0 / 0x0044BAC0, and the tint poly 0x004D8290. A depth-5 call-graph walk found
+no path to any scene render from these starting points:
+- the pre-loop part of `MainGameLoop` (0x004A57E0, 0x00413780, 0x004A7A60, 0x0044C850,
+  0x00492680, 0x004940E0, 0x00504300, 0x0047B880, 0x004B5330 ...);
+- the race set-up in `DoGame` before 0x00503FD1 (0x00481830, 0x004E2B70, 0x004148D0,
+  0x004010B0, 0x00414410, 0x00455BB0, 0x004C6580, 0x004EA770, 0x004EA840, 0x004E3410).
+
+`0x0047B880` only clears the screen and back buffer and swaps.
+
+**Other writers of these materials.**
+- `0x004ED2B0` (smash damage level up): sets `colour_map`/+0x94 to the damage pixelmap,
+  resets `map_transform` to identity or a random flip, calls `BrMaterialUpdate(0x7FFF)`, and
+  disables the funk (bit 0). A damaged light therefore shows its whole damage texture. That is
+  the intended look for that texture, not the atlas.
+- `0x004EF840` (repair a level): restores the level's pixelmap (`ebacklig` at level 0) and
+  re-enables the funk only at level 0. It is called from the repair tick 0x004F00F0 after the
+  funk update, so for one rendered frame after a full repair the panel shows `ebacklig`
+  through the old damage transform. Both only run for records with damage level +0x4C != 0.
+  Nothing calls them at race start.
+- The other `BrMatrix23Identity` callers (0x004A6A10, 0x004CB1E0, 0x004EED70) initialise
+  unrelated materials: smears, slicks, shrapnel.
+
+**Conclusion.**
+- **Proven:**
+  - The frame matrix formula and where it is stored.
+  - The unconditional compare-and-copy apply, including frame 0 on the first call.
+  - `FunkThoseTronics` runs before `RenderAFrame` in every loop iteration.
+  - Nothing renders the race world before the loop starts.
+- **Inferred:** The unmodified game never presents the Eagle's rear lights with an identity
+  `map_transform` at race start. Their material's pre-funk state would not even show the
+  atlas: it is the 4x4 `ebacklig` placeholder.
+- **Consequence:** The "whole atlas for the first frames" is not the game's state. The proxy
+  or Remix must be drawing those panels either with material state from another moment, or
+  without the texture-stage transform, for its first frames. In the game, the combination
+  `colour_map == EBACKALL` with an identity transform never exists at any render.
+
+### 46.1 The cause is the static-world baker
+
+The game never shows the atlas, but the proxy's baker does:
+- An actor that keeps the same placement for `STATIC_PROMOTE_SIGHTINGS` (3) scenes is baked
+  into a chunk. Cars standing on the grid through the countdown qualify.
+- Chunks are drawn with `D3DTSS_TEXTURETRANSFORMFLAGS = D3DTTFF_DISABLE`. A baked rear light
+  therefore shows the whole atlas.
+- `bake_actor` did refuse animated materials, but it learned that a material is animated only
+  by `on_material_update` seeing its UV transform change in two different scenes.
+  `FunkThoseTronics` writes the transform only when it differs from the material's (6.4, 46),
+  so a light that stays off through the countdown reports no change.
+- The light returned to the dynamic path only when the car moved (placement change) or the
+  lights first changed state (the second UV update). That is the brief full-atlas frame at
+  the start of a race.
+
+Fix: `bake_actor` also refuses any material that has a live funk slot. It reads
+`g_funk_slots` at 0x0068B84C, which is a pointer to the slot array and is null before a load
+(FunkThoseTronics and DisposeFunkotronics test it). The count is at 0x0068B844 and the stride
+is 0x158. A slot is live when its owner at +0x00 is not -999; its material is at +0x08.
+Funk-animated materials (car lights, scrolling and flashing track textures, sign frames) are
+now dynamic from their first sighting, instead of after their second visible change.
+`m_animated_materials` still catches what the funk table does not declare: opacity fades,
+and damage re-mapping a car panel (0x004ED2B0).
+
+Not verified in game yet.

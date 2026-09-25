@@ -279,13 +279,35 @@ enum br_matrix_token {
 @ 0x004e9c40 void InitSpillsAndSkids(void);          /* shadow materials + the 100-quad ground decal ring */
 /* 0x004EA880 is InitSpriteParticlePool -- see section 25; it is the shared sprite
  * particle pool, not a decal pool. */
-@ 0x00478930 void FunkApplyMapTransform(void);       /* copies a frame's br_matrix23 into material->map_transform */
-/* --- Funkotronics (findings 45). Funk slot stride 0x158: +0x00 owner (-999 free), +0x08 material,
+/* 0x00478928..0x0047898F is not a function: it is the texture-frames apply block inside
+ * FunkThoseTronics (findings 46). It runs every call and compares against the material, not the last frame:
+ *   if (mat->colour_map != frame_map[f]) { mat->colour_map = mat->[0x94] = frame_map[f]; fl = 8; }
+ *   if (+0x6C && frame_xform[f].{m00,m11,m20,m21} != mat->map_transform.{same}) { BrMatrix23Copy; fl |= 1; }
+ *   if (fl) BrMaterialUpdate(mat, fl);          -- frame 0 is applied on the first call */
+/* --- Funkotronics (findings 45, 46). Funk slot stride 0x158: +0x00 owner (-999 free),
+ * +0x04 disable flags (any bit set = slot skipped; bit 0 smash damage, bit 1 net/powerup), +0x08 material,
+ * +0x0C trigger mode (0 constant, 1 distance [+0x150 count / +0x154 proximity tris], 2/3 lap-gated),
  * +0x50 texture mode (0 frames 1 flic 2 camera 3 mirror), +0x54 time mode (0 approximate 1 accurate),
- * +0x5C speed mode (0 linear 1 harmonic 2 flash 3 controlled 4 absolute 5 continuous 6 texturebits),
- * +0x60 period or texturebits spec*, +0x64 frame count, +0x68 current frame, +0x70 frame pixelmaps.
+ * +0x58 last frame-change time (approximate), +0x5C speed mode (0 linear 1 harmonic 2 flash 3 controlled
+ * 4 absolute 5 continuous 6 texturebits), +0x60 period or texturebits spec*, +0x64 frame count (<= 8),
+ * +0x68 current frame (parser sets 0), +0x6C has_frame_xforms (1 if any frame line has "x,xi,y,yi"),
+ * +0x70 br_pixelmap *frame_map[8], +0x90 br_matrix23 frame_xform[8] (stride 0x18).
+ * Frame line "NAME,xdiv,xidx,ydiv,yidx" (strtok "\t ,/", sscanf "%d"; parser 0x004758C9..0x00475A1A):
+ *   identity, then m00 = 1/xdiv, m11 = 1/ydiv, m20 = xidx/xdiv, m21 = yidx/ydiv.
+ * The parser never writes the material's colour_map or map_transform in frames mode: both stay as the
+ * .MAT loaded them until the first FunkThoseTronics (Eagle EARLITL/R: colour_map 'ebacklig', a 4x4 placeholder).
  * texturebits spec (0x28 bytes): +0x00 u8 count, +0x01 u8 letter index into "THBVLRF", +0x24 tCar_spec*.
  * frame = sum over i of ((car->light_bits >> letter[i]) & 1) << i  -- first letter is bit 0. */
+@ 0x0047b250 void __fastcall FunkSlotDisable(int slot /*ecx*/);    /* +0x04 |= 1, then 0x004C8DE0 (name inferred) */
+@ 0x0047b280 void __fastcall FunkSlotEnable(int slot /*ecx*/);     /* +0x04 &= ~1, then 0x004C8DE0 (name inferred) */
+@ 0x0047b2b0 void __fastcall FunkSlotHide(int slot /*ecx*/);       /* +0x04 |= 2 (net "it" / powerup code; name inferred) */
+@ 0x0047b2e0 void __fastcall FunkSlotUnhide(int slot /*ecx*/);     /* +0x04 &= ~2 (name inferred) */
+@ 0x004ed2b0 void __fastcall SmashMaterialToLevel(void *car /*ecx*/, void *mat_record /*edx*/, int level); /* damage: colour_map/+0x94 = level pixmap, map_transform = identity or random flip, BrMaterialUpdate(0x7FFF), FunkSlotDisable (name inferred) */
+@ 0x004ef840 void __fastcall SetSmashLevel(void *car /*ecx*/, void *mat_record /*edx*/, int level);        /* repair step: colour_map/+0x94 = level pixmap, BrMaterialUpdate(8); level 0 -> FunkSlotEnable (name inferred) */
+@ 0x004ecfb0 void __fastcall ProcessSmashQueue(int keep /*ecx*/);  /* per frame @0x00493A3F, after the funk update (name inferred) */
+@ 0x004f00f0 void RepairTick(void);                    /* per frame @0x00493A44: steps pending repairs (table 0x006A7FC8) down every 150 ms (name inferred) */
+/* car material record (stride 0x7C, array at model+0x3C, count u16 model+0x38): +0x00 name, +0x40 funk slot
+ * index (-1 none), +0x44 br_material*, +0x4C smash level, +0x50 per-level data (stride 0x2C4). */
 @ 0x00474ac0 void AddFunkotronics(void);             /* Funkgroo.c funk parser; texturebits letters at 0x00474FA2/0x0047509B/0x004755F5/0x00475807 */
 @ 0x00476470 void AddGroovidelics(void);             /* groove parser, same texturebits letter parse */
 @ 0x004771c0 void __fastcall DisposeFunkotronics(int owner /*ecx*/);  /* marks the owner's slots -999 */
@@ -1098,7 +1120,10 @@ struct tOpponent_spec {             /* stride 0x1A4 */
 @ 0x004a7a80 void BuildActiveCarList(void);
 @ 0x00488f70 void __fastcall LoadCar(char *name /*ecx*/, int driver /*edx*/, tCar_spec *car, int owner, char *driver_name, void *storage);
 @ 0x0043f5f0 void __fastcall KnackerThisCar(tCar_spec *car /*ecx*/);
-@ 0x00492980 void MainGameLoop(void);
+@ 0x00492950 void MainGameLoop(void);  /* true entry (called by 0x00503C50 at 0x00503FD1); 0x00492980 is the body after a jmp.
+                                        * Per iteration: UpdateCarLightBits @0x00492F37, FunkThoseTronics @0x004930C2,
+                                        * RenderAFrame @0x00493AEA -- funks always update before the render (findings 46). */
+$ 0x0075b8f0 unsigned g_render_start_delay /* ms before RenderAFrame is first called; made absolute before the loop, cleared when reached */
 
 $ 0x0075bc2c tCar_spec g_player_car
 $ 0x0075bba8 int    g_racing               /* gProgram_state.racing: 1 inside MainGameLoop, 0 in the pause frontend */

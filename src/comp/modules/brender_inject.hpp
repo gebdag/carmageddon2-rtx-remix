@@ -641,7 +641,9 @@ std::vector<static_chunk> m_chunks;
 		// is doing now, not by a one-way blacklist that only ever grew.
 		std::unordered_map<game::br_actor*, actor_record> m_actors;
 
-		// Materials the funkotronic system has animated mid-race. Pointers are compared,
+		// Materials seen to animate mid-race: a UV transform or an opacity that moved across
+		// scenes. The funk table covers what the game declares; this catches the rest, such
+		// as damage re-mapping a car panel and fades. Pointers are compared,
 		// never dereferenced; a stale entry after a level change only costs one model its
 		// bake, and the set is cleared with the rest of the static world.
 		std::unordered_set<game::br_material*> m_animated_materials;
