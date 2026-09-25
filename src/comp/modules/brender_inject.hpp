@@ -90,6 +90,11 @@ namespace comp
 
 		scene_profile& profile() { return m_profile; }
 
+		// Whether the renderer's bounds test is being asked about a pickup's model. The
+		// game passes a model actor's &model->bounds_min, so the model is recovered from
+		// the pointer alone; bounds of anything else never match.
+		bool is_pickup_model_bounds(const float* bounds) const;
+
 		/*
 		 * Time spent between one race scene closing and the next one opening.
 		 *
@@ -647,6 +652,10 @@ std::vector<static_chunk> m_chunks;
 		// never dereferenced; a stale entry after a level change only costs one model its
 		// bake, and the set is cleared with the rest of the static world.
 		std::unordered_set<game::br_material*> m_animated_materials;
+
+		// Models seen drawn for pickup actors this track. Compared by pointer only, so the
+		// bounds test can match against them without touching game memory.
+		std::unordered_set<const game::br_model*> m_pickup_models;
 
 		// What a material looked like at its last appearance-changing update. Animation
 		// means such updates in two different scenes; a load burst is many under one stamp.

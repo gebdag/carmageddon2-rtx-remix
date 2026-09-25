@@ -3835,3 +3835,25 @@ now dynamic from their first sighting, instead of after their second visible cha
 and damage re-mapping a car panel (0x004ED2B0).
 
 Not verified in game yet.
+
+## 47. Pickups are culled again (2026-09-25)
+
+Shove Thy Neighbor (`JUNKYARD2.TXT`) ran at 33-55 fps, where the city race in the same session
+ran at 60-107 fps. The scene stats pointed at the "vanishing" dynamic reason: 830-930 actors
+on the junkyard against ~450 in the city, and 3,000-4,000 draws against ~1,800-2,000. The
+track's actor file has 869 pickups (`&74POWERUPB.ACT` alone 388 times); newcity1 has 491.
+Pickups spin, so they can never bake. With `DisableFrustum`, every one of them was a draw of
+its own each frame, on screen or not.
+
+`[Culling] CullPickups=1` (default on) leaves the game's own bounds-test verdict in place for
+pickups. BrZbActorRender (0x005221E0) calls the renderer's boundsTest (vtable +0xD0) with
+`&model->bounds_min` (model + 0x34) for a model actor (0x005222E5, 0x00522496), and with
+`actor->type_data` for a bounds actor. So `hk_bounds_test` recovers the model from the pointer
+and compares it with `m_pickup_models`: the models captured for actors whose identifier
+passes the game's pickup test (0xA3 as the second character). The comparison is by pointer
+only, and nothing is dereferenced. A pickup is always drawn on its first frame, because
+culling is off until its model has been seen. The set is cleared with the rest of the
+track state.
+
+Not verified in game yet. The "vanishing" count in the scene stats should fall to roughly the
+pickups in view.

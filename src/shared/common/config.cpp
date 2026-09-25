@@ -101,6 +101,7 @@ namespace shared::common
 		culling.far_plane = get_float("Culling", "FarPlane", 0.0f);
 		culling.disable_frustum = get_bool("Culling", "DisableFrustum", true);
 		culling.bubble_radius = get_float("Culling", "BubbleRadius", 0.0f);
+		culling.cull_pickups = get_bool("Culling", "CullPickups", true);
 
 		// [Optimization]
 		optimization.static_world = get_bool("Optimization", "StaticWorld", true);

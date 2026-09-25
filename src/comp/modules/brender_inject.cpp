@@ -744,14 +744,20 @@ namespace comp
 			return nullptr;
 		}
 
+		// A powerup pickup: 0xA3 ('£') as the identifier's second character, the test
+		// SpecialActorEnumCallback (0x0040D1F0) uses.
+		bool is_pickup(const game::br_actor* actor)
+		{
+			const char* name = actor->identifier;
+			return readable(name, 2) && name[0] && static_cast<uint8_t>(name[1]) == 0xA3;
+		}
+
 		/*
 		 * Whether the game removes this actor rather than ever moving it.
 		 *
 		 * Holding still proves an actor is not being driven, but it says nothing about one
 		 * that is about to be deleted, and a chunk cannot give geometry back. Powerup
-		 * pickups disappear the instant they are taken -- a pickup is any actor whose
-		 * identifier carries 0xA3 ('£') as its second character, the test
-		 * SpecialActorEnumCallback (0x0040D1F0) uses -- and the pooled decal and sprite
+		 * pickups disappear the instant they are taken, and the pooled decal and sprite
 		 * quads and the car flames are recycled at a new placement rather than moved to it.
 		 * Destructible scenery stands perfectly still until it is hit, and is then hidden
 		 * where it stands by a render style -- which stops the scene walk from reaching it,
@@ -759,11 +765,7 @@ namespace comp
 		 */
 		bool vanishes_outright(const game::br_actor* actor, const game::br_model* model)
 		{
-			const char* name = actor->identifier;
-			const bool pickup = readable(name, 2)
-				&& name[0] && static_cast<uint8_t>(name[1]) == 0xA3;
-
-			return pickup || is_decal_model(model) || in_quad_pool(game::SPRITE_PARTICLE_POOL, model)
+			return is_pickup(actor) || is_decal_model(model) || in_quad_pool(game::SPRITE_PARTICLE_POOL, model)
 				|| is_flame_model(model) || destructible_ancestor(actor);
 		}
 
@@ -803,6 +805,7 @@ namespace comp
 		// behind and beside the camera. Rejected actors are downgraded to PARTIAL rather
 		// than INSIDE so BRender still clips whatever it ends up rasterizing itself.
 		// DisableFrustum keeps everything; the bubble keeps a radius around the camera.
+		// Pickups keep the game's verdict either way (culling.cull_pickups).
 		int __cdecl hk_bounds_test(void* self, uint32_t* out_token, const float* bounds)
 		{
 			const int result = o_bounds_test(self, out_token, bounds);
@@ -812,6 +815,11 @@ namespace comp
 			}
 
 			const auto& culling = shared::common::config::get().culling;
+			const auto inject = brender_inject::get();
+
+			if (culling.cull_pickups && inject && inject->is_pickup_model_bounds(bounds)) {
+				return result;
+			}
 			if (culling.disable_frustum)
 			{
 				*out_token = game::BRT_BOUNDS_PARTIAL;
@@ -822,7 +830,6 @@ namespace comp
 				return result;
 			}
 
-			const auto inject = brender_inject::get();
 			const int64_t start = now_ticks();
 			const bool keep = inside_camera_bubble(bounds, culling.bubble_radius);
 			if (inject) {
@@ -1803,6 +1810,13 @@ namespace comp
 		return !parts.empty();
 	}
 
+	bool brender_inject::is_pickup_model_bounds(const float* bounds) const
+	{
+		const auto model = reinterpret_cast<const game::br_model*>(
+			reinterpret_cast<const uint8_t*>(bounds) - offsetof(game::br_model, bounds_min));
+		return m_pickup_models.contains(model);
+	}
+
 	brender_inject::model_identity brender_inject::identify(const game::br_model* model)
 	{
 		return { model->prepared, model->vertices, model->faces,
@@ -2184,6 +2198,7 @@ namespace comp
 		release_chunks();
 		m_actors.clear();
 		m_animated_materials.clear();
+		m_pickup_models.clear();
 		m_material_state.clear();
 		m_have_unsealed = false;
 		m_live_actors = 0;
@@ -2609,6 +2624,10 @@ namespace comp
 
 		++m_scene_models;
 		++m_captures;
+
+		if (race_scene && actor && is_pickup(actor)) {
+			m_pickup_models.insert(model);
+		}
 
 		/*
 		 * Scenery holds one placement for as long as nothing hits it, so it can be baked

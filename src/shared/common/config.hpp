@@ -109,6 +109,12 @@ namespace shared::common
 			// frustum test rejects it. Superseded by disable_frustum; kept for runs that
 			// want the game's culling mostly intact. 0 disables it.
 			float bubble_radius = 0.0f;
+
+			// Leave the game's own frustum culling in place for powerup pickups, whatever
+			// disable_frustum and bubble_radius say. A track carries hundreds of them, each
+			// a spinning model that can never bake, so every one kept off screen is a
+			// dynamic draw per frame that lights nothing.
+			bool cull_pickups = true;
 		} culling;
 
 		struct effects_settings
