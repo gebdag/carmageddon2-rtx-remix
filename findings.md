@@ -2746,7 +2746,7 @@ The Headlights tab now says why the player's car is dark when it is ("flagged as
 "not being drawn", ...) or that it is lit and how big the game says it is, which separates
 a lamp the proxy never submitted from one Remix occluded.
 
-The game binds H itself (KEYMAP action 59); the proxy's toggle rides along with it.
+The game binds H itself (KEYMAP action 59, the horn); the toggle has since moved to F (section 48).
 
 ### 33.8 The lights were a frame behind the car (2026-09-21)
 
@@ -3857,3 +3857,19 @@ track state.
 
 Reported working in game: close to 60 fps. The "vanishing" count in the scene stats should fall to roughly the
 pickups in view.
+
+## 48. The headlight key moves from H to F (2026-09-25)
+
+A key-map file (`DATA/DKEYMAP0..3.TXT` for the defaults, `Keymap_0..3.txt` for the player's
+own) holds one key code per action slot. A code is its line number in `DATA/KEYNAMES.TXT`
+minus 2; that offset makes every known default land where it should (Recover Insert, Repair
+Backspace, Hand Brake Space, Map Tab, Cockpit View C, Buy Delete/End/PgDn). The control names
+come from the executable's name-to-slot table at 0x00596250 (8-byte `{char* name, int slot}`
+entries).
+
+- **H** is slot 59, **Horn**, in all four layouts, so the old headlight key sounded the horn.
+- **F** is unbound in layouts 0, 2 and 3. Layout 1 (the one that drives with A/Alt and steers
+  with comma/period) uses it for slot 52. Slots 51-53 are Q/W/E in the default layout, so slot
+  52 is look forward.
+
+The toggle (`imgui::input_message`) now listens for F.

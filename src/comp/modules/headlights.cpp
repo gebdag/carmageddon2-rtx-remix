@@ -555,7 +555,7 @@ namespace comp
 	{
 		settings& s = m_settings;
 
-		ImGui::TextUnformatted("H cycles: off -> player car -> all cars -> off");
+		ImGui::TextUnformatted("F cycles: off -> player car -> all cars -> off");
 
 		if (!shared::common::remix_api::is_initialized())
 		{

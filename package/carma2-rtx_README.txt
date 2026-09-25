@@ -74,7 +74,7 @@ Keys
   F4       proxy menu: Headlights, Sun, and Effects (culling of crushed doors, additive
            car flames). Hold the right mouse button outside the menu to give input back
            to the game.
-  H        headlights: off -> player car -> all cars -> off
+  F        headlights: off -> player car -> all cars -> off
   Alt+X    RTX Remix's own menu
 
 Headlight settings are adjusted in the F4 menu and saved to carma2-headlights.ini in the

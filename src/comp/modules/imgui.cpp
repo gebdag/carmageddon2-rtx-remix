@@ -48,8 +48,9 @@ namespace comp
 
 	bool imgui::input_message(const UINT message_type, const WPARAM wparam, const LPARAM lparam)
 	{
-		// Bit 30 of lparam is set on auto-repeat; one press is one step.
-		if (message_type == WM_KEYDOWN && wparam == 'H' && !(lparam & (1 << 30))
+		// F is unbound in the game's default key layout (H, the obvious choice, is the
+		// horn in every layout). Bit 30 of lparam is set on auto-repeat; one press is one step.
+		if (message_type == WM_KEYDOWN && wparam == 'F' && !(lparam & (1 << 30))
 			&& !shared::globals::imgui_wants_text_input)
 		{
 			if (const auto lights = headlights::get(); lights) {

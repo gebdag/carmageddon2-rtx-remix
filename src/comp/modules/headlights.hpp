@@ -64,7 +64,7 @@ namespace comp
 			bool operator==(const settings&) const = default;
 		};
 
-		// H: off -> player -> all cars -> off
+		// F: off -> player -> all cars -> off
 		void cycle_mode();
 
 		// Once per race-view submit, with the camera's position in world space.

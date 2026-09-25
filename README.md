@@ -18,7 +18,7 @@ CARMA2_HW.EXE (BRender) -> Glide -> nGlide -> d3d9.dll (this mod) -> d3d9_remix.
 - Frustum culling disabled and a longer far plane for path tracing; powerup pickups keep the game's own culling
 - A sun at the angle the game gives its own light, as a Remix distant light. Tuned from the F4 menu and saved to `carma2-sun.ini`
 - A sky built from each track's own horizon texture, for Remix runtimes without a sky of their own
-- Headlights: two Remix spot lights per car. H cycles off, player car, all cars. Tuned from the F4 menu and saved to `carma2-headlights.ini`
+- Headlights: two Remix spot lights per car. F cycles off, player car, all cars. Tuned from the F4 menu and saved to `carma2-headlights.ini`
 - Shading normals that keep hard edges sharp, so flat roads and walls shade flat
 - Fire, explosions and powerup sparkles glow, and smoke is no longer drawn black
 - Destructible scenery kept out of the static world, so it can still be smashed
