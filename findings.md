@@ -4053,4 +4053,4 @@ the screen shows, keep the player's own bindings. Turning the option off restore
 Known side effect: action replay reads KP4/KP6 directly for rewind and fast-forward, so in a
 replay those keys also circle the camera.
 
-Not verified in game yet.
+Reported working in game.
