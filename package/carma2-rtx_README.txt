@@ -17,8 +17,9 @@ What is in this folder
   .trex\bridge.conf       RTX Remix bridge settings (exposes the Remix API - required
                           for the headlights)
   rtx-remix\mods\carma2rtx\
-                          RTX Remix mod: glowing fire and flame frames, and material
-                          overrides for water, glass and chrome
+                          RTX Remix mod: glowing fire and flame frames, car brake,
+                          reverse and head lights, and material overrides for water,
+                          glass and chrome
   carma2-rtx_README.txt   this file (named so it cannot replace the game's ReadMe.txt)
   LICENSE, THIRD_PARTY_NOTICES.md
 

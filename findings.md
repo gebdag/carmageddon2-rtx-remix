@@ -3506,7 +3506,7 @@ The F4 menu has a Sun tab. Its settings save to `carma2-sun.ini` in the game fol
 [Sun] section, with the keys Enabled, Elevation, Azimuth, ColourR/G/B, Brightness,
 AngularDiameter and VolumetricScale.
 
-Not verified in game yet.
+Reported working in game.
 
 ### 43.6 The sun sometimes missing after the menus
 
@@ -3834,7 +3834,7 @@ now dynamic from their first sighting, instead of after their second visible cha
 `m_animated_materials` still catches what the funk table does not declare: opacity fades,
 and damage re-mapping a car panel (0x004ED2B0).
 
-Not verified in game yet.
+Reported working in game: the rear lights show one cell from the first frame.
 
 ## 47. Pickups are culled again (2026-09-25)
 
