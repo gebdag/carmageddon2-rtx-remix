@@ -15,16 +15,22 @@ CARMA2_HW.EXE (BRender) -> Glide -> nGlide -> d3d9.dll (this mod) -> d3d9_remix.
 
 - Static scenery baked into per-texture chunks that Remix keeps between frames
 - The game's own render of injected models suppressed, so it isn't drawn over the path-traced frame
-- Frustum culling disabled and a longer far plane for path tracing
+- Frustum culling disabled and a longer far plane for path tracing; powerup pickups keep the game's own culling
+- A sun at the angle the game gives its own light, as a Remix distant light. Tuned from the F4 menu and saved to `carma2-sun.ini`
+- A sky built from each track's own horizon texture, for Remix runtimes without a sky of their own
+- Headlights: two Remix spot lights per car. H cycles off, player car, all cars. Tuned from the F4 menu and saved to `carma2-headlights.ini`
+- Shading normals that keep hard edges sharp, so flat roads and walls shade flat
+- Fire, explosions and powerup sparkles glow, and smoke is no longer drawn black
+- Destructible scenery kept out of the static world, so it can still be smashed
 - Tyre tracks and other decals lifted off the road, with a separate translucent pass
 - Sparks rebuilt as billboards
 - Car rear light panels showing the right cell of their texture atlas
 - Smoke and dust tinted by vertex colour and faded by material opacity
-- The game's back-face culling handed to Remix, so car glass stays single-sided
+- The game's back-face culling handed to Remix, so car glass stays single-sided and crushed doors don't flicker
 - The race's depth cue passed on as fog and to Remix's volumetrics
+- A Remix mod with emissive maps for fire, flames and car lights, and material overrides for water, glass and chrome
+- Works with NVIDIA's RTX Remix and with Remix Plus
 - A patch for the game's own out-of-bounds crash in the tint-poly code when pressing ESC
-- Headlights: two Remix spot lights per car. H cycles off, player car, all cars. Tuned from the F4 menu and saved to `carma2-headlights.ini`
-- The game's sun as a Remix distant light, at the angle the game gives its own light. Tuned from the F4 menu and saved to `carma2-sun.ini`
 - F4 debug overlay
 
 All options are documented in `remix-comp-proxy.ini`.
