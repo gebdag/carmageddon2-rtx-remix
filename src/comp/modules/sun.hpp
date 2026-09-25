@@ -38,11 +38,9 @@ namespace comp
 			bool operator==(const settings&) const = default;
 		};
 
-		// Once per race-view submit, ahead of its draws.
+		// Once per race-view submit, ahead of its draws. A frame that does not call it has
+		// no sun: Remix shows an API light only in the frames it is drawn in.
 		void on_race_frame();
-
-		// A frame that is not a race frame has no sun.
-		void on_frame_without_race();
 
 		void draw_menu();
 

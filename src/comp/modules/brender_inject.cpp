@@ -2180,9 +2180,6 @@ namespace comp
 		if (const auto lights = headlights::get(); lights) {
 			lights->on_frame_without_race();
 		}
-		if (const auto light = sun::get(); light) {
-			light->on_frame_without_race();
-		}
 
 		// Whatever camera the race was measured against is finished with. Keeping it would
 		// let a recycled camera pointer in the next track pass for the race view, and the

@@ -3508,6 +3508,27 @@ AngularDiameter and VolumetricScale.
 
 Not verified in game yet.
 
+### 43.6 The sun sometimes missing after the menus
+
+The sun was destroyed whenever the race view was left, and created again when it returned.
+In the Remix Plus base (dxvk-remix gmod fork, `rtx_light_manager.cpp`), the two calls take
+effect at different times:
+- `CreateLight` adds the light at once (`addExternalLight`, emitted to the CS thread).
+- `DestroyLight` only queues an erase (`m_pendingExternalLightErases`). The queue is applied in
+  `prepareSceneData` at the start of the next scene frame.
+- The handle is the light's hash (`reinterpret_cast<remixapi_LightHandle>(info->hash)`), which
+  is the same for every sun.
+
+When no scene frame ran between leaving and returning, the queued erase landed after the new
+create and removed the sun. The proxy still held a live handle and kept drawing it, so the
+sun stayed gone until it was toggled. The headlights recover on their own because they are
+described again every frame.
+
+The fix: the sun is destroyed only when it is switched off. Outside a race it is simply not
+drawn, and Remix shows an API light only in the frames where it is drawn. The sun is also now
+`isDynamic`: the same code stops applying updates to a static light after
+`numFramesToKeepLights / 2` (50) of them, which dragging a menu slider exceeds.
+
 ## 44. One proxy for NVIDIA's RTX Remix and Remix Plus (2026-09-24)
 
 The bridge client's `remixapi_InitializeLibrary` never checks the requested API version. It

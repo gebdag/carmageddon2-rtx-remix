@@ -112,6 +112,11 @@ namespace comp
 	 * Remix drops an API light from any frame it is not drawn in, so the handle is drawn on
 	 * every race frame. It is only described again when a setting changes: Remix derives
 	 * the handle from the hash, so creating under the same hash replaces the light in place.
+	 *
+	 * The light is destroyed only when switched off, never when the race view is left.
+	 * Remix Plus applies a destroy at the start of its next scene frame but a create at once,
+	 * and the menus may render no scene frame at all; a destroy on the way out would then
+	 * land after the create on the way back in and erase the sun under a live handle.
 	 */
 	void sun::on_race_frame()
 	{
@@ -150,7 +155,9 @@ namespace comp
 			info.pNext = &distant;
 			info.hash = shared::utils::string_hash64("carma2-sun");
 			info.radiance = { s.colour[0] * s.brightness, s.colour[1] * s.brightness, s.colour[2] * s.brightness };
-			info.isDynamic = FALSE;
+			// Remix Plus stops applying updates to a static light after 50 of them, which one
+			// slider drag in the menu exceeds. The sun is only described on a change anyway.
+			info.isDynamic = TRUE;
 
 			remixapi_LightHandle handle = m_handle;
 			if (bridge.CreateLight(&info, &handle) != REMIXAPI_ERROR_CODE_SUCCESS)
@@ -169,11 +176,6 @@ namespace comp
 		}
 
 		bridge.DrawLightInstance(m_handle);
-	}
-
-	void sun::on_frame_without_race()
-	{
-		destroy();
 	}
 
 	// ------
