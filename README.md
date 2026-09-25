@@ -30,6 +30,7 @@ CARMA2_HW.EXE (BRender) -> Glide -> nGlide -> d3d9.dll (this mod) -> d3d9_remix.
 - The race's depth cue passed on as fog and to Remix's volumetrics
 - A Remix mod with emissive maps for fire, flames and car lights, and material overrides for water, glass and chrome
 - Works with NVIDIA's RTX Remix and with Remix Plus
+- Driving on the arrow keys, with the camera moved to the numpad; the game's own Controls screen can't do this
 - A patch for the game's own out-of-bounds crash in the tint-poly code when pressing ESC
 - F4 debug overlay
 

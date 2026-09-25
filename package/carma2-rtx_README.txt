@@ -74,6 +74,9 @@ Keys
   F4       proxy menu: Headlights, Sun, and Effects (culling of crushed doors, additive
            car flames). Hold the right mouse button outside the menu to give input back
            to the game.
+  Arrows   steer, accelerate and brake; numpad 8/2/4/6 take over the camera the
+           arrows used to move. [Controls] ArrowKeyDriving=0 in remix-comp-proxy.ini
+           restores your own key bindings.
   F        headlights: off -> player car -> all cars -> off
   Alt+X    RTX Remix's own menu
 

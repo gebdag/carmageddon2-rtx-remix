@@ -1,5 +1,7 @@
 #include "std_include.hpp"
 #include "shared/common/flags.hpp"
+#include "controls.hpp"
+#include "shared/common/config.hpp"
 
 namespace comp::game
 {
@@ -247,5 +249,9 @@ namespace comp::game
 				: shared::common::LOG_TYPE::LOG_TYPE_ERROR, true);
 
 		patch_tint_poly_bounds();
+
+		if (shared::common::config::get().controls.arrow_key_driving) {
+			install_arrow_key_driving();
+		}
 	}
 }

@@ -103,6 +103,9 @@ namespace shared::common
 		culling.bubble_radius = get_float("Culling", "BubbleRadius", 0.0f);
 		culling.cull_pickups = get_bool("Culling", "CullPickups", true);
 
+		// [Controls]
+		controls.arrow_key_driving = get_bool("Controls", "ArrowKeyDriving", true);
+
 		// [Optimization]
 		optimization.static_world = get_bool("Optimization", "StaticWorld", true);
 		optimization.suppress_game_render = get_bool("Optimization", "SuppressGameRender", true);

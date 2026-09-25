@@ -3873,3 +3873,184 @@ entries).
   52 is look forward.
 
 The toggle (`imgui::input_message`) now listens for F.
+
+## 49. Key map in memory (2026-09-25)
+
+Static analysis of CARMA2_HW0.EXE. It is the same image as the Ghidra project's CARMA2_HW.EXE
+(bytes compared). The function names are ours. The C1 equivalents come from dethrace.
+
+### The array and its loaders
+
+- **`g_key_mapping` = `int[77]` at 0x0074B5E0..0x0074B714**: one key code per slot. A code is
+  its KEYNAMES.TXT line number minus 2. The names array at 0x00688458 is indexed as
+  `names[code + 2]`, and code reads `0x00688460 + code*4` directly. -2 means unbound.
+- **LoadKeyMapping 0x00487E10** builds `<data>\KEYMAP_X.TXT` with X = `g_key_map_index`
+  (0x0068B88C). That index is `KeyMapIndex` in OPTIONS.TXT, read just before by LoadOptions
+  (0x0048D8F0). The loader then calls `fscanf("%d")` 77 times. Its only caller is
+  InitialiseWorld (0x0047DD20) at **0x0047DE1A**, once at startup. Nothing reloads the map per
+  race.
+- The only other live code that writes the array is the front-end **Options > Controls** screen.
+  Its descriptor is at 0x00604940, and its start and end callback pointers are at 0x00604A48 and
+  **0x00604A4C**. CreateMenu calls the start callback at 0x0046C9B0 and DestroyMenu calls the end
+  callback at 0x0046CCE8, both with ecx = descriptor. DestroyMenu always calls the end callback.
+  - ControlsScreenStart (0x004725F0) loads KEYNAMES.TXT. It then **reloads all four
+    KEYMAP_N.TXT files from disk** into the array and leaves the current layout there. It also
+    copies them to 0x006869E0 [4][77], which nothing reads again. Anything written to the array
+    before the screen opens is discarded.
+  - ControlsScreenSwitchLayout (0x00472440, layout buttons 0x27..0x2A) **writes** the array to
+    KEYMAP_<old>.TXT. It then sets `g_key_map_index` and reads KEYMAP_<new>.TXT.
+  - ControlsScreenAssignKey (0x00472B00) stores the new code at 0x00472D5C.
+  - ControlsScreenEnd (0x00472A30) **writes** the array to KEYMAP_<index>.TXT as `"%d\r\n"` per
+    slot and returns 1. This is the only save.
+- DKEYMAP0..3.TXT are read only by a second controls screen that uses C1 slot numbers
+  (0x004B28C0..0x004B3C61; driver 0x004B39F0, descriptor 0x0065CA90, list 0x0065BD30 = 48, 49,
+  46, 47, ...). No call, jump or pointer anywhere in the image refers to 0x004B39F0, so that
+  screen and its "defaults" button are dead. The KeyIsDown variant at 0x00483970 is also dead.
+
+### How a slot becomes a key test
+
+- `g_key_array` = `int[151]` at 0x0068BEE0, indexed by key code. An entry is nonzero while its
+  key is down.
+- KeyIsDown (0x004833A0, `__fastcall`, ecx = slot) returns
+  `g_key_array[g_key_mapping[slot]]`. KeyIsDownPoll (0x00483040) does the same but polls again
+  first if the last poll is more than 500 ms old. It also takes -1 (any key from the list at
+  0x00657200) and -2 (always 1).
+- These tests bypass the map: RawKeyIsDown (0x00482550) and 0x00482590 take ecx = key code, and
+  GetPressedKeyCode (0x00482A00) returns the code of the key being pressed.
+- PDSetKeyArray (0x0051CEF0) reads the keyboard with `IDirectInputDevice::GetDeviceState(256)`.
+  It sets `g_key_array[code]` from `state[g_dik_for_code[code]]`. `g_dik_for_code` is an
+  `int[151]` at 0x006B34A0, filled with constants by 0x0051BA10.
+  - Arrows use the E0-extended DIK codes: crsr-left 70 -> 0xCB, right 71 -> 0xCD, up 72 -> 0xC8,
+    down 73 -> 0xD0.
+  - Keypad 2/4/6/8 (codes 83/85/87/89) -> 0x50/0x4B/0x4D/0x48.
+  - The arrows and the keypad are therefore **separate entries**, whatever the NumLock state,
+    because DirectInput reports physical keys.
+  - Codes 0..3 (Shift/Alt/Control/Command) map to 0xFF, meaning either side.
+
+### What the slots do
+
+**Slots 47..50 (proven from KeyIsDown call sites with a constant ecx):**
+- PollCarControls (0x00443E80) fills `g_player_car.keys` (0x0075CEFC = 0x0075BC2C + 0x12D0):
+  - **47 left 0x10000, 48 right 0x20000, 49 accelerate 0x40000, 50 brake/reverse 0x80000.**
+  - 54 hand brake 0x100000, 56 wheel spin 0x4000000, 59 horn 0x8000000, 13 0x800000.
+  - 14 and 12 give 0x200000 and 0x400000, only when 0x0068B910 is set. In C1's layout these bits
+    are gear up and gear down.
+- Keyboard steering is used only when the codes in slots 47 and 48 are both below 0x8F.
+  Otherwise they are joystick axes. PollCarControls and 0x00418850 (at 0x004197F4) read
+  0x0074B69C and 0x0074B6A0 directly for this check.
+- When 0x00705BE0 is set, left/right and accelerate/brake are swapped.
+
+**Slots 31..34 = up, down, left, right (proven from every constant-ecx call site):**
+- PackCameraKeys (0x00444270, called from MainGameLoop at 0x00493073):
+  - If raw Shift and raw Alt are both up, slots 31..34 go to bits 1..4 of `g_camera_keys`
+    (0x0079EFA4), and raw Control goes to bit 0.
+  - With Shift held it calls MoveHeadupMap (0x00497620) instead: **Shift + up/down/left/right
+    moves the heads-up mini-map**. The position is 0x0074ABD8/DC, saved as HeadupMapX/Y by
+    SaveOptions (0x0048D190).
+  - With Alt held, the arrows do nothing.
+- UpdateCamera (0x0040EA30) switches on `g_camera_mode` (0x0079EFA8, 0..8, cycled by the Camera
+  Mode toggle):
+  - Modes 0, 4 and 7 (and the target cameras 5 and 6) use 0x00410C60, C1's PollCameraControls.
+    **Up and down zoom the external chase camera in and out** (0x00655F40, 0.1..2.0). **Left and
+    right orbit it around the car** (yaw at 0x0068B908). Both together put it back behind the car.
+    It does nothing in map mode.
+  - Mode 3 uses 0x0040EF90. Left and right orbit the camera, and both together recentre it. Up
+    and down move it closer or further away, and Ctrl + up/down raise or lower it.
+  - Mode 8 uses 0x0040F590. Up and down slide the camera between two positions stored in the car
+    (+0x18D8 and +0x18E4).
+  - So the arrows move the **external view**. Cockpit look is slots 51..53 (Q/W/E).
+- 0x00442F90, at the end of CheckToggles (0x00442E90): in map mode (0x0075B9A4 == 2), slots
+  31..34 **pan the map** (0x00659B30 y, 0x00659B2C x). This is C1's CheckMapRenderMove.
+
+The toggle table at 0x005900A0 uses none of slots 31..34 or 47..50. It holds 44 entries of 24
+bytes, `{slot, modifier slot, ..., last, func}`.
+
+### The Controls screen refuses keys held by fixed slots (proven)
+
+The screen shows the 29 slots listed at 0x00604888: 49 50 47 48 54 45 60 58 56 46 57 67 68 69 71
+61 62 63 64 74 59 70 72 73 75 76 35 65 66.
+
+When a key is pressed, ControlsScreenAssignKey scans slots **28..76** for another slot with the
+same code:
+- If that slot is in the list, it is set to -2. ControlsScreenCheckUnbound (0x00472D80) then makes
+  the player rebind it before leaving.
+- If that slot is **not** in the list (31..34 are not), a sound plays (0x00455690) and the key is
+  refused.
+
+Slots 31..34 hold the arrows in every layout, so **the game's own screen can never give the arrows
+to steering, throttle or brake**. Slots 0..27 are not checked.
+
+The {name, slot} table at 0x00596250 does not belong to this screen. It feeds the joystick button
+setup (0x0045B790, 0x0045C240, 0x0045C590).
+
+### Raw arrow and keypad reads that bypass the map
+
+I checked the 230 call sites of the raw tests that pass a constant key code. Every one that tests
+an arrow is menu code:
+- the interface loop 0x004846E0
+- the front-end handler 0x00470C20
+- 0x0046C0D0 and its neighbours
+- code around 0x004739xx
+
+Each of them also tests the matching keypad key: up 0x48 with KP8 0x59, down 0x49 with KP2 0x53,
+left 0x46 with KP4 0x55, right 0x47 with KP6 0x57. No in-race code reads the arrows raw.
+
+Two in-race readers take typed key codes raw:
+- The action replay (0x004E69B0) runs from MainGameLoop only while 0x00676914 is set. It uses:
+  - KP4 or PgUp to rewind, KP6 or PgDn to fast-forward
+  - KP5 or Space
+  - KP0, KP1, KP3, KP7, Keypad / and Keypad *
+- Chat entry (0x00444910, net games) compares typed keys with slot 71.
+
+### Keypad 8/2/4/6 in the shipped layouts
+
+Only slots 47..50 use them, as Keypad 4, 6, 8 and 2, in DKEYMAP0/2/3 and Keymap_2/3.txt. Layout 1
+uses none of them.
+
+Other keypad keys: slot 10 KP0, 11 KP1, 12 KP3, 13 KP5, 14 KP9, 55 Keypad -, 75 Keypad *.
+
+On this machine, Keymap_0.txt (the active layout, KeyMapIndex 0) has x, v, d, c in slots 47..50.
+
+### For the arrows-drive option in the proxy
+
+- **Where to apply the rewrite.** Apply it at two points:
+  - After LoadKeyMapping returns: retarget the call at 0x0047DE1A, or apply once when the proxy
+    starts if that is later.
+  - After ControlsScreenEnd returns: replace the pointer at 0x00604A4C with a `__fastcall`
+    wrapper that calls 0x00472A30 and then rewrites.
+
+  Nothing else reloads the map, so no per-frame work is needed.
+- **Never modify the array while the Controls screen is open.** ControlsScreenSwitchLayout and
+  ControlsScreenEnd write it to KEYMAP_N.TXT, so a per-frame rewriter would leak into the file. A
+  rewrite made before the screen opens is harmless, because ControlsScreenStart reloads the files.
+- **Make the rewrite a fixed assignment, not a swap.** Give every slot holding an arrow code the
+  keypad code for that direction, then set slots 47..50 to 70, 71, 72, 73. A swap applied to a
+  file that was already saved swapped would undo itself.
+- **One key per slot.** Whatever the player had on 47..50 (the keypad, or x/v/d/c here) stops
+  working.
+- **What the screen shows.** While the Controls screen is open it shows the bindings from the
+  file, and it still refuses the arrows for driving.
+- **Action replay.** In a replay, KP4/KP6 would both rewind/fast-forward and orbit the camera.
+
+### 49.1 The arrow-key driving option
+
+`[Controls] ArrowKeyDriving=1` (default on; `src/comp/game/controls.cpp`) rewrites
+`g_key_mapping` in memory after `LoadKeyMapping` returns (MinHook detour on 0x00487E10). It
+does the same after the Controls screen closes: the end-callback pointer at 0x00604A4C, checked
+to still hold 0x00472A30, is replaced by a `__fastcall` wrapper. The rewrite is also applied
+once at install, in case the map was already loaded.
+
+The rewrite is a fixed assignment:
+- Every slot outside 47..50 that holds an arrow gets the matching numpad key: up to KP8 (89),
+  down to KP2 (83), left to KP4 (85), right to KP6 (87).
+- Slots 47..50 then get left 70, right 71, up 72 and down 73.
+- A driving slot that holds a joystick code (107 and up, "Joy 1 B1" onward) is left alone.
+
+The array is never touched while the Controls screen is open. The screen reloads the
+KEYMAP_N.TXT files when it opens and saves the array when it closes, so the files, and what
+the screen shows, keep the player's own bindings. Turning the option off restores them.
+
+Known side effect: action replay reads KP4/KP6 directly for rewind and fast-forward, so in a
+replay those keys also circle the camera.
+
+Not verified in game yet.

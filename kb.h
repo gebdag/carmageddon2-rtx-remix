@@ -1102,7 +1102,7 @@ struct tCar_spec {
     /* 0x1D4 int knackered          -- wasted */
     /* 0xE0C br_actor *car_model_actor -- the loaded .ACT, child of the master, identity transform */
     /* 0x12AC float initial_brake, 0x12B0 float brake_increase, 0x12C0 float brake_force (C1 layout match, 0x00415618) */
-    /* 0x12D0 tCar_controls keys  -- 0x40000 acc, 0x80000 dec, 0x100000 brake (handbrake key in C1) */
+    /* 0x12D0 tCar_controls keys  -- 0x10000 left, 0x20000 right, 0x40000 acc, 0x80000 dec, 0x100000 brake (hand brake, slot 54); filled by PollCarControls 0x00443E80 */
     /* 0x1340 float revs, 0x135C int gear (<0 reverse; net unpack 0x004C9692) */
     /* 0x18CC unsigned light_bits -- funk texturebits source, written by UpdateCarLightBits 0x0041E5A0 */
     /* physics_obj (+0x08): +0x68 br_vector3 v (world), +0x1A8 br_vector3 velocity_car_space (inferred; 0x004B7A67) */
@@ -1158,3 +1158,51 @@ $ 0x0068c720 int    g_num_lights                /* 1 in the shipped data (REG\LI
 $ 0x006572cc int    g_light_rgb[3]              /* race TXT main light RGB; default 255,255,255; read only at LoadInLight (startup) */
 $ 0x006572d8 float  g_ambient_diffuse[3][2]     /* race TXT ambient/diffuse pairs, stored in reverse: 0x6572E8 first pair, 0x6572E0 second, 0x6572D8 third */
 $ 0x0079f40c br_actor** g_enabled_lights        /* v1db.enabled_lights; count at 0x0079F400, max at 0x0079F3FC */
+
+/* --- Key map and keyboard input (findings.md section 49) --- */
+/* Key code = KEYNAMES.TXT line - 2; 0..150. Slots are the 77 entries of g_key_mapping (C2 numbering, not C1's). */
+@ 0x00487e10 void LoadKeyMapping(void);                 /* KEYMAP_<g_key_map_index>.TXT, 77 x fscanf("%d") into g_key_mapping; only caller InitialiseWorld at 0x0047DE1A (startup) */
+@ 0x0048d8f0 void LoadOptions(void);                    /* OPTIONS.TXT; reads KeyMapIndex into g_key_map_index before LoadKeyMapping (name inferred) */
+@ 0x0048d190 void SaveOptions(void);                    /* OPTIONS.TXT: KeyMapIndex, HeadupMapX/Y/W/H, ... (name inferred) */
+@ 0x004725f0 int  __fastcall ControlsScreenStart(void *desc);   /* Options>Controls start cb (ptr 0x00604A48): loads KEYNAMES.TXT, RELOADS all 4 KEYMAP_N.TXT from disk, current layout left in g_key_mapping */
+@ 0x00472a30 int  __fastcall ControlsScreenEnd(void *desc);     /* end cb (ptr 0x00604A4C), always called by DestroyMenu: WRITES g_key_mapping to KEYMAP_<index>.TXT; returns 1 */
+@ 0x00472440 int  ControlsScreenSwitchLayout(void);     /* buttons 0x27..0x2A: WRITES KEYMAP_<old>.TXT, sets g_key_map_index, reads KEYMAP_<new>.TXT */
+@ 0x00472b00 int  __fastcall ControlsScreenAssignKey(void *desc); /* conflict scan over slots 28..76: listed slot -> -2, unlisted (e.g. 31..34) -> sound + key refused */
+@ 0x00472d80 int  ControlsScreenCheckUnbound(void);     /* makes the player rebind any slot 28..76 left at -2 */
+@ 0x004720e0 void __fastcall ControlsScreenRefreshList(void *desc); /* row text = g_key_names[g_key_mapping[g_controls_screen_slots[i]] + 2] */
+@ 0x0046c970 int  __fastcall CreateMenu(void *desc);    /* front-end screen: calls desc->start (+0x108) at 0x0046C9B0 (name inferred) */
+@ 0x0046ccb0 int  __fastcall DestroyMenu(void *desc);   /* "START_OF_FRONTEND_DestroyMenu"; calls desc->end (+0x10C) unconditionally at 0x0046CCE8 */
+@ 0x004833a0 int  __fastcall KeyIsDown(int slot);       /* g_key_array[g_key_mapping[slot]] */
+@ 0x00483040 int  __fastcall KeyIsDownPoll(int slot);   /* repolls if > 500 ms since last poll; -1 = any key in list 0x00657200, -2 = 1 */
+@ 0x00482550 int  __fastcall RawKeyIsDown(int code);    /* bypasses the map (menus, Shift/Alt/Ctrl tests) */
+@ 0x00482590 int  __fastcall RawKeyDownEdge(int code, int reset); /* repeat/edge state machine behind RawKeyIsDown (name inferred) */
+@ 0x00482a00 int  GetPressedKeyCode(void);              /* code of a key being pressed, -1 none (name inferred) */
+@ 0x004821c0 void CheckKeysForMouldiness(void);         /* clears g_key_array and repolls if > 500 ms stale (C1 name) */
+@ 0x0051cef0 void __fastcall PDSetKeyArray(int *keys /*ecx*/, int stamp /*edx*/); /* IDirectInputDevice::GetDeviceState(256); keys[code] = stamp if state[g_dik_for_code[code]] & 0x80 */
+@ 0x0051ba10 void InitKeyScanCodes(void);               /* fills g_dik_for_code (and a second table at 0x006AC610) with constants */
+@ 0x00443e80 void PollCarControls(void);                /* slots -> g_player_car.keys: 47 L 0x10000, 48 R 0x20000, 49 acc 0x40000, 50 dec 0x80000, 54 0x100000, 56 0x4000000, 59 0x8000000, 13 0x800000, 14/12 0x200000/0x400000 (if 0x0068B910); keyboard steering only if codes of 47,48 < 0x8F */
+@ 0x00444270 void PackCameraKeys(void);                 /* from MainGameLoop 0x00493073: no raw Shift/Alt -> slots 31..34 to g_camera_keys bits 1..4, raw Ctrl bit 0; Shift -> MoveHeadupMap */
+@ 0x00497620 void __fastcall MoveHeadupMap(int shift /*ecx*/); /* Shift+slots 31..34 move the HUD mini-map (HeadupMapX/Y), then SaveOptions */
+@ 0x00442e90 void __fastcall CheckToggles(int in_race /*ecx*/); /* walks g_toggles; ends with 0x00442F90 */
+@ 0x00442f90 void CheckMapRenderMoveEtc(void);          /* first block: map mode (0x0075B9A4 == 2) slots 31..34 pan the map (0x00659B30 y, 0x00659B2C x); rest is unrelated race-state code */
+@ 0x0040ea30 void UpdateCamera(void);                   /* switch g_camera_mode: 0/4/7 (and 5/6) -> 0x00410C60, 3 -> 0x0040EF90, 8 -> 0x0040F590 (name inferred) */
+@ 0x00410c60 void PollCameraControls(void);             /* chase cam: bit1/2 (slots 31/32) zoom g_camera_zoom, bit3/4 (33/34) orbit g_camera_yaw, both = reset; skipped in map mode (C1 name; args not recovered) */
+@ 0x0040ef90 void __fastcall CameraMode3(void *cam, unsigned dt); /* bit3/4 orbit (both = recentre), bit1/2 closer/further, with Ctrl (bit0) raise/lower */
+@ 0x0040f590 void __fastcall CameraMode8(tCar_spec *car, unsigned dt); /* bit1/2 slide between car +0x18D8 and +0x18E4 positions */
+@ 0x004e69b0 void __fastcall DoActionReplayKeys(void *a, void *b); /* action replay only (0x00676914): raw typed codes, KP4/KP6/PgUp/PgDn rewind/ff, KP5/Space, KP0/1/3/7, Keypad / * (name inferred) */
+
+$ 0x0074b5e0 int    g_key_mapping[77]           /* slot -> key code; -2 unbound. Writers: LoadKeyMapping and the Controls screen only */
+$ 0x0068b88c int    g_key_map_index             /* layout 0..3 = KeyMapIndex in OPTIONS.TXT */
+$ 0x0068bee0 int    g_key_array[151]            /* key code -> nonzero while down */
+$ 0x006b34a0 int    g_dik_for_code[151]         /* key code -> DIK scan code; arrows 0xC8/0xD0/0xCB/0xCD, KP8/2/4/6 0x48/0x50/0x4B/0x4D; 0xFF = either-side modifier */
+$ 0x00688458 char*  g_key_names[153]            /* KEYNAMES.TXT lines; name of code c is g_key_names[c + 2] (loaded by ControlsScreenStart) */
+$ 0x00604888 int    g_controls_screen_slots[29] /* slots the Controls screen lists: 49 50 47 48 54 45 60 58 56 46 57 67 68 69 71 61 62 63 64 74 59 70 72 73 75 76 35 65 66 */
+$ 0x00604940 char   g_controls_screen_desc[]    /* front-end descriptor "Controls"; +0x108 start cb, +0x10C end cb */
+$ 0x005900a0 char   g_toggles[44][24]           /* {slot, modifier slot, flag, exact, last, void (*func)(void)} */
+$ 0x00596250 char   g_joystick_actions[21][8]   /* {char *name, int slot}: joystick button setup (0x0045B790, 0x0045C240, 0x0045C590), not the keyboard screen */
+$ 0x0079efa4 unsigned g_camera_keys             /* bit0 raw Ctrl, bits1..4 slots 31..34 (up, down, left, right) */
+$ 0x0079efa8 int    g_camera_mode               /* 0..8 */
+$ 0x00655f40 float  g_camera_zoom               /* chase-cam distance factor 0.1..2.0 */
+$ 0x0068b908 unsigned short g_camera_yaw        /* chase-cam orbit angle (type inferred) */
+$ 0x0075b9a4 int    g_map_mode                  /* 2 = map shown (inferred from CheckMapRenderMove) */
+$ 0x00676914 int    g_action_replay_mode        /* inferred */

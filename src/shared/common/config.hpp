@@ -117,6 +117,14 @@ namespace shared::common
 			bool cull_pickups = true;
 		} culling;
 
+		struct controls_settings
+		{
+			// Steer, accelerate and brake on the arrow keys, and move the external camera the
+			// arrows normally drive onto numpad 8/2/4/6. Applied to the loaded key map only;
+			// the game's key-map files keep the player's own bindings.
+			bool arrow_key_driving = true;
+		} controls;
+
 		struct effects_settings
 		{
 			// Each of the three effect fixes can be switched off on its own, so a change in
