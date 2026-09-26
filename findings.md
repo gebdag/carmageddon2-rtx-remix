@@ -3502,6 +3502,9 @@ angular diameter. At 1.0, a white surface facing the sun is lit to full brightne
 as a legacy D3D9 directional light at `lightConversionDistantLightFixedIntensity` 1.0. The
 angular diameter only changes how soft the shadows are.
 
+Defaults since 2026-09-26: brightness 0.4, since the sky lights the track as well, and an
+angular diameter of 0.53 degrees, the real sun's mean (0.524 at aphelion, 0.542 at perihelion).
+
 The F4 menu has a Sun tab. Its settings save to `carma2-sun.ini` in the game folder, in a
 [Sun] section, with the keys Enabled, Elevation, Azimuth, ColourR/G/B, Brightness,
 AngularDiameter and VolumetricScale.

@@ -11,9 +11,10 @@ namespace comp
 	 * +Z towards +X, the same on every track. Remix never sees it -- BRender lights on the
 	 * CPU -- so without this the port is lit by the sky alone.
 	 *
-	 * The defaults reproduce the game's direction and its white colour. Brightness is
-	 * Remix's distant-light radiance, which Remix scales so that 1.0 lights a white surface
-	 * facing the sun to full brightness, the same as a legacy D3D9 directional light.
+	 * The defaults reproduce the game's direction and its white colour, with the real sun's
+	 * disc. Brightness is Remix's distant-light radiance, which Remix scales so that 1.0
+	 * lights a white surface facing the sun to full brightness, the same as a legacy D3D9
+	 * directional light; the sky lights the track as well, so the default sits well below.
 	 */
 	class sun final : public shared::common::loader::component_module
 	{
@@ -31,8 +32,8 @@ namespace comp
 			float elevation = 60.0f;        // degrees above the horizon
 			float azimuth = 30.0f;          // degrees from +Z towards +X
 			float colour[3] = { 1.0f, 1.0f, 1.0f };
-			float brightness = 1.0f;
-			float angular_diameter = 0.5f;  // degrees; widens the penumbra of every shadow
+			float brightness = 0.4f;
+			float angular_diameter = 0.53f; // degrees, the real sun's; widens every shadow's penumbra
 			float volumetric_scale = 1.0f;
 
 			bool operator==(const settings&) const = default;
