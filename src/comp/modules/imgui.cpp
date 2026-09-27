@@ -371,7 +371,7 @@ namespace comp
 		}
 
 		ImGui::BeginDisabled(!effects.fog);
-		ImGui::SliderFloat("Distance", &effects.fog_distance, 0.5f, 5.0f, "x %.2f", ImGuiSliderFlags_Logarithmic);
+		ImGui::SliderFloat("Distance", &effects.fog_distance, 0.5f, 10.0f, "x %.2f", ImGuiSliderFlags_Logarithmic);
 		ImGui::TextWrapped("How far you see through the fog, as a multiple of the track's own depth cue. "
 			"1 is the game's distance; 2 sees twice as far.");
 

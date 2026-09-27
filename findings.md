@@ -4108,6 +4108,35 @@ that was already pushed.
 
 Not verified in game yet.
 
+### 51.1 The fog flipped at 3x: Remix has two fog systems
+
+Reported: past FogDistance 3x the airport fog inverted, from a black band at the far end to a
+black near area with the distance clear. Remix (gmod base, `rtx_global_volumetrics.cpp:441-485`,
+`rtx_composite.cpp:382-396`, `composite.comp.slang:53-90, 528-537`) picks between two systems:
+
+- `shouldConvertToPhysicalFog` estimates a density from the linear fog,
+  `ln(1 / (0.001 + scale / end)) / end` with `scale = 1 / (end - start)`, and uses the
+  volumetrics only below `rtx.volumetrics.waterFogDensityThreshold` (0.065, "created
+  specifically for Portal RTX's underwater fixed function fog").
+- Otherwise `volumeArgs.enable` is false, and the compositor blends classic linear depth fog
+  over the frame: `f = (fogEnd - viewDistance) * fogScale`, colour `FOGCOLOR * rtx.fogColorScale`.
+
+For the airport's depth cue (6.98 to 35), the estimate is 0.177 at 1x, 0.0669 at 2.9x and
+0.0648 at 3.0x. So 3x is exactly where it crosses. Below that it's compositor fog at the
+default `fogColorScale` of 0.25, which turns `5884AE` nearly black (the black band). Above
+it's the volumetric medium, whose atmosphere doesn't fit this world (see `apply_fog`), and
+which darkens the near field.
+
+`package/rtx.conf` now pins the compositor fog with `rtx.volumetrics.waterFogDensityThreshold
+= 0`, so a fogged track never converts; at 1x it never did anyway. It also sets
+`rtx.fogColorScale = 1.0`, so the fog is the track's own colour. The F4 Distance slider goes to
+10x. The airport's end then reaches 350, past the 250-unit far plane, which puts the fog at the
+very end of the view.
+
+As a consequence, FogVolumetrics (the volumetric albedo and transmittance push) has no effect
+on a fogged track, since Remix doesn't run the volumetrics there. It still applies where the
+depth cue is off.
+
 ## 52. Glass made glass (2026-09-27)
 
 The complaint was glass that is "opaque in spots". The cause: with `SolidTranslucency`, a glass
