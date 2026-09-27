@@ -4144,5 +4144,29 @@ alpha-weighted mean hue. Near-neutral textures get 0.97 grey; saturation is capp
 so no channel drops below about half. `ior_constant` is 1.02 and `thin_walled` is 1, the same
 as the existing SCRN windscreen.
 
-The layer is `rtxmod/materials_glass.usda`, and `rtxmod/materials_glass_index.csv` lists every
-candidate with its decision and reason. Not verified in game yet.
+The layer was `rtxmod/materials_glass.usda`, with `rtxmod/materials_glass_index.csv` listing
+every candidate and its decision.
+
+### 52.1 Reverted: the airport turned into a glass box
+
+Tested in game on the airport and reverted the same day. The airport's glass walls
+(`WINDOW2`, `CONWIN`, `R50GL`) draw their window frames inside the pane texture, as the
+opaque texels around each panel. That is the 18% "opaque" share the scan measured, which I
+had taken for a thin edge. As translucent glass, those frames vanished, and the terminal
+read as one continuous glass wall.
+
+A per-texture translucent replacement can only work where the texture is glass everywhere.
+In this game that is true of the car windscreens, but not of the architectural glass, which
+paints frames, mullions and dirt into the same texture. The two remaining options both need
+more than a material swap:
+- **Per-texel handling.** Keep the opaque texels as an alpha-tested opaque surface and make
+  only the partly transparent ones glass. That means two draws of the same geometry with
+  different textures or alpha references: an opaque pass with `ALPHAREF` just below 255, and
+  a translucent pass for the rest. It needs proxy support to split the draw, and a
+  replacement keyed on the second draw.
+- **New textures.** Author the frames as their own replacement: a translucent material plus a
+  mesh replacement, or an opacity-driven opaque material (`AperturePBR_Opacity`, already in
+  `rtxmod/materials`) using the texture's own alpha.
+
+The layer and its index are kept in `rtxmod` as `*.reverted`, and `mod.usda` is back to
+`mod.usda.pre-glass-bak`.
