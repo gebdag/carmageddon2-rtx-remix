@@ -4170,3 +4170,39 @@ more than a material swap:
 
 The layer and its index are kept in `rtxmod` as `*.reverted`, and `mod.usda` is back to
 `mod.usda.pre-glass-bak`.
+
+### 52.2 Split draws for track glass with painted frames
+
+Of the 80 candidates, only 26 are on geometry when a car or track loads. Rendering each on its
+own model or track separates the cases (renders in `rtxmod/glass_review/`, list in
+`glass_list.csv`). 34 are never used by any model, material or script. The rest are swapped
+in later by windscreen damage (`SCRN2`-`4`) or smash specs ("intact pixelmap" /
+`*_BREKIN` / `*_BROKE` in the race TXT).
+
+Within the track glass, the frame texels are exactly the 4-bit alpha 15 ones (the funfair's
+`R25GL1` uses 14), and glass never goes above 13. So `a >= 238` in the uploaded ARGB separates
+frame from pane cleanly.
+
+The split (`[Glass] SplitTextures`, matched against `br_pixelmap::identifier`, case-insensitive):
+- `extract_geometry` follows each run whose texture is listed and has frame texels with a
+  second run (`geometry_part::glass_frame`). It uses the same faces, on duplicated vertices
+  lifted `FrameOffset` (0.004) along their normals.
+- The frame run's texture (`glass_frame_texture_for`, cached per pixelmap with the same
+  identity check as `m_textures`) keeps the frame texels at alpha 255 and clears the rest.
+  It is alpha-tested, and its pixels differ from the original's, so it has its own hash and
+  stays an ordinary opaque surface.
+- The pane run keeps the original texture and hash, so the translucent replacement in
+  `rtxmod/materials_glass.usda` applies to it. The frame sits in front of the glass it
+  covers.
+- `resolve_draw_state` gives a frame run the frame texture every draw. If the material has
+  since been handed a texture that is not split, the frame run gets a 1x1 clear texture.
+- Baked chunks need nothing extra, because `append_part_to_chunk` keys on the run's own
+  texture.
+
+The mod side has 13 replacements, one per split texture on geometry: CONWIN, R50GL (airport),
+GLASS and GLASS2 (ski), GLASS1 and GLASS2 (newcity), GLASS4 (carrier), GLASSPRO and WIND
+(Silonet03, and timber for WIND), MSWINDOW (silo), ROLLGLAS and R25GL1 (funfair/junkyard),
+and BARNWIND. The recipe is thin-walled, IOR 1.02 and thin_wall_thickness 1. The tint is the
+hue of the glass texels alone (0 < a < 238), so the barn's wood frame doesn't colour its pane.
+
+Not verified in game yet.

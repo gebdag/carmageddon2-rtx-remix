@@ -163,6 +163,10 @@ namespace comp
 			// The material asks for both sides to be drawn. Recorded here as well as in
 			// the per-draw state because a sealed chunk draws under one cull mode.
 			bool two_sided;
+
+			// This run is the painted frame of a split glass texture (config glass): the
+			// same faces lifted off the pane, drawn with only the texture's opaque texels.
+			bool glass_frame;
 		};
 
 		/*
@@ -633,6 +637,16 @@ namespace comp
 		IDirect3DTexture9* solid_colour_texture(IDirect3DDevice9* dev, uint32_t rgb);
 		void note_flat_colour(const game::br_model* model, const game::br_material* material);
 		IDirect3DTexture9* texture_for(IDirect3DDevice9* dev, const game::br_material* material);
+
+		// The frame half of a split glass texture: its opaque texels at full alpha, the
+		// rest cut away. Null when the material's texture is not split or has no frame.
+		IDirect3DTexture9* glass_frame_texture_for(IDirect3DDevice9* dev, const game::br_material* material);
+
+		IDirect3DTexture9* no_frame_texture(IDirect3DDevice9* dev);
+
+		// Adds the frame run of a split glass texture after the run it was cut from.
+		void append_glass_frame(IDirect3DDevice9* dev, const geometry_part& glass,
+			std::vector<ffp_vertex>& vertices, std::vector<uint32_t>& indices, std::vector<geometry_part>& parts);
 		IDirect3DTexture9* upload_pixelmap(IDirect3DDevice9* dev, const game::br_pixelmap* pm);
 
 		// A pixelmap's pixels as tightly packed A8R8G8B8, whatever BRender type they are stored in.
@@ -781,6 +795,12 @@ std::vector<static_chunk> m_chunks;
 			pixelmap_identity identity;
 		};
 		std::unordered_map<const game::br_pixelmap*, cached_texture> m_textures;
+
+		// Frame textures of split glass, keyed like m_textures. A null texture caches "not
+		// split, or no frame texels". m_no_frame_texture is a 1x1 fully clear stand-in for
+		// a frame run whose material has since been given a texture that is not split.
+		std::unordered_map<const game::br_pixelmap*, cached_texture> m_glass_frames;
+		IDirect3DTexture9* m_no_frame_texture = nullptr;
 		std::set<uint32_t> m_unsupported_types;
 		std::set<uint32_t> m_unsupported_styles;
 

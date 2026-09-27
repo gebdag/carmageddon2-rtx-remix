@@ -1131,6 +1131,11 @@ namespace comp
 			if (cached.texture) { cached.texture->Release(); }
 		}
 
+		for (auto& [pm, cached] : m_glass_frames) {
+			if (cached.texture) { cached.texture->Release(); }
+		}
+		if (m_no_frame_texture) { m_no_frame_texture->Release(); }
+
 		for (auto& [rgb, texture] : m_spark_textures) {
 			if (texture) { texture->Release(); }
 		}
@@ -1467,12 +1472,24 @@ namespace comp
 			if (material && readable(material, sizeof(game::br_material)))
 			{
 				state.two_sided = draws_two_sided(material, geometry.closed);
-				IDirect3DTexture9* texture = texture_for(dev, material);
-				state.texture = texture && texture != m_white_texture
-					? texture
-					: solid_colour_texture(dev, material->colour & 0x00FFFFFFu);
+				if (part.glass_frame)
+				{
+					// A frame is only ever its texture's opaque texels, cut out by alpha. If the
+					// material has since been given a texture that is not split, the frame run
+					// draws nothing.
+					IDirect3DTexture9* frame = glass_frame_texture_for(dev, material);
+					state.texture = frame ? frame : no_frame_texture(dev);
+					has_alpha = true;
+				}
+				else
+				{
+					IDirect3DTexture9* texture = texture_for(dev, material);
+					state.texture = texture && texture != m_white_texture
+						? texture
+						: solid_colour_texture(dev, material->colour & 0x00FFFFFFu);
 
-				has_alpha = game::material_needs_alpha(material);
+					has_alpha = game::material_needs_alpha(material);
+				}
 
 				if (effects.texture_transform)
 				{
@@ -1835,10 +1852,133 @@ namespace comp
 				}
 
 				parts.push_back(part);
+				append_glass_frame(dev, part, vertices, indices, parts);
 			}
 		}
 
 		return !parts.empty();
+	}
+
+	/*
+	 * The frame half of a split glass run.
+	 *
+	 * A translucent replacement covers every texel of the triangles it lands on, so a
+	 * pane whose frame is painted into its own texture turns entirely to glass. Splitting
+	 * gives the frame a draw of its own: the same faces, lifted along their normals so the
+	 * two never share a depth, with a texture that keeps only the fully opaque texels. That
+	 * texture has its own hash, so it stays an ordinary opaque surface while the mod's glass
+	 * replacement, keyed on the original texture, applies to the pane underneath.
+	 */
+	void brender_inject::append_glass_frame(IDirect3DDevice9* dev, const geometry_part& glass,
+		std::vector<ffp_vertex>& vertices, std::vector<uint32_t>& indices, std::vector<geometry_part>& parts)
+	{
+		IDirect3DTexture9* frame_texture = glass_frame_texture_for(dev, glass.material);
+		if (!frame_texture) {
+			return;
+		}
+
+		const float offset = shared::common::config::get().glass.frame_offset;
+		std::unordered_map<uint32_t, uint32_t> lifted;
+
+		geometry_part frame = glass;
+		frame.texture = frame_texture;
+		frame.has_alpha = true;
+		frame.glass_frame = true;
+		frame.index_start = static_cast<uint32_t>(indices.size());
+
+		const uint32_t end = glass.index_start + glass.triangle_count * 3u;
+		for (uint32_t i = glass.index_start; i < end; ++i)
+		{
+			const uint32_t source = indices[i];
+			const auto [it, fresh] = lifted.try_emplace(source, static_cast<uint32_t>(vertices.size()));
+			if (fresh)
+			{
+				ffp_vertex v = vertices[source];
+				v.x += v.nx * offset;
+				v.y += v.ny * offset;
+				v.z += v.nz * offset;
+				vertices.push_back(v);
+			}
+			indices.push_back(it->second);
+		}
+
+		parts.push_back(frame);
+	}
+
+	IDirect3DTexture9* brender_inject::no_frame_texture(IDirect3DDevice9* dev)
+	{
+		if (!m_no_frame_texture
+			&& SUCCEEDED(dev->CreateTexture(1, 1, 1, 0, D3DFMT_A8R8G8B8, D3DPOOL_MANAGED, &m_no_frame_texture, nullptr)))
+		{
+			D3DLOCKED_RECT rect{};
+			if (SUCCEEDED(m_no_frame_texture->LockRect(0, &rect, nullptr, 0)))
+			{
+				*static_cast<uint32_t*>(rect.pBits) = 0x00000000u;
+				m_no_frame_texture->UnlockRect(0);
+			}
+		}
+		return m_no_frame_texture;
+	}
+
+	IDirect3DTexture9* brender_inject::glass_frame_texture_for(IDirect3DDevice9* dev, const game::br_material* material)
+	{
+		if (!material || !material->colour_map) {
+			return nullptr;
+		}
+
+		const auto pm = static_cast<const game::br_pixelmap*>(material->colour_map);
+		if (!readable(pm, sizeof(*pm))) {
+			return nullptr;
+		}
+
+		const pixelmap_identity identity = identify(pm);
+		if (const auto it = m_glass_frames.find(pm); it != m_glass_frames.end())
+		{
+			if (it->second.identity == identity) {
+				return it->second.texture;
+			}
+			if (it->second.texture) { it->second.texture->Release(); }
+			m_glass_frames.erase(it);
+		}
+
+		IDirect3DTexture9* texture = nullptr;
+		const auto& split = shared::common::config::get().glass.split_textures;
+		const bool listed = pm->identifier && readable(pm->identifier, 1)
+			&& std::any_of(split.begin(), split.end(), [pm](const std::string& name) {
+				return _stricmp(name.c_str(), pm->identifier) == 0;
+			});
+
+		std::vector<uint32_t> argb;
+		if (listed && decode_pixelmap(pm, argb))
+		{
+			// Frames are painted at full alpha; ARGB4444 glass never goes above 13/15, so
+			// anything at 14/15 or more (238) is frame and the rest is pane.
+			bool any_frame = false;
+			for (auto& texel : argb)
+			{
+				const bool frame = (texel >> 24) >= 238u;
+				texel = frame ? (texel | 0xFF000000u) : (texel & 0x00FFFFFFu);
+				any_frame |= frame;
+			}
+
+			if (any_frame && SUCCEEDED(dev->CreateTexture(pm->width, pm->height, 1, 0, D3DFMT_A8R8G8B8,
+				D3DPOOL_MANAGED, &texture, nullptr)) && texture)
+			{
+				D3DLOCKED_RECT rect{};
+				if (SUCCEEDED(texture->LockRect(0, &rect, nullptr, 0)))
+				{
+					for (uint32_t y = 0; y < pm->height; ++y)
+					{
+						std::memcpy(static_cast<uint8_t*>(rect.pBits) + static_cast<size_t>(y) * rect.Pitch,
+							argb.data() + static_cast<size_t>(y) * pm->width, static_cast<size_t>(pm->width) * sizeof(uint32_t));
+					}
+					texture->UnlockRect(0);
+				}
+			}
+		}
+
+		m_glass_frames[pm] = { texture, identity };
+		return texture;
 	}
 
 	bool brender_inject::is_pickup_model_bounds(const float* bounds) const
@@ -2329,6 +2469,12 @@ namespace comp
 			if (cached.texture) { cached.texture->Release(); }
 		}
 		m_textures.clear();
+
+		for (auto& [pixelmap, cached] : m_glass_frames)
+		{
+			if (cached.texture) { cached.texture->Release(); }
+		}
+		m_glass_frames.clear();
 
 		// m_materials keeps what it has: the loader taught it this track's stored tokens on
 		// the way in, and nothing re-teaches them once the race is running. The flat and

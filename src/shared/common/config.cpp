@@ -61,6 +61,27 @@ namespace shared::common
 		}
 	}
 
+	// A comma-separated value, each entry trimmed, empty entries dropped.
+	std::vector<std::string> config::get_list(const char* section, const char* key, const char* fallback) const
+	{
+		std::vector<std::string> out;
+		const std::string list = get_string(section, key, fallback);
+		size_t start = 0;
+		while (start <= list.size())
+		{
+			const size_t comma = list.find(',', start);
+			const size_t end = comma == std::string::npos ? list.size() : comma;
+			const size_t first = list.find_first_not_of(" \t", start);
+			if (first != std::string::npos && first < end)
+			{
+				const size_t last = list.find_last_not_of(" \t", end - 1);
+				out.push_back(list.substr(first, last - first + 1));
+			}
+			start = end + 1;
+		}
+		return out;
+	}
+
 	void config::set_float(const char* section, const char* key, const float value) const
 	{
 		if (loaded_) {
@@ -139,23 +160,12 @@ namespace shared::common
 		effects.unlit_sprites = get_bool("Effects", "UnlitSprites", true);
 		effects.unlit_sprite_brightness = get_float("Effects", "UnlitSpriteBrightness", 1.0f);
 
-		effects.emissive_sprite_exclude.clear();
-		{
-			const std::string list = get_string("Effects", "EmissiveSpriteExclude", "BIGBL");
-			size_t start = 0;
-			while (start <= list.size())
-			{
-				const size_t comma = list.find(',', start);
-				const size_t end = comma == std::string::npos ? list.size() : comma;
-				const size_t first = list.find_first_not_of(" \t", start);
-				if (first != std::string::npos && first < end)
-				{
-					const size_t last = list.find_last_not_of(" \t", end - 1);
-					effects.emissive_sprite_exclude.push_back(list.substr(first, last - first + 1));
-				}
-				start = end + 1;
-			}
-		}
+		effects.emissive_sprite_exclude = get_list("Effects", "EmissiveSpriteExclude", "BIGBL");
+
+		// [Glass]
+		glass.split_textures = get_list("Glass", "SplitTextures",
+			"conwin,r50gl,glass,glass1,glass2,glass4,glasspro,r25gl1,rollglas,wind,mswindow,barnwind");
+		glass.frame_offset = get_float("Glass", "FrameOffset", 0.004f);
 
 		// [Sky]
 		sky.synthesize = get_bool("Sky", "Synthesize", true);

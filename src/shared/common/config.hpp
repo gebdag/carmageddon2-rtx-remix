@@ -13,6 +13,7 @@ namespace shared::common
 		int get_int(const char* section, const char* key, int default_val) const;
 		std::string get_string(const char* section, const char* key, const char* default_val) const;
 		float get_float(const char* section, const char* key, float default_val) const;
+		std::vector<std::string> get_list(const char* section, const char* key, const char* fallback) const;
 		bool get_bool(const char* section, const char* key, bool default_val) const;
 
 		// Writes a value back to the ini, so a setting changed at runtime survives a restart.
@@ -117,6 +118,21 @@ namespace shared::common
 			// dynamic draw per frame that lights nothing.
 			bool cull_pickups = true;
 		} culling;
+
+		struct glass_settings
+		{
+			// Pixelmap names (case-insensitive) of glass textures that paint their frames
+			// into the pane. Each is drawn twice: once with only its fully opaque texels,
+			// the frame, and once as itself, which a translucent replacement in the mod
+			// turns into glass. A translucent replacement covers a whole triangle, so
+			// without the split a painted frame turns to glass along with the pane.
+			std::vector<std::string> split_textures = { "conwin", "r50gl", "glass", "glass1", "glass2",
+				"glass4", "glasspro", "r25gl1", "rollglas", "wind", "mswindow", "barnwind" };
+
+			// How far the frame is lifted off the pane along the surface normal, in world
+			// units, so the opaque frame and the glass behind it never share a depth.
+			float frame_offset = 0.004f;
+		} glass;
 
 		struct controls_settings
 		{
