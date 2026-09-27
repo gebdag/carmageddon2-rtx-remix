@@ -282,33 +282,64 @@ namespace comp
 		}
 	}
 
+	// Save / Reload / Defaults for a tab whose settings live in remix-comp-proxy.ini. Changes
+	// take effect at once and are written only when asked, as the other tabs do.
+	void imgui::save_row(const bool dirty, const std::function<void()>& save,
+		const std::function<void()>& reload, const std::function<void()>& defaults)
+	{
+		ImGui::Spacing();
+		ImGui::Separator();
+		ImGui::Spacing();
+		if (ImGui::Button("Save to ini")) { save(); }
+		ImGui::SameLine();
+		if (ImGui::Button("Reload from ini")) { reload(); }
+		ImGui::SameLine();
+		if (ImGui::Button("Defaults")) { defaults(); }
+		ImGui::SameLine();
+		ImGui::TextDisabled(dirty ? "unsaved changes" : "remix-comp-proxy.ini");
+	}
+
 	void imgui::tab_effects()
 	{
 		auto& config = shared::common::config::get();
 		auto& effects = config.effects;
 
-		if (ImGui::Checkbox("Cull closed meshes", &effects.cull_closed_meshes)) {
-			config.set_bool("Effects", "CullClosedMeshes", effects.cull_closed_meshes);
-		}
+		ImGui::Checkbox("Cull closed meshes", &effects.cull_closed_meshes);
 		ImGui::TextWrapped(
 			"Keeps backface culling on for closed meshes the game has made two-sided. "
 			"A car door that flaps open is made two-sided; when it is a closed shell "
 			"crushed flat, its paint and interior panel otherwise flicker against each other. "
 			"Takes effect at once on cars and anything moving; baked scenery follows on the "
-			"next track load. Saved as [Effects] CullClosedMeshes in remix-comp-proxy.ini.");
+			"next track load. [Effects] CullClosedMeshes.");
 		if (!effects.backface_culling) {
 			ImGui::TextDisabled("Backface culling is off ([Effects] BackfaceCulling), so this does nothing.");
 		}
 
 		ImGui::Separator();
 
-		if (ImGui::Checkbox("Additive car flames", &effects.additive_car_flames)) {
-			config.set_bool("Effects", "AdditiveCarFlames", effects.additive_car_flames);
-		}
+		ImGui::Checkbox("Additive car flames", &effects.additive_car_flames);
 		ImGui::TextWrapped(
 			"On: car flames (FLM01..FLM20) glow through the additive sprite path, like the "
 			"explosions. Off: they stay solid cut-outs lit by the mod's emissive masks. "
-			"Takes effect at once. Saved as [Effects] AdditiveCarFlames.");
+			"Takes effect at once. [Effects] AdditiveCarFlames.");
+
+		const bool dirty = effects.cull_closed_meshes != m_saved_effects.cull_closed_meshes
+			|| effects.additive_car_flames != m_saved_effects.additive_car_flames;
+		save_row(dirty,
+			[&] {
+				config.set_bool("Effects", "CullClosedMeshes", effects.cull_closed_meshes);
+				config.set_bool("Effects", "AdditiveCarFlames", effects.additive_car_flames);
+				m_saved_effects = { effects.cull_closed_meshes, effects.additive_car_flames };
+			},
+			[&] {
+				effects.cull_closed_meshes = config.get_bool("Effects", "CullClosedMeshes", true);
+				effects.additive_car_flames = config.get_bool("Effects", "AdditiveCarFlames", true);
+				m_saved_effects = { effects.cull_closed_meshes, effects.additive_car_flames };
+			},
+			[&] {
+				effects.cull_closed_meshes = true;
+				effects.additive_car_flames = true;
+			});
 	}
 
 	void imgui::tab_fog()
@@ -331,48 +362,48 @@ namespace comp
 		}
 
 		ImGui::Spacing();
-		if (ImGui::Checkbox("Fog", &effects.fog)) {
-			config.set_bool("Effects", "Fog", effects.fog);
-		}
+		ImGui::Checkbox("Fog", &effects.fog);
 		ImGui::SameLine();
 		ImGui::TextDisabled("the track's depth cue, read by Remix's legacy fog remapping");
 
-		if (ImGui::Checkbox("Fog colour in the volumetrics", &effects.fog_volumetrics))
-		{
-			config.set_bool("Effects", "FogVolumetrics", effects.fog_volumetrics);
+		if (ImGui::Checkbox("Fog colour in the volumetrics", &effects.fog_volumetrics)) {
 			resync();
 		}
 
 		ImGui::BeginDisabled(!effects.fog);
 		ImGui::SliderFloat("Distance", &effects.fog_distance, 0.5f, 5.0f, "x %.2f", ImGuiSliderFlags_Logarithmic);
-		if (ImGui::IsItemDeactivatedAfterEdit()) {
-			config.set_float("Effects", "FogDistance", effects.fog_distance);
-		}
 		ImGui::TextWrapped("How far you see through the fog, as a multiple of the track's own depth cue. "
 			"1 is the game's distance; 2 sees twice as far.");
 
-		ImGui::SliderFloat("Tint", &effects.fog_tint, 0.0f, 0.5f, "%.2f");
-		if (ImGui::IsItemEdited()) {
+		if (ImGui::SliderFloat("Tint", &effects.fog_tint, 0.0f, 0.5f, "%.2f")) {
 			resync();
-		}
-		if (ImGui::IsItemDeactivatedAfterEdit()) {
-			config.set_float("Effects", "FogTint", effects.fog_tint);
 		}
 		ImGui::TextWrapped("How much of the fog's hue colours what you see through it. "
 			"High values darken coloured fog, since the sky is the main light.");
 		ImGui::EndDisabled();
 
-		ImGui::Spacing();
-		if (ImGui::Button("Defaults"))
-		{
-			effects.fog_distance = 1.0f;
-			effects.fog_tint = 0.08f;
-			config.set_float("Effects", "FogDistance", effects.fog_distance);
-			config.set_float("Effects", "FogTint", effects.fog_tint);
-			resync();
-		}
-		ImGui::SameLine();
-		ImGui::TextDisabled("Saved to [Effects] in remix-comp-proxy.ini as you change them.");
+		const fog_settings now = { effects.fog, effects.fog_volumetrics, effects.fog_distance, effects.fog_tint };
+		save_row(!(now == m_saved_fog),
+			[&] {
+				config.set_bool("Effects", "Fog", effects.fog);
+				config.set_bool("Effects", "FogVolumetrics", effects.fog_volumetrics);
+				config.set_float("Effects", "FogDistance", effects.fog_distance);
+				config.set_float("Effects", "FogTint", effects.fog_tint);
+				m_saved_fog = now;
+			},
+			[&] {
+				effects.fog = config.get_bool("Effects", "Fog", true);
+				effects.fog_volumetrics = config.get_bool("Effects", "FogVolumetrics", true);
+				effects.fog_distance = config.get_float("Effects", "FogDistance", 1.0f);
+				effects.fog_tint = config.get_float("Effects", "FogTint", 0.08f);
+				m_saved_fog = { effects.fog, effects.fog_volumetrics, effects.fog_distance, effects.fog_tint };
+				resync();
+			},
+			[&] {
+				effects.fog_distance = 1.0f;
+				effects.fog_tint = 0.08f;
+				resync();
+			});
 	}
 
 	void imgui::tab_conversion()
@@ -921,6 +952,10 @@ namespace comp
 	imgui::imgui()
 	{
 		p_this = this;
+
+		const auto& effects = shared::common::config::get().effects;
+		m_saved_effects = { effects.cull_closed_meshes, effects.additive_car_flames };
+		m_saved_fog = { effects.fog, effects.fog_volumetrics, effects.fog_distance, effects.fog_tint };
 
 		IMGUI_CHECKVERSION();
 		ImGui::CreateContext();

@@ -186,6 +186,27 @@ namespace comp
 		void tab_sun();
 		void tab_effects();
 		void tab_fog();
+		void save_row(bool dirty, const std::function<void()>& save,
+			const std::function<void()>& reload, const std::function<void()>& defaults);
+
+		// What the Effects and Fog tabs last read from or wrote to the ini, so they can
+		// show unsaved changes. Set from the loaded config in the constructor.
+		struct effects_settings
+		{
+			bool cull_closed_meshes;
+			bool additive_car_flames;
+		};
+		effects_settings m_saved_effects{};
+
+		struct fog_settings
+		{
+			bool fog;
+			bool volumetrics;
+			float distance;
+			float tint;
+			bool operator==(const fog_settings&) const = default;
+		};
+		fog_settings m_saved_fog{};
 		void tab_conversion();
 		
 		bool m_im_window_focused = false;

@@ -4100,7 +4100,8 @@ Fog tab has:
 - sliders for Distance (0.5-5x) and Tint;
 - a readout of the track's depth cue and of what Remix receives.
 
-Settings save to the ini when a slider is released. Changing FogVolumetrics or Tint re-pushes
+Settings take effect at once and are written only by the tab's "Save to ini" button, as
+the Headlights and Sun tabs do. The Effects tab was changed to work the same way. Changing FogVolumetrics or Tint re-pushes
 the volumetric colour (`resync_fog`). With FogVolumetrics off, `push_fog_to_remix` now pushes
 rtx.conf's neutral albedo and transmittance, so switching it off mid-race undoes a colour
 that was already pushed.
@@ -4204,5 +4205,22 @@ GLASS and GLASS2 (ski), GLASS1 and GLASS2 (newcity), GLASS4 (carrier), GLASSPRO 
 (Silonet03, and timber for WIND), MSWINDOW (silo), ROLLGLAS and R25GL1 (funfair/junkyard),
 and BARNWIND. The recipe is thin-walled, IOR 1.02 and thin_wall_thickness 1. The tint is the
 hue of the glass texels alone (0 < a < 238), so the barn's wood frame doesn't colour its pane.
+
+### 52.3 Coloured glass, and glass that colours the light
+
+The constant tint was replaced with a `transmittance_texture`: the game's own glass texture
+with its alpha dropped (`assets/generated/<hash>_transmittance.dds`). So the pane passes its
+own colours and detail. Taken raw, several are near black: they were only ever drawn at
+partial alpha over what was behind them (MSWINDOW 0.01, GLASSPRO 0.05, the airport's R50GL
+and CONWIN about 0.07/0.25/0.25). Each texture is therefore scaled so that the 95th
+percentile of its glass texels' brightest channel reaches 0.9, never darkened, with a per-
+channel floor of 0.1. A texture whose glass is black (MSWINDOW) becomes neutral 0.35 smoked
+glass.
+
+In game the airport glass drew its frames but let white light through. Remix doesn't trace
+translucent surfaces for shadows by default: `rtx.enableDirectTranslucentShadows` and
+`rtx.enableIndirectTranslucentShadows` are both false (`rtx_options.h:717-719`, "include
+OBJECT_MASK_TRANSLUCENT into primary/secondary visibility rays"). Both are now on in
+`package/rtx.conf`, so light through glass takes the glass's colour.
 
 Not verified in game yet.
