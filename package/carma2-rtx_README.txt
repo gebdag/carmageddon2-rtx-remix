@@ -88,7 +88,8 @@ Keys
 Headlight settings are adjusted in the F4 menu and saved to carma2-headlights.ini in the
 game folder with "Save to ini". The sun works the same way and saves to carma2-sun.ini.
 It starts at the angle the game gives its own light: 60 degrees up, the same on every
-track.
+track. The street lamps of the night races are set in the Headlights tab and saved to
+carma2-streetlights.ini.
 
 
 Troubleshooting
@@ -108,6 +109,6 @@ Troubleshooting
 Uninstalling
 ------------
 
-Delete d3d9.dll, remix-comp-proxy.ini, carma2-headlights.ini, carma2-sun.ini, rtx.conf,
-carma2-rtx_README.txt, rtx-remix\mods\carma2rtx and the rtx_comp folder from the game
-folder, then remove the RTX Remix runtime.
+Delete d3d9.dll, remix-comp-proxy.ini, carma2-headlights.ini, carma2-sun.ini,
+carma2-streetlights.ini, rtx.conf, carma2-rtx_README.txt, rtx-remix\mods\carma2rtx and
+the rtx_comp folder from the game folder, then remove the RTX Remix runtime.
