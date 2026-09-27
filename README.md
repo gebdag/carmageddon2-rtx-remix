@@ -32,7 +32,7 @@ CARMA2_HW.EXE (BRender) -> Glide -> nGlide -> d3d9.dll (this mod) -> d3d9_remix.
 - Works with NVIDIA's RTX Remix and with Remix Plus
 - Driving on the arrow keys, with the camera moved to the numpad; the game's own Controls screen can't do this
 - A patch for the game's own out-of-bounds crash in the tint-poly code when pressing ESC
-- F4 debug overlay
+- F4 menu, with a Conversion switch that shows the game's own rendering for comparison
 
 All options are documented in `remix-comp-proxy.ini`.
 

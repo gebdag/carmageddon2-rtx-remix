@@ -90,6 +90,15 @@ namespace comp
 
 		scene_profile& profile() { return m_profile; }
 
+		/*
+		 * Whether the game's frame is converted for Remix. Off hands everything back to the
+		 * game: its own render of every model, its own frustum culling and draw distance,
+		 * and no injected geometry, sky or lights. Switching it back on rebuilds the static
+		 * world, which saw nothing while it was off. Runtime only; every start is converted.
+		 */
+		bool conversion_enabled() const { return m_conversion; }
+		void set_conversion(bool enabled);
+
 		// Whether the renderer's bounds test is being asked about a pickup's model. The
 		// game passes a model actor's &model->bounds_min, so the model is recovered from
 		// the pointer alone; bounds of anything else never match.
@@ -581,6 +590,7 @@ namespace comp
 		static constexpr size_t TRACK_LOAD_DISTINCT_MODELS = 400;
 
 		bool m_in_frontend = false;
+		bool m_conversion = true;
 		std::unordered_set<game::br_model*> m_frontend_models;
 		void release_chunks();
 		void release_geometry(model_geometry& geometry);

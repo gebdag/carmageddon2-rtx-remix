@@ -185,7 +185,7 @@ namespace comp
 		void tab_headlights();
 		void tab_sun();
 		void tab_effects();
-		void tab_ffp();
+		void tab_conversion();
 		
 		bool m_im_window_focused = false;
 		bool m_im_window_hovered = false;

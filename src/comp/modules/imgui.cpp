@@ -7,8 +7,8 @@
 #include "diagnostics.hpp"
 #include "headlights.hpp"
 #include "sun.hpp"
+#include "brender_inject.hpp"
 #include "shared/common/imgui_helper.hpp"
-#include "shared/common/ffp_state.hpp"
 #include "shared/common/config.hpp"
 
 // Allow us to directly call the ImGui WndProc function.
@@ -311,110 +311,24 @@ namespace comp
 			"Takes effect at once. Saved as [Effects] AdditiveCarFlames.");
 	}
 
-	void imgui::tab_ffp()
+	void imgui::tab_conversion()
 	{
-		auto& ffp = shared::common::ffp_state::get();
-		auto& cfg = shared::common::config::get();
-
-		// FFP enable/disable toggle
-		bool ffp_enabled = ffp.is_enabled();
-		if (ImGui::Checkbox("FFP Conversion Enabled", &ffp_enabled))
-			ffp.set_enabled(ffp_enabled);
-
-		ImGui::SameLine();
-		ImGui::TextDisabled("(%s)", ffp.is_ffp_active() ? "ACTIVE" : "inactive");
-
-		ImGui::Separator();
-
-		// State overview
-		if (ImGui::CollapsingHeader("State", ImGuiTreeNodeFlags_DefaultOpen))
-		{
-			ImGui::Text("ViewProj Valid: %s", ffp.view_proj_valid() ? "YES" : "no");
-			ImGui::Text("Frame: %u  Draws: %u  Scenes: %u",
-				ffp.frame_count(), ffp.draw_call_count(), ffp.scene_count());
-			ImGui::Text("Decl: %s%s%s%s",
-				ffp.cur_decl_has_normal() ? "NORMAL " : "",
-				ffp.cur_decl_has_pos_t() ? "POSITIONT " : "",
-				ffp.cur_decl_is_skinned() ? "SKINNED " : "",
-				ffp.cur_decl_has_texcoord() ? "TEXCOORD " : "");
-
-			if (ffp.cur_decl_is_skinned())
-				ImGui::Text("  Bones: %d (start reg %d)", ffp.num_bones(), ffp.bone_start_reg());
+		const auto inject = brender_inject::get();
+		if (!inject) {
+			ImGui::TextDisabled("The BRender injection is not running.");
+			return;
 		}
 
-		// Register layout
-		if (ImGui::CollapsingHeader("Register Layout"))
-		{
-			ImGui::Text("View:  c%d - c%d", ffp.reg_view_start(), ffp.reg_view_end() - 1);
-			ImGui::Text("Proj:  c%d - c%d", ffp.reg_proj_start(), ffp.reg_proj_end() - 1);
-			ImGui::Text("World: c%d - c%d", ffp.reg_world_start(), ffp.reg_world_end() - 1);
-			ImGui::Text("Albedo Stage: %d", cfg.ffp.albedo_stage);
+		bool converting = inject->conversion_enabled();
+		if (ImGui::Checkbox("Conversion", &converting)) {
+			inject->set_conversion(converting);
 		}
 
-		// VS constant register heatmap
-		if (ImGui::CollapsingHeader("VS Constant Registers"))
-		{
-			const auto* write_log = ffp.vs_const_write_log();
-			ImGui::Text("Written this frame:");
-
-			// 16 registers per row, colored by write status
-			for (int row = 0; row < 16; row++)
-			{
-				ImGui::Text("c%3d:", row * 16);
-				ImGui::SameLine();
-				for (int col = 0; col < 16; col++)
-				{
-					int reg = row * 16 + col;
-					if (write_log[reg])
-					{
-						ImGui::SameLine();
-						ImGui::TextColored(ImVec4(0.2f, 1.0f, 0.2f, 1.0f), "%02X", reg);
-					}
-					else
-					{
-						ImGui::SameLine();
-						ImGui::TextDisabled("--");
-					}
-				}
-			}
-		}
-
-		// Matrix values
-		if (ImGui::CollapsingHeader("Matrices") && ffp.view_proj_valid())
-		{
-			auto show_matrix = [&](const char* name, int start_reg)
-			{
-				const float* m = &ffp.vs_const_data()[start_reg * 4];
-				if (shared::common::ffp_state::mat4_is_interesting(m))
-				{
-					if (ImGui::TreeNode(name))
-					{
-						ImGui::Text("[%8.3f %8.3f %8.3f %8.3f]", m[0], m[1], m[2], m[3]);
-						ImGui::Text("[%8.3f %8.3f %8.3f %8.3f]", m[4], m[5], m[6], m[7]);
-						ImGui::Text("[%8.3f %8.3f %8.3f %8.3f]", m[8], m[9], m[10], m[11]);
-						ImGui::Text("[%8.3f %8.3f %8.3f %8.3f]", m[12], m[13], m[14], m[15]);
-						ImGui::TreePop();
-					}
-				}
-			};
-
-			show_matrix("View", ffp.reg_view_start());
-			show_matrix("Projection", ffp.reg_proj_start());
-			show_matrix("World", ffp.reg_world_start());
-		}
-
-		// Texture bindings
-		if (ImGui::CollapsingHeader("Texture Stages"))
-		{
-			for (int ts = 0; ts < 8; ts++)
-			{
-				auto* tex = ffp.cur_texture(ts);
-				if (tex)
-					ImGui::Text("Stage %d: %p%s", ts, tex, (ts == cfg.ffp.albedo_stage) ? " [ALBEDO]" : "");
-				else
-					ImGui::TextDisabled("Stage %d: (null)", ts);
-			}
-		}
+		ImGui::TextWrapped(
+			"On: the race is rebuilt as path-traced geometry, with the sky, the sun and the headlights. "
+			"Off: the game renders its own frame, with its own culling and draw distance, as it would "
+			"without this proxy. Switching back on rebuilds the static world, so expect a moment of "
+			"extra load. Every start is converted; this is not saved.");
 	}
 
 	// -----------
@@ -697,7 +611,7 @@ namespace comp
 			ADD_TAB("Headlights", tab_headlights);
 			ADD_TAB("Sun", tab_sun);
 			ADD_TAB("Effects", tab_effects);
-			ADD_TAB("FFP", tab_ffp);
+			ADD_TAB("Conversion", tab_conversion);
 			ADD_TAB("Diagnostics", tab_diagnostics);
 			ADD_TAB("Tracer", tab_tracer);
 			ADD_TAB("Dev", tab_dev);

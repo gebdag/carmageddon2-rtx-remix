@@ -4057,3 +4057,26 @@ Known side effect: action replay reads KP4/KP6 directly for rewind and fast-forw
 replay those keys also circle the camera.
 
 Reported working in game.
+
+## 50. A switch that shows the game's own rendering (2026-09-27)
+
+The F4 menu's FFP tab was the framework's shader-to-fixed-function debug view, which this game
+never uses (FFP=0: nothing ever calls SetVertexShaderConstantF). A Conversion tab replaces it.
+`brender_inject::set_conversion` switches the whole conversion at runtime. It isn't saved, so
+every start is converted. With conversion off, every hook falls through to the game:
+
+- `hk_model_render` calls the original with the style the game asked for, so no model is
+  captured or suppressed.
+- `hk_bounds_test` returns the game's own culling verdict.
+- `hk_scene_begin` puts each camera's `yon_z` back to the value saved before the far-plane
+  override raised it (`g_game_yon`), and doesn't open an injection scene.
+- `hk_setup_camera`, `hk_scene_end` and `hk_scene_render` skip the capture and submission.
+  No injected geometry, sky, sun or headlights reach Remix, and the headlights and sun are
+  simply not drawn rather than destroyed (43.6).
+
+`hk_model_update` and `hk_material_update` keep running, so the geometry cache and the
+material tracking stay current. Switching back on calls `reset_static_world`, because actors
+moved and vanished while nothing was being captured. The switch can only be clicked while
+ImGui is drawing, which is between frames, so it never splits a scene.
+
+Not verified in game yet.

@@ -817,6 +817,9 @@ namespace comp
 			const auto& culling = shared::common::config::get().culling;
 			const auto inject = brender_inject::get();
 
+			if (inject && !inject->conversion_enabled()) {
+				return result;
+			}
 			if (culling.cull_pickups && inject && inject->is_pickup_model_bounds(bounds)) {
 				return result;
 			}
@@ -843,22 +846,49 @@ namespace comp
 			return result;
 		}
 
-		void __cdecl hk_scene_begin(game::br_actor* world, game::br_actor* camera, void* colour, void* depth)
+		// Each camera's own draw distance from before the far-plane override raised it, so
+		// that switching the conversion off can hand the game its view back unchanged.
+		std::unordered_map<game::br_camera*, float> g_game_yon;
+
+		/*
+		 * Cameras are built once by FUN_0047E3B0, which bakes the "Yon" option into
+		 * br_camera::yon_z (the mirror camera gets half). Rewriting it each frame is what makes
+		 * the override stick, and it reaches the game's own frustum culling as well as the
+		 * projection we hand Remix.
+		 */
+		void apply_far_plane(game::br_actor* camera, const bool converting)
 		{
-			// Cameras are built once by FUN_0047E3B0, which bakes the "Yon" option into
-			// br_camera::yon_z (the mirror camera gets half). Rewriting it here each frame
-			// is what makes the override stick, and it reaches the game's own frustum
-			// culling as well as the projection we hand Remix.
-			if (const float far_plane = shared::common::config::get().culling.far_plane;
-				far_plane > 0.0f && camera && camera->type_data)
-			{
-				const auto cam = static_cast<game::br_camera*>(camera->type_data);
-				if (cam->yon_z < far_plane) {
-					cam->yon_z = far_plane;
-				}
+			if (!camera || !camera->type_data) {
+				return;
 			}
 
-			if (const auto self = brender_inject::get(); self) {
+			const auto cam = static_cast<game::br_camera*>(camera->type_data);
+			if (!converting)
+			{
+				if (const auto it = g_game_yon.find(cam); it != g_game_yon.end())
+				{
+					cam->yon_z = it->second;
+					g_game_yon.erase(it);
+				}
+				return;
+			}
+
+			const float far_plane = shared::common::config::get().culling.far_plane;
+			if (far_plane > 0.0f && cam->yon_z < far_plane)
+			{
+				g_game_yon.try_emplace(cam, cam->yon_z);
+				cam->yon_z = far_plane;
+			}
+		}
+
+		void __cdecl hk_scene_begin(game::br_actor* world, game::br_actor* camera, void* colour, void* depth)
+		{
+			const auto self = brender_inject::get();
+			const bool converting = self && self->conversion_enabled();
+
+			apply_far_plane(camera, converting);
+
+			if (converting) {
 				self->begin_scene(world, camera, static_cast<game::br_pixelmap*>(colour));
 			}
 
@@ -870,7 +900,7 @@ namespace comp
 			o_setup_camera(world, camera);
 
 			// No actor transform has been pushed yet, so model_to_view == world_to_view.
-			if (const auto self = brender_inject::get(); self) {
+			if (const auto self = brender_inject::get(); self && self->conversion_enabled()) {
 				self->capture_camera();
 			}
 		}
@@ -888,7 +918,7 @@ namespace comp
 			o_scene_end();
 			const int64_t elapsed = now_ticks() - start;
 
-			if (const auto self = brender_inject::get(); self)
+			if (const auto self = brender_inject::get(); self && self->conversion_enabled())
 			{
 				self->profile().scene_end_ticks += elapsed;
 				self->end_scene();
@@ -899,7 +929,8 @@ namespace comp
 		// scene has to be closed here, and it is flagged as an overlay pass throughout.
 		void __cdecl hk_scene_render(game::br_actor* world, game::br_actor* camera, void* colour, void* depth)
 		{
-			const auto self = brender_inject::get();
+			const auto inject = brender_inject::get();
+			const auto self = inject && inject->conversion_enabled() ? inject : nullptr;
 			if (self) {
 				self->set_overlay_scene(true);
 			}
@@ -960,7 +991,7 @@ namespace comp
 		                             uint32_t style, uint32_t bounds, uint32_t use_custom)
 		{
 			const auto self = brender_inject::get();
-			if (!self || !model)
+			if (!self || !model || !self->conversion_enabled())
 			{
 				render_original(self, actor, model, material, env, style, bounds, use_custom);
 				return;
@@ -2187,6 +2218,25 @@ namespace comp
 		}
 		m_chunks.clear();
 		m_open_chunks.clear();
+	}
+
+	void brender_inject::set_conversion(const bool enabled)
+	{
+		if (enabled == m_conversion) {
+			return;
+		}
+		m_conversion = enabled;
+
+		// Nothing was captured while it was off, so actors moved and vanished without the
+		// static world seeing it.
+		if (enabled) {
+			reset_static_world("conversion switched back on");
+		}
+
+		shared::common::log("BRender", enabled
+			? "conversion on - the game's frame goes to Remix as path-traced geometry"
+			: "conversion off - the game renders its own frame, as without the proxy",
+			shared::common::LOG_TYPE::LOG_TYPE_WARN, true);
 	}
 
 	void brender_inject::reset_static_world(const char* reason)
