@@ -151,6 +151,7 @@ namespace shared::common
 		effects.fog = get_bool("Effects", "Fog", true);
 		effects.fog_volumetrics = get_bool("Effects", "FogVolumetrics", true);
 		effects.fog_tint = get_float("Effects", "FogTint", 0.08f);
+		effects.fog_level_edge = get_bool("Effects", "FogLevelEdge", true);
 		effects.fog_distance = get_float("Effects", "FogDistance", 1.0f);
 		effects.decal_offset = get_float("Effects", "DecalOffset", 0.02f);
 		effects.crease_angle = get_float("Effects", "CreaseAngle", 45.0f);

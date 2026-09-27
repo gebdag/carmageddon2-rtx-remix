@@ -2113,6 +2113,7 @@ namespace comp
 			{
 				record.baked = true;
 				++record.bakes;
+				m_footprint.add_bounds(model->bounds_min, model->bounds_max, world);
 				m_have_unsealed = true;
 				m_last_promotion_scene = m_scenes_submitted;
 				if (record.demoted) { ++m_repromotions; }
@@ -2392,6 +2393,7 @@ namespace comp
 		m_animated_materials.clear();
 		m_pickup_models.clear();
 		m_material_state.clear();
+		m_footprint.clear();
 		m_have_unsealed = false;
 		m_live_actors = 0;
 
@@ -3309,11 +3311,33 @@ namespace comp
 
 		dev->SetRenderState(D3DRS_FOGTABLEMODE, D3DFOG_NONE);
 		dev->SetRenderState(D3DRS_FOGVERTEXMODE, D3DFOG_LINEAR);
-		const float distance = std::max(shared::common::config::get().effects.fog_distance, 0.1f);
+		m_handed_fog = fog_range_for(fog);
 		dev->SetRenderState(D3DRS_FOGCOLOR, fog.colour);
-		dev->SetRenderState(D3DRS_FOGSTART, as_dword(fog.min_distance * distance));
-		dev->SetRenderState(D3DRS_FOGEND, as_dword(fog.max_distance * distance));
+		dev->SetRenderState(D3DRS_FOGSTART, as_dword(m_handed_fog.start));
+		dev->SetRenderState(D3DRS_FOGEND, as_dword(m_handed_fog.end));
 		dev->SetRenderState(D3DRS_FOGDENSITY, as_dword(1.0f));
+	}
+
+	/*
+	 * The game sets its fog close because it stops drawing at the yon plane, and the fog hides
+	 * that edge. The conversion draws the whole level, so the edge to hide is the level's own:
+	 * with FogLevelEdge the fog is full at the level's farthest point from the camera. That
+	 * follows the camera -- a long runway ahead needs far more than a city block -- and moves
+	 * smoothly as it drives, but not as it turns. The start keeps the track's own ratio to the
+	 * end, so a gradual haze stays gradual, and neither ever comes closer than the game's own.
+	 * Until anything has baked, and without the static world, the game's distances stand.
+	 */
+	brender_inject::fog_range brender_inject::fog_range_for(const game::scene_fog& fog)
+	{
+		const auto& effects = shared::common::config::get().effects;
+		const float trim = std::max(effects.fog_distance, 0.1f);
+
+		if (!effects.fog_level_edge || m_footprint.empty()) {
+			return { fog.min_distance * trim, fog.max_distance * trim, false };
+		}
+
+		const float end = std::max(fog.max_distance, m_footprint.farthest_from(m_view_inverse.m[3]) * trim);
+		return { end * (fog.min_distance / fog.max_distance), end, true };
 	}
 
 	/*

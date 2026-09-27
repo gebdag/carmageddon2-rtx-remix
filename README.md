@@ -28,7 +28,7 @@ CARMA2_HW.EXE (BRender) -> Glide -> nGlide -> d3d9.dll (this mod) -> d3d9_remix.
 - Car rear light panels showing the right cell of their texture atlas
 - Smoke and dust tinted by vertex colour and faded by material opacity
 - The game's back-face culling handed to Remix, so car glass stays single-sided and crushed doors don't flicker
-- The race's depth cue passed on as fog and to Remix's volumetrics
+- The race's depth cue passed on as fog and to Remix's volumetrics, placed at the level's far side from wherever the camera is (or at the game's own distances)
 - A Remix mod with emissive maps for fire, flames and car lights, and material overrides for water, glass and chrome
 - Works with NVIDIA's RTX Remix and with Remix Plus
 - Driving on the arrow keys, with the camera moved to the numpad; the game's own Controls screen can't do this

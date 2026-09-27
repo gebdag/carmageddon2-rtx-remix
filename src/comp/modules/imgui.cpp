@@ -350,6 +350,12 @@ namespace comp
 			});
 	}
 
+	imgui::fog_settings imgui::fog_now()
+	{
+		const auto& effects = shared::common::config::get().effects;
+		return { effects.fog, effects.fog_volumetrics, effects.fog_level_edge, effects.fog_distance, effects.fog_tint };
+	}
+
 	void imgui::tab_fog()
 	{
 		auto& config = shared::common::config::get();
@@ -362,8 +368,13 @@ namespace comp
 		{
 			ImGui::Text("This track's fog: colour %06X, %.1f to %.1f world units",
 				fog.colour, fog.min_distance, fog.max_distance);
-			ImGui::TextDisabled("Handed to Remix as %.1f to %.1f",
-				fog.min_distance * effects.fog_distance, fog.max_distance * effects.fog_distance);
+			if (inject && effects.fog)
+			{
+				const auto& handed = inject->handed_fog();
+				ImGui::TextDisabled("Handed to Remix as %.1f to %.1f (x %.1f the track's own)%s",
+					handed.start, handed.end, handed.end / fog.max_distance,
+					effects.fog_level_edge && !handed.at_level_edge ? ", level not mapped yet" : "");
+			}
 		}
 		else {
 			ImGui::TextDisabled("No fog on this track (or not in a race).");
@@ -379,9 +390,17 @@ namespace comp
 		}
 
 		ImGui::BeginDisabled(!effects.fog);
+		ImGui::Checkbox("Fog at the level's edge", &effects.fog_level_edge);
+		ImGui::TextWrapped(effects.fog_level_edge
+			? "The fog is full at the level's farthest point from the camera, so the level's edge fades out "
+			  "wherever you are. It never comes closer than the track's own fog."
+			: "The track's own fog distances, as the game set them to hide where it stopped drawing.");
+
 		ImGui::SliderFloat("Distance", &effects.fog_distance, 0.5f, 10.0f, "x %.2f", ImGuiSliderFlags_Logarithmic);
-		ImGui::TextWrapped("How far you see through the fog, as a multiple of the track's own depth cue. "
-			"1 is the game's distance; 2 sees twice as far.");
+		ImGui::TextWrapped(effects.fog_level_edge
+			? "Scales the level-edge distance: 1 is full fog exactly at the level's far side, below 1 "
+			  "fogs it out sooner, above 1 leaves it showing."
+			: "How far you see through the fog, as a multiple of the track's own. 2 sees twice as far.");
 
 		if (ImGui::SliderFloat("Tint", &effects.fog_tint, 0.0f, 0.5f, "%.2f")) {
 			resync();
@@ -390,11 +409,12 @@ namespace comp
 			"High values darken coloured fog, since the sky is the main light.");
 		ImGui::EndDisabled();
 
-		const fog_settings now = { effects.fog, effects.fog_volumetrics, effects.fog_distance, effects.fog_tint };
+		const fog_settings now = fog_now();
 		save_row(!(now == m_saved_fog),
 			[&] {
 				config.set_bool("Effects", "Fog", effects.fog);
 				config.set_bool("Effects", "FogVolumetrics", effects.fog_volumetrics);
+				config.set_bool("Effects", "FogLevelEdge", effects.fog_level_edge);
 				config.set_float("Effects", "FogDistance", effects.fog_distance);
 				config.set_float("Effects", "FogTint", effects.fog_tint);
 				m_saved_fog = now;
@@ -402,12 +422,14 @@ namespace comp
 			[&] {
 				effects.fog = config.get_bool("Effects", "Fog", true);
 				effects.fog_volumetrics = config.get_bool("Effects", "FogVolumetrics", true);
+				effects.fog_level_edge = config.get_bool("Effects", "FogLevelEdge", true);
 				effects.fog_distance = config.get_float("Effects", "FogDistance", 1.0f);
 				effects.fog_tint = config.get_float("Effects", "FogTint", 0.08f);
-				m_saved_fog = { effects.fog, effects.fog_volumetrics, effects.fog_distance, effects.fog_tint };
+				m_saved_fog = fog_now();
 				resync();
 			},
 			[&] {
+				effects.fog_level_edge = true;
 				effects.fog_distance = 1.0f;
 				effects.fog_tint = 0.08f;
 				resync();
@@ -963,7 +985,7 @@ namespace comp
 
 		const auto& effects = shared::common::config::get().effects;
 		m_saved_effects = { effects.cull_closed_meshes, effects.additive_car_flames };
-		m_saved_fog = { effects.fog, effects.fog_volumetrics, effects.fog_distance, effects.fog_tint };
+		m_saved_fog = fog_now();
 
 		IMGUI_CHECKVERSION();
 		ImGui::CreateContext();

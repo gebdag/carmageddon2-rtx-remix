@@ -4314,3 +4314,38 @@ F4 Sun tab: "Time of day per race" (`[Sun] TimeOfDay` in `carma2-sun.ini`). Off,
 gets the standard sun and no night lighting. The Numos sky stays on Remix Plus either way.
 
 Not verified in game yet.
+
+## 54. Fog at the level's far side (2026-09-28)
+
+The game sets its depth cue close because the fog hides where it stops drawing (the yon
+plane). The conversion draws the whole level, so only the level's own edge needs hiding.
+A fixed `FogDistance` multiplier cannot do that. In the user's tests the airport runway start
+needed about 10x, and the first city race about 5x. The right distance depends on how far the
+level reaches from the camera.
+
+**`FogLevelEdge`** ([Effects], default 1) puts full fog at the level's farthest point from the
+camera:
+- **Footprint.** `level_footprint` (new) gathers the eight world-space corners of
+  `model->bounds_min/max` for every actor as it bakes into the static world (`track_static_actor`,
+  on `record.baked = true`). The footprint is their convex hull in XZ, plus the height range.
+  The farthest point from any position is a hull corner, so a query costs a few dozen
+  distance checks.
+- **It only grows.** The city streams its scenery, and baked chunks keep drawing after the
+  game drops their actors. The footprint is cleared with the static world
+  (`reset_static_world`).
+- **Distances** (`fog_range_for`), computed each race scene:
+  - end = max(track fog end, farthest x `FogDistance`);
+  - start = end x (track start / track end), which keeps the track's own ramp.
+  - It follows the camera's position but not its heading, so turning never changes the fog.
+  - Until anything has baked, or without `StaticWorld`, the game's distances apply.
+- **`FogDistance`** trims whichever distance is in use. With `FogLevelEdge=1`, 1 is full fog
+  exactly at the far side.
+- **Menu.** The F4 Fog tab shows what is handed to Remix, as a multiple of the track's own
+  distance, so the old per-track multipliers can be compared directly.
+
+Known limits:
+- **An edge you face from close by** is not fogged, since the far side sets the distance.
+- **On Remix Plus's physical sky** the fog colour is the track's, so it may not match that
+  sky's horizon.
+
+Not verified in game yet.

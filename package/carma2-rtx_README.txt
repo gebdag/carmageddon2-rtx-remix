@@ -74,8 +74,8 @@ per race" switch that puts the standard sun back on every race.
 Keys
 ----
 
-  F4       proxy menu: Headlights, Sun, Fog (how far you see through each track's
-           fog), Effects (culling of crushed doors, additive car flames) and
+  F4       proxy menu: Headlights, Sun, Fog (at the level's far side or at the
+           game's own distances), Effects (culling of crushed doors, additive car flames) and
            Conversion, which switches the path tracing off to show the game's own
            rendering. Hold the right mouse button outside the menu to give
            input back to the game.

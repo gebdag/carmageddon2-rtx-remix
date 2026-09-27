@@ -215,10 +215,17 @@ namespace shared::common
 			// so even 0.2 leaves the weakest channel only ~4% of the sky.
 			float fog_tint = 0.08f;
 
-			// Multiplies the depth cue's start and end distances before Remix reads them.
-			// Remix's legacy fog remapping turns the end distance into its transmittance
-			// distance linearly, so 2 sees twice as far through the same fog. 1 is the
+			// Put the fog at the level's far side instead of the game's own distances. The
+			// game fogs close to hide where it stops drawing; the conversion draws the
+			// whole level, so only the level's own edge needs hiding. The fog end follows
+			// the camera: the distance to the level's farthest point, never closer than the
 			// track's own depth cue.
+			bool fog_level_edge = true;
+
+			// Multiplies the fog's start and end distances before Remix reads them: those
+			// of the level edge with FogLevelEdge, the track's own depth cue without.
+			// Remix's legacy fog remapping turns the end distance into its transmittance
+			// distance linearly, so 2 sees twice as far through the same fog.
 			float fog_distance = 1.0f;
 
 			// Distance translucent surfaces are lifted along their normals. BRender kept

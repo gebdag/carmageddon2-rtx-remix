@@ -1,5 +1,6 @@
 #pragma once
 #include "sky_dome.hpp"
+#include "level_footprint.hpp"
 
 namespace comp
 {
@@ -93,6 +94,15 @@ namespace comp
 		// Pushes the volumetric fog colour to Remix again at the next race scene, after a
 		// setting that feeds it (FogVolumetrics, FogTint) changed.
 		void resync_fog() { m_remix_fog_synced = false; }
+
+		// The fog distances handed to Remix at the last race scene, for the menu.
+		struct fog_range
+		{
+			float start;
+			float end;
+			bool at_level_edge;   // placed at the level's far side, not from the game's own distances
+		};
+		const fog_range& handed_fog() const { return m_handed_fog; }
 
 		/*
 		 * Whether the game's frame is converted for Remix. Off hands everything back to the
@@ -426,6 +436,10 @@ namespace comp
 		// legacy fog remapping can pick it up from the injected draws.
 		void apply_fog(IDirect3DDevice9* dev);
 
+		// Where this scene's fog starts and ends: the game's own depth cue, or with FogLevelEdge
+		// stretched so it is full at the level's farthest point from the camera.
+		fog_range fog_range_for(const game::scene_fog& fog);
+
 		// Retargets Remix's volumetric medium at the track's fog colour over the
 		// bridge API, splitting a display fade colour into physically usable parts.
 		// Returns false only when the bridge is not up yet, so the caller can retry.
@@ -440,6 +454,11 @@ namespace comp
 		// per scene. Colour 0xFFFFFFFF marks "nothing logged yet" — no real state matches,
 		// because a br_colour never carries an alpha byte.
 		game::scene_fog m_logged_fog{ false, 0xFFFFFFFFu, 0.0f, 0.0f };
+
+		fog_range m_handed_fog{};
+
+		// Everything baked into the static world, seen from above: where the level ends.
+		level_footprint m_footprint;
 
 		enum class pass_kind
 		{

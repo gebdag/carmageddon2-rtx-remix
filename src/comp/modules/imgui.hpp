@@ -202,10 +202,12 @@ namespace comp
 		{
 			bool fog;
 			bool volumetrics;
+			bool level_edge;
 			float distance;
 			float tint;
 			bool operator==(const fog_settings&) const = default;
 		};
+		static fog_settings fog_now();
 		fog_settings m_saved_fog{};
 		void tab_conversion();
 		
