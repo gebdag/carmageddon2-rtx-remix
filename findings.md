@@ -4106,3 +4106,43 @@ rtx.conf's neutral albedo and transmittance, so switching it off mid-race undoes
 that was already pushed.
 
 Not verified in game yet.
+
+## 52. Glass made glass (2026-09-27)
+
+The complaint was glass that is "opaque in spots". The cause: with `SolidTranslucency`, a glass
+texture is drawn alpha-tested (ALPHAFUNC GREATER, ALPHAREF 0). Every partly transparent texel
+is kept at full opacity and every clear one is cut away, so painted streaks and tints render
+as opaque patches. Only `SCRN` and `SCRN4` had a translucent replacement in the mod.
+
+**Finding the glass.** I scanned every ARGB4444 texture in every archive and in
+`DATA/PIXELMAP/PIX16`, 2487 in all. For each I measured the share of partly transparent
+(0 < a < 255), clear and opaque texels, and matched it to the materials that use it (.mat
+name/texture pairs). Candidates were glass names (glas, wind, scrn, screen, window, ...) plus
+MESCRS, ZESC(RS), CONWIN, and the tracks' `R25GL*`/`R50GL`/`B25GL1`. I then sorted them from a
+contact sheet over a checkerboard.
+
+**What a translucent replacement can and can't do.** Remix Plus's `TranslucentMaterial` has
+only normal, transmittance and emissive textures. It has no opacity input, and
+`calculateAlphaState` returns early for translucent materials, so the draw's alpha test no
+longer applies. The whole triangle becomes glass. That decides the split:
+- Clear panes and windscreens become glass: 52 textures. That includes the drone windscreens
+  (cpscrn*, swscr*, miscrn, amscrn), whose clear texels are the glass itself on window-only
+  polygons.
+- These are left alpha-tested:
+  - broken variants (`*_BROKE`), whose holes a pane would seal;
+  - the smashed windscreen states (`SCRN3`, `37SCRN3`);
+  - textures with a frame painted around a clear hole (Silonet03 GLASS1/2/3/6, WIND3, NEWC
+    GLASS2/3, BARNWIND, JKCKPTSD, DSCRN3), whose frames would turn translucent.
+
+**Tint.** Thin-walled glass measures transmittance over a distance of 1
+(`translucent_surface_material_interaction.slangh:509`, "for thin-walled materials,
+transmittance measurement distance is always 1.0"). The attenuation is
+`exp(-coefficient * thickness)`, so at the default `thin_wall_thickness` of 0.001 any colour is
+effectively clear. The glass layer therefore sets `thin_wall_thickness = 1`, so that
+`transmittance_color` is what a pane passes at normal incidence. The colour is the texture's
+alpha-weighted mean hue. Near-neutral textures get 0.97 grey; saturation is capped at 0.35,
+so no channel drops below about half. `ior_constant` is 1.02 and `thin_walled` is 1, the same
+as the existing SCRN windscreen.
+
+The layer is `rtxmod/materials_glass.usda`, and `rtxmod/materials_glass_index.csv` lists every
+candidate with its decision and reason. Not verified in game yet.
