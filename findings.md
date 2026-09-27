@@ -4128,9 +4128,9 @@ it's the volumetric medium, whose atmosphere doesn't fit this world (see `apply_
 which darkens the near field.
 
 `package/rtx.conf` now pins the compositor fog with `rtx.volumetrics.waterFogDensityThreshold
-= 0`, so a fogged track never converts; at 1x it never did anyway. It also sets
-`rtx.fogColorScale = 1.0`, so the fog is the track's own colour. The F4 Distance slider goes to
-10x. The airport's end then reaches 350, past the 250-unit far plane, which puts the fog at the
+= 0`, so a fogged track never converts; at 1x it never did anyway. `rtx.fogColorScale` stays at
+Remix's default of 0.25 (setting it to 1.0 was tried and reverted). The F4 Distance slider goes
+to 10x. The airport's end then reaches 350, past the 250-unit far plane, which puts the fog at the
 very end of the view.
 
 As a consequence, FogVolumetrics (the volumetric albedo and transmittance push) has no effect
