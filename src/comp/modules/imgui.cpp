@@ -311,6 +311,70 @@ namespace comp
 			"Takes effect at once. Saved as [Effects] AdditiveCarFlames.");
 	}
 
+	void imgui::tab_fog()
+	{
+		auto& config = shared::common::config::get();
+		auto& effects = config.effects;
+		const auto inject = brender_inject::get();
+		const auto resync = [inject] { if (inject) { inject->resync_fog(); } };
+
+		const game::scene_fog fog = game::read_scene_fog();
+		if (fog.enabled)
+		{
+			ImGui::Text("This track's fog: colour %06X, %.1f to %.1f world units",
+				fog.colour, fog.min_distance, fog.max_distance);
+			ImGui::TextDisabled("Handed to Remix as %.1f to %.1f",
+				fog.min_distance * effects.fog_distance, fog.max_distance * effects.fog_distance);
+		}
+		else {
+			ImGui::TextDisabled("No fog on this track (or not in a race).");
+		}
+
+		ImGui::Spacing();
+		if (ImGui::Checkbox("Fog", &effects.fog)) {
+			config.set_bool("Effects", "Fog", effects.fog);
+		}
+		ImGui::SameLine();
+		ImGui::TextDisabled("the track's depth cue, read by Remix's legacy fog remapping");
+
+		if (ImGui::Checkbox("Fog colour in the volumetrics", &effects.fog_volumetrics))
+		{
+			config.set_bool("Effects", "FogVolumetrics", effects.fog_volumetrics);
+			resync();
+		}
+
+		ImGui::BeginDisabled(!effects.fog);
+		ImGui::SliderFloat("Distance", &effects.fog_distance, 0.5f, 5.0f, "x %.2f", ImGuiSliderFlags_Logarithmic);
+		if (ImGui::IsItemDeactivatedAfterEdit()) {
+			config.set_float("Effects", "FogDistance", effects.fog_distance);
+		}
+		ImGui::TextWrapped("How far you see through the fog, as a multiple of the track's own depth cue. "
+			"1 is the game's distance; 2 sees twice as far.");
+
+		ImGui::SliderFloat("Tint", &effects.fog_tint, 0.0f, 0.5f, "%.2f");
+		if (ImGui::IsItemEdited()) {
+			resync();
+		}
+		if (ImGui::IsItemDeactivatedAfterEdit()) {
+			config.set_float("Effects", "FogTint", effects.fog_tint);
+		}
+		ImGui::TextWrapped("How much of the fog's hue colours what you see through it. "
+			"High values darken coloured fog, since the sky is the main light.");
+		ImGui::EndDisabled();
+
+		ImGui::Spacing();
+		if (ImGui::Button("Defaults"))
+		{
+			effects.fog_distance = 1.0f;
+			effects.fog_tint = 0.08f;
+			config.set_float("Effects", "FogDistance", effects.fog_distance);
+			config.set_float("Effects", "FogTint", effects.fog_tint);
+			resync();
+		}
+		ImGui::SameLine();
+		ImGui::TextDisabled("Saved to [Effects] in remix-comp-proxy.ini as you change them.");
+	}
+
 	void imgui::tab_conversion()
 	{
 		const auto inject = brender_inject::get();
@@ -610,6 +674,7 @@ namespace comp
 			ImGui::PopStyleVar(1);
 			ADD_TAB("Headlights", tab_headlights);
 			ADD_TAB("Sun", tab_sun);
+			ADD_TAB("Fog", tab_fog);
 			ADD_TAB("Effects", tab_effects);
 			ADD_TAB("Conversion", tab_conversion);
 			ADD_TAB("Diagnostics", tab_diagnostics);

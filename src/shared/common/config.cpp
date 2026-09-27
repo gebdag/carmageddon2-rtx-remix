@@ -61,6 +61,13 @@ namespace shared::common
 		}
 	}
 
+	void config::set_float(const char* section, const char* key, const float value) const
+	{
+		if (loaded_) {
+			WritePrivateProfileStringA(section, key, std::format("{:.3f}", value).c_str(), ini_path_.c_str());
+		}
+	}
+
 	void config::parse_all()
 	{
 		// [Remix]
@@ -123,6 +130,7 @@ namespace shared::common
 		effects.fog = get_bool("Effects", "Fog", true);
 		effects.fog_volumetrics = get_bool("Effects", "FogVolumetrics", true);
 		effects.fog_tint = get_float("Effects", "FogTint", 0.08f);
+		effects.fog_distance = get_float("Effects", "FogDistance", 1.0f);
 		effects.decal_offset = get_float("Effects", "DecalOffset", 0.02f);
 		effects.crease_angle = get_float("Effects", "CreaseAngle", 45.0f);
 		effects.spark_width = get_float("Effects", "SparkWidth", 0.004f);

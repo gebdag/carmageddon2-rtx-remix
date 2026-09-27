@@ -17,6 +17,7 @@ namespace shared::common
 
 		// Writes a value back to the ini, so a setting changed at runtime survives a restart.
 		void set_bool(const char* section, const char* key, bool value) const;
+		void set_float(const char* section, const char* key, float value) const;
 
 		struct ffp_settings
 		{
@@ -197,6 +198,12 @@ namespace shared::common
 			// Sky light survives transmittance^5 whatever the distances are set to,
 			// so even 0.2 leaves the weakest channel only ~4% of the sky.
 			float fog_tint = 0.08f;
+
+			// Multiplies the depth cue's start and end distances before Remix reads them.
+			// Remix's legacy fog remapping turns the end distance into its transmittance
+			// distance linearly, so 2 sees twice as far through the same fog. 1 is the
+			// track's own depth cue.
+			float fog_distance = 1.0f;
 
 			// Distance translucent surfaces are lifted along their normals. BRender kept
 			// tyre tracks, shadows and impact smears out of the road by drawing them in

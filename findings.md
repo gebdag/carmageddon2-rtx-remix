@@ -4080,3 +4080,29 @@ moved and vanished while nothing was being captured. The switch can only be clic
 ImGui is drawing, which is between frames, so it never splits a scene.
 
 Reported working in game.
+
+## 51. Fog controls in the F4 menu (2026-09-27)
+
+Remix's legacy fog remap (`rtx_global_volumetrics.cpp`, gmod base, lines 496-527) turns the
+FOGEND render state into the volumetric transmittance measurement distance **linearly, with
+no clamp**. The option names suggest bounds, but they only set the slope:
+`distance = (end - maxDistMin) / (maxDistMax - maxDistMin) * (tMax - tMin) + tMin`, with all
+four bounds scaled by `100 * sceneScale`.
+
+At sceneScale 0.001449 the bounds are 0.145/5.8 for the fog end and 2.9/14.5 for the
+transmittance distance, in world units. So a depth-cue end of 35 world units becomes a
+transmittance distance of about 75, and doubling the end roughly doubles it. Scaling
+FOGSTART/FOGEND is therefore a faithful way to see further through the same fog.
+
+`[Effects] FogDistance` (default 1.0) multiplies both distances in `apply_fog`. The new F4
+Fog tab has:
+- switches for Fog and FogVolumetrics;
+- sliders for Distance (0.5-5x) and Tint;
+- a readout of the track's depth cue and of what Remix receives.
+
+Settings save to the ini when a slider is released. Changing FogVolumetrics or Tint re-pushes
+the volumetric colour (`resync_fog`). With FogVolumetrics off, `push_fog_to_remix` now pushes
+rtx.conf's neutral albedo and transmittance, so switching it off mid-race undoes a colour
+that was already pushed.
+
+Not verified in game yet.

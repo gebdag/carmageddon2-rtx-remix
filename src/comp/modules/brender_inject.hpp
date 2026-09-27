@@ -90,6 +90,10 @@ namespace comp
 
 		scene_profile& profile() { return m_profile; }
 
+		// Pushes the volumetric fog colour to Remix again at the next race scene, after a
+		// setting that feeds it (FogVolumetrics, FogTint) changed.
+		void resync_fog() { m_remix_fog_synced = false; }
+
 		/*
 		 * Whether the game's frame is converted for Remix. Off hands everything back to the
 		 * game: its own render of every model, its own frustum culling and draw distance,

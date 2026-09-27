@@ -3146,9 +3146,10 @@ namespace comp
 
 		dev->SetRenderState(D3DRS_FOGTABLEMODE, D3DFOG_NONE);
 		dev->SetRenderState(D3DRS_FOGVERTEXMODE, D3DFOG_LINEAR);
+		const float distance = std::max(shared::common::config::get().effects.fog_distance, 0.1f);
 		dev->SetRenderState(D3DRS_FOGCOLOR, fog.colour);
-		dev->SetRenderState(D3DRS_FOGSTART, as_dword(fog.min_distance));
-		dev->SetRenderState(D3DRS_FOGEND, as_dword(fog.max_distance));
+		dev->SetRenderState(D3DRS_FOGSTART, as_dword(fog.min_distance * distance));
+		dev->SetRenderState(D3DRS_FOGEND, as_dword(fog.max_distance * distance));
 		dev->SetRenderState(D3DRS_FOGDENSITY, as_dword(1.0f));
 	}
 
@@ -3173,9 +3174,6 @@ namespace comp
 	 */
 	bool brender_inject::push_fog_to_remix(const game::scene_fog& fog) const
 	{
-		if (!shared::common::config::get().effects.fog_volumetrics) {
-			return true;
-		}
 		if (!shared::common::remix_api::is_initialized()) {
 			return false;
 		}
@@ -3189,7 +3187,9 @@ namespace comp
 		float albedo[3] = { 0.95f, 0.95f, 0.95f };
 		float transmittance[3] = { 0.93f, 0.93f, 0.93f };
 
-		if (fog.enabled)
+		// With the retargeting off, the medium gets rtx.conf's neutral presets back, so
+		// switching it off mid-race undoes a colour already pushed.
+		if (fog.enabled && shared::common::config::get().effects.fog_volumetrics)
 		{
 			const float channels[3] = {
 				static_cast<float>((fog.colour >> 16) & 0xFF) / 255.0f,

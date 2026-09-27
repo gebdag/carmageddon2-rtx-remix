@@ -71,9 +71,10 @@ atmosphere), set [Sky] Synthesize=0 in remix-comp-proxy.ini.
 Keys
 ----
 
-  F4       proxy menu: Headlights, Sun, Effects (culling of crushed doors, additive car
-           flames) and Conversion, which switches the path tracing off to show the
-           game's own rendering. Hold the right mouse button outside the menu to give
+  F4       proxy menu: Headlights, Sun, Fog (how far you see through each track's
+           fog), Effects (culling of crushed doors, additive car flames) and
+           Conversion, which switches the path tracing off to show the game's own
+           rendering. Hold the right mouse button outside the menu to give
            input back to the game.
   Arrows   steer, accelerate and brake; numpad 8/2/4/6 take over the camera the
            arrows used to move. [Controls] ArrowKeyDriving=0 in remix-comp-proxy.ini
