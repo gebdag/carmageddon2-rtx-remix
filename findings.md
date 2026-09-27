@@ -4079,4 +4079,4 @@ material tracking stay current. Switching back on calls `reset_static_world`, be
 moved and vanished while nothing was being captured. The switch can only be clicked while
 ImGui is drawing, which is between frames, so it never splits a scene.
 
-Not verified in game yet.
+Reported working in game.
