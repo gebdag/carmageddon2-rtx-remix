@@ -658,6 +658,10 @@ namespace shared::common
 			uint32_t filled;   // bit n set: slot n is filled
 			int create_light, destroy_light, draw_light_instance, set_config_variable;
 			bool native;       // laid out exactly as deps/bridge_api's remixapi_Interface
+
+			// The runtime has a physical sky (rtx.skyMode 1 and its rtx.atmosphere.* options):
+			// PhysicalAtmosphere in Remix Plus 1.4, Numos from 1.5. NVIDIA's has none.
+			bool atmosphere;
 		};
 
 		constexpr uint32_t slots(const std::initializer_list<int> list)
@@ -675,12 +679,12 @@ namespace shared::common
 		{
 			// deps/bridge_api's own header. Read from the Remix Plus 1.5 bridge client:
 			// 4, 6 and 9 are CreateMeshBatched, SetupCamera and CreateLightBatched, never filled.
-			{ "Remix Plus 1.5+, API 0.1000", slots({ 1, 2, 3, 5, 7, 8, 10, 11, 12 }), 8, 10, 11, 12, true },
+			{ "Remix Plus 1.5+, API 0.1000", slots({ 1, 2, 3, 5, 7, 8, 10, 11, 12 }), 8, 10, 11, 12, true, true },
 			// NVIDIA's own, API 0.6 (bridge/src/client/remix_api.cpp): no batched entries,
 			// SetupCamera at 5, and dxvk_CreateD3D9 / dxvk_RegisterD3D9Device at 11 and 12.
-			{ "NVIDIA RTX Remix, API 0.6", slots({ 1, 2, 3, 4, 6, 7, 8, 9, 10, 11, 12 }), 7, 8, 9, 10, false },
+			{ "NVIDIA RTX Remix, API 0.6", slots({ 1, 2, 3, 4, 6, 7, 8, 9, 10, 11, 12 }), 7, 8, 9, 10, false, false },
 			// Remix Plus 1.4, API 0.6.3: SetCameraMediumMaterial still at 7.
-			{ "Remix Plus 1.4, API 0.6", slots({ 1, 2, 3, 5, 8, 9, 11, 12, 13 }), 9, 11, 12, 13, false },
+			{ "Remix Plus 1.4, API 0.6", slots({ 1, 2, 3, 5, 8, 9, 11, 12, 13 }), 9, 11, 12, 13, false, true },
 		};
 
 		void* const* table_slots(const remixapi_Interface& table)
@@ -732,6 +736,13 @@ namespace shared::common
 			mapped.SetConfigVariable = reinterpret_cast<PFN_remixapi_SetConfigVariable>(entry[layout.set_config_variable]);
 			return mapped;
 		}
+	}
+
+	bool remix_api::set_config(const char* key, const std::string& value)
+	{
+		const auto& instance = get();
+		return instance.m_initialized && instance.m_bridge.SetConfigVariable
+			&& instance.m_bridge.SetConfigVariable(key, value.c_str()) == REMIXAPI_ERROR_CODE_SUCCESS;
 	}
 
 	bool remix_api::gave_up()
@@ -845,6 +856,7 @@ namespace shared::common
 
 		instance.m_bridge = map_table(candidate.table, *layout);
 		instance.m_runtime = layout->name;
+		instance.m_atmosphere = layout->atmosphere;
 		instance.begin_scene_callback_external = begin_scene_callback;
 		instance.end_scene_callback_external = end_scene_callback;
 		instance.present_callback_external = present_callback;

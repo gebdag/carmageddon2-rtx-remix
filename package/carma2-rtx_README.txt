@@ -63,9 +63,12 @@ again.
 The depth-cue fog is switched off in remix-comp-proxy.ini (Fog, FogVolumetrics). That is
 the tested configuration.
 
-The proxy draws a sky built from each track's own horizon texture, and that sky is what
-lights the track. If your RTX Remix runtime brings a sky of its own (a physical
-atmosphere), set [Sky] Synthesize=0 in remix-comp-proxy.ini.
+Each race's sky sets its time of day: day, overcast, dusk, fog or night. On NVIDIA's
+RTX Remix the proxy draws a sky from the race's own horizon texture and sets its sun to
+match. On Remix Plus the runtime's physical sky is used instead, with its sun placed the
+same way. In the night races the sun sits just below the horizon, every car's headlights
+come on, and the city's street lamps light up. The F4 menu's Sun tab has a "Time of day
+per race" switch that puts the standard sun back on every race.
 
 
 Keys

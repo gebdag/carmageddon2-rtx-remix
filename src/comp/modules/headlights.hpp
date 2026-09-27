@@ -73,6 +73,10 @@ namespace comp
 		// A frame that is not a race frame shows no headlights.
 		void on_frame_without_race();
 
+		// A night race turns every car's lights on; the mode from before comes back when it
+		// ends, unless the player changed it in between.
+		void set_night(bool night);
+
 		void draw_menu();
 		void draw_mode_notice();
 
@@ -105,6 +109,9 @@ namespace comp
 		settings m_settings{};
 		settings m_saved{};
 		mode m_mode = mode::off;
+		bool m_night = false;
+		bool m_night_switched = false;   // m_mode was set by set_night, not by the player
+		mode m_mode_before_night = mode::off;
 
 		std::unordered_map<const void*, car_bounds> m_bounds;
 		std::unordered_map<uint64_t, lamp> m_lamps;

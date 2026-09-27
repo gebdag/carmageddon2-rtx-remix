@@ -266,8 +266,30 @@ namespace comp
 	// ------
 	// mode
 
+	void headlights::set_night(const bool night)
+	{
+		if (night == m_night) {
+			return;
+		}
+		m_night = night;
+
+		if (night && m_mode != mode::all_cars)
+		{
+			m_mode_before_night = m_mode;
+			m_mode = mode::all_cars;
+			m_night_switched = true;
+			shared::common::log("Headlights", "night race: headlights on for all cars");
+		}
+		else if (!night && m_night_switched)
+		{
+			m_mode = m_mode_before_night;
+			m_night_switched = false;
+		}
+	}
+
 	void headlights::cycle_mode()
 	{
+		m_night_switched = false;
 		m_mode = static_cast<mode>((static_cast<int>(m_mode) + 1) % 3);
 		m_notice_until = std::chrono::steady_clock::now() + NOTICE_DURATION;
 		shared::common::log("Headlights", std::format("headlights: {}", mode_name(m_mode)));
@@ -582,6 +604,9 @@ namespace comp
 		ImGui::RadioButton("Off", &current, 0); ImGui::SameLine();
 		ImGui::RadioButton("Player car", &current, 1); ImGui::SameLine();
 		ImGui::RadioButton("All cars", &current, 2);
+		if (current != static_cast<int>(m_mode)) {
+			m_night_switched = false;
+		}
 		m_mode = static_cast<mode>(current);
 
 		int start = static_cast<int>(s.start_mode);

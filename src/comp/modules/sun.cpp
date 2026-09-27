@@ -1,5 +1,6 @@
 #include "std_include.hpp"
 #include "sun.hpp"
+#include "time_of_day.hpp"
 
 #include "shared/common/remix_api.hpp"
 
@@ -52,6 +53,7 @@ namespace comp
 		};
 
 		s.enabled = GetPrivateProfileIntA(INI_SECTION, "Enabled", s.enabled ? 1 : 0, path.c_str()) != 0;
+		s.time_of_day = GetPrivateProfileIntA(INI_SECTION, "TimeOfDay", s.time_of_day ? 1 : 0, path.c_str()) != 0;
 		read_float("Elevation", s.elevation, -10.0f, 90.0f);
 		read_float("Azimuth", s.azimuth, -180.0f, 180.0f);
 		read_float("ColourR", s.colour[0], 0.0f, 1.0f);
@@ -76,6 +78,7 @@ namespace comp
 		const auto number = [](const float value) { return std::format("{:.4f}", value); };
 
 		bool ok = write("Enabled", s.enabled ? "1" : "0");
+		ok &= write("TimeOfDay", s.time_of_day ? "1" : "0");
 		ok &= write("Elevation", number(s.elevation));
 		ok &= write("Azimuth", number(s.azimuth));
 		ok &= write("ColourR", number(s.colour[0]));
@@ -118,11 +121,75 @@ namespace comp
 	 * and the menus may render no scene frame at all; a destroy on the way out would then
 	 * land after the create on the way back in and erase the sun under a live handle.
 	 */
+	/*
+	 * Day and indoor races keep the player's sun exactly. Any other mood sets the sun's
+	 * elevation and scales its colour and brightness; the azimuth stays the player's.
+	 */
+	sun::settings sun::effective() const
+	{
+		settings s = m_settings;
+		const auto tod = time_of_day::get();
+		if (!tod) {
+			return s;
+		}
+
+		const auto mood = tod->current();
+		if (mood == time_of_day::mood::standard || mood == time_of_day::mood::day) {
+			return s;
+		}
+
+		const auto look = tod->look();
+		s.elevation = look.elevation;
+		for (int i = 0; i < 3; ++i) {
+			s.colour[i] *= look.tint[i];
+		}
+		s.brightness *= look.brightness;
+		if (look.angular_diameter > 0.0f) {
+			s.angular_diameter = look.angular_diameter;
+		}
+		return s;
+	}
+
+	void sun::aim_physical_sky(const settings& s)
+	{
+		using shared::common::remix_api;
+
+		// The physical sky's sun is realistic at intensity 1; the mood scales it the way it
+		// scales the proxy's own sun, and switching the sun off dims it out.
+		const float intensity = !s.enabled ? 0.0f
+			: m_settings.brightness > 0.0f ? s.brightness / m_settings.brightness : 0.0f;
+		const float wanted[3] = { s.elevation, s.azimuth, intensity };
+		if (std::equal(std::begin(wanted), std::end(wanted), std::begin(m_sky_sun))) {
+			return;
+		}
+
+		if (remix_api::set_config("rtx.atmosphere.sunElevation", std::format("{:.2f}", s.elevation))
+			&& remix_api::set_config("rtx.atmosphere.sunRotation", std::format("{:.2f}", s.azimuth))
+			&& remix_api::set_config("rtx.atmosphere.sunIntensity", std::format("{:.3f}", intensity)))
+		{
+			std::copy(std::begin(wanted), std::end(wanted), std::begin(m_sky_sun));
+			shared::common::log("Sun", std::format("physical sky sun: {:.1f} deg up, rotation {:.1f}, intensity {:.2f}",
+				s.elevation, s.azimuth, intensity));
+		}
+	}
+
 	void sun::on_race_frame()
 	{
-		const settings& s = m_settings;
+		if (const auto tod = time_of_day::get(); tod) {
+			tod->set_enabled(m_settings.time_of_day);
+		}
 
-		if (!s.enabled || !(s.brightness > 0.0f))
+		const settings s = effective();
+
+		if (shared::common::remix_api::has_atmosphere())
+		{
+			destroy();
+			aim_physical_sky(s);
+			return;
+		}
+
+		// A sun below the horizon casts no direct light; the night sky is what lights the track.
+		if (!s.enabled || !(s.brightness > 0.0f) || s.elevation <= 0.0f)
 		{
 			destroy();
 			return;
@@ -201,6 +268,19 @@ namespace comp
 
 		ImGui::Checkbox("Sun", &s.enabled);
 		ImGui::TextDisabled("The game's own sun: 60 deg up, 30 deg from +Z towards +X, white, on every track.");
+
+		ImGui::Checkbox("Time of day per race", &s.time_of_day);
+		ImGui::TextWrapped("Each race's sky sets the sun: low and orange at dusk, dim and soft when overcast "
+			"or foggy, below the horizon at night, when every car's headlights and the street lights come on. "
+			"Off: the standard sun below on every race.");
+		if (const auto tod = time_of_day::get(); tod)
+		{
+			ImGui::TextDisabled("This race: sky '%s', %s", tod->sky_name().empty() ? "none" : tod->sky_name().c_str(),
+				time_of_day::mood_name(tod->current()));
+		}
+		if (shared::common::remix_api::has_atmosphere()) {
+			ImGui::TextDisabled("Remix Plus: its physical sky draws the sun; these settings aim it.");
+		}
 
 		ImGui::Spacing();
 		ImGui::SliderFloat("Elevation", &s.elevation, -5.0f, 90.0f, "%.1f deg");

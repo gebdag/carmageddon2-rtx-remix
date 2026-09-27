@@ -4254,3 +4254,63 @@ OBJECT_MASK_TRANSLUCENT into primary/secondary visibility rays"). Both are now o
 `package/rtx.conf`, so light through glass takes the glass's colour.
 
 Not verified in game yet.
+
+## 53. Time of day per race, per runtime (2026-09-27)
+
+**Runtime split.** Each API table layout in `remix_api.cpp` now also records `atmosphere`.
+It is true for Remix Plus 1.5+ (Numos) and 1.4 (PhysicalAtmosphere), and false for NVIDIA's
+runtime. It is exposed as `remix_api::has_atmosphere()`, with `remix_api::set_config` for
+Remix options. In the Remix Plus base (`rtx_options.h:1232-1242`, `rtx_atmosphere.cpp:98-110`,
+`integrator_direct.slangh:54-63`):
+- `rtx.skyMode 1` is the physical sky.
+- It places its sun at `x = cos(el) sin(rot), y = sin(el), z = cos(el) cos(rot)`, Y up. That
+  is the proxy's own sun convention, so elevation and azimuth pass straight through.
+- The direct-light integrator samples that sun (`sampleAtmosphereSunLight`), so the proxy's
+  API sun must be off there, or there would be two suns.
+- `rasterizeSky` returns early in atmosphere mode, so the sky dome is skipped as well.
+
+**Moods** (`time_of_day.cpp`) come from the race's horizon pixelmap name
+(`game::read_horizon`). The table covers every sky the races ship:
+
+| Mood | Skies |
+|---|---|
+| day | skyblue_01, desky2, carday, cityskape, twingreen, skisky_01, sumosky |
+| overcast | airglum, airport3, carsky1, desglum |
+| dusk | desky, nyhorizn, nyhoriznp, qdark, twinpink, car2sky |
+| night | twinnight, cityskapen, qnight |
+| fog | cityskapef, nyhoriznf, cityskape4 |
+
+The indoor tracks (no sky) keep the standard sun. The effect of each mood on the player's sun
+(`sun::effective`), which leaves day and standard untouched:
+
+| Mood | Elevation | Colour | Brightness | Disc | Aerosol (Remix Plus) |
+|---|---|---|---|---|---|
+| overcast | 60 | x(0.92, 0.95, 1.0) | x0.45 | 4 deg | 3 |
+| dusk | 10 | x(1.0, 0.62, 0.38) | x0.9 | own | 1.5 |
+| night | -3.5 | - | - | own | 1 |
+| fog | 50 | x0.95 | x0.35 | 8 deg | 8 |
+
+On NVIDIA the API sun takes the result and is off at or below the horizon; the race's own
+night sky dome lights the track. On Remix Plus the sun module aims the physical sky's sun
+(`rtx.atmosphere.sunElevation`, `sunRotation`, and `sunIntensity` set to the mood's
+brightness factor, 0 when the sun is switched off). `time_of_day` sets `rtx.skyMode 1` once
+and the mood's `aerosolDensity`. At night `sunIntensity` stays at 1, because the sky's
+twilight glow is sunlight from below the horizon.
+
+**Night races** (City Slicker, Timber!, Stoned Again, Mission: Boulder Dash):
+- `headlights::set_night` switches to all cars and restores the previous mode afterwards,
+  unless the player changed it in between (F key or menu).
+- `street_lights` puts a shaped sphere light under the head of every `&02lamp.act`, the
+  city's one lamp model, placed 86 times. The capture reports each lamp with its
+  model-to-world matrix. The head wedge spans model-space z 0.49 to 0.71 and y 1.34 to 1.42,
+  and the light sits at (0, 1.33, 0.60), aimed down. Defaults are brightness 40, radius 0.03,
+  a 70-degree cone and softness 0.4. The lights are saved to `carma2-streetlights.ini` and
+  tuned in the F4 Headlights tab.
+- Light hashes carry a generation that is bumped whenever the lamps are dropped on leaving
+  the race view. That way a re-created lamp never shares a hash with one whose destroy
+  Remix Plus hasn't applied yet (43.6).
+
+F4 Sun tab: "Time of day per race" (`[Sun] TimeOfDay` in `carma2-sun.ini`). Off, every race
+gets the standard sun and no night lighting. The Numos sky stays on Remix Plus either way.
+
+Not verified in game yet.

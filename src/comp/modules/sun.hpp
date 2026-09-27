@@ -29,6 +29,10 @@ namespace comp
 		{
 			bool enabled = true;
 
+			// Let each race's sky set the time of day (time_of_day.hpp). Off, every race
+			// gets the sun below as it stands.
+			bool time_of_day = true;
+
 			float elevation = 60.0f;        // degrees above the horizon
 			float azimuth = 30.0f;          // degrees from +Z towards +X
 			float colour[3] = { 1.0f, 1.0f, 1.0f };
@@ -50,6 +54,12 @@ namespace comp
 		void save();
 		void destroy();
 
+		// The player's sun with the race's time of day applied.
+		settings effective() const;
+
+		// Remix Plus draws its own sun in its physical sky; the proxy only aims it.
+		void aim_physical_sky(const settings& s);
+
 		static std::string ini_path();
 
 		settings m_settings{};
@@ -58,5 +68,8 @@ namespace comp
 		remixapi_LightHandle m_handle = nullptr;
 		settings m_described{};         // what m_handle was created from
 		bool m_create_failed = false;
+
+		// What the physical sky's sun was last set to, so it is pushed once per change.
+		float m_sky_sun[3] = { NAN, NAN, NAN };   // elevation, rotation, intensity
 	};
 }

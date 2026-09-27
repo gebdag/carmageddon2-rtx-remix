@@ -5,6 +5,8 @@
 #include "modules/brender_inject.hpp"
 #include "modules/headlights.hpp"
 #include "modules/sun.hpp"
+#include "modules/time_of_day.hpp"
+#include "modules/street_lights.hpp"
 #include "modules/diagnostics.hpp"
 #include "modules/skinning.hpp"
 #include "modules/tracer.hpp"
@@ -91,6 +93,8 @@ namespace comp
 		shared::common::loader::module_loader::register_module(std::make_unique<brender_inject>());
 		shared::common::loader::module_loader::register_module(std::make_unique<headlights>());
 		shared::common::loader::module_loader::register_module(std::make_unique<sun>());
+		shared::common::loader::module_loader::register_module(std::make_unique<time_of_day>());
+		shared::common::loader::module_loader::register_module(std::make_unique<street_lights>());
 
 		auto& cfg = shared::common::config::get();
 

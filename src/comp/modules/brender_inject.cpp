@@ -2,6 +2,8 @@
 #include "brender_inject.hpp"
 #include "headlights.hpp"
 #include "sun.hpp"
+#include "time_of_day.hpp"
+#include "street_lights.hpp"
 #include "shared/common/config.hpp"
 #include "shared/common/ffp_state.hpp"
 #include "shared/common/remix_api.hpp"
@@ -2415,6 +2417,9 @@ namespace comp
 		if (const auto lights = headlights::get(); lights) {
 			lights->on_frame_without_race();
 		}
+		if (const auto lamps = street_lights::get(); lamps) {
+			lamps->on_frame_without_race();
+		}
 
 		// Whatever camera the race was measured against is finished with. Keeping it would
 		// let a recycled camera pointer in the next track pass for the race view, and the
@@ -2824,6 +2829,11 @@ namespace comp
 		if (race_scene && actor && is_pickup(actor)) {
 			m_pickup_models.insert(model);
 		}
+		if (race_scene && actor) {
+			if (const auto lamps = street_lights::get(); lamps) {
+				lamps->on_model_drawn(actor, model, model_to_world);
+			}
+		}
 
 		/*
 		 * Scenery holds one placement for as long as nothing hits it, so it can be baked
@@ -3043,11 +3053,18 @@ namespace comp
 		// API calls ride the same queue as the draws, so a light described after
 		// trigger_injection belongs to the next frame -- where the car has moved on and
 		// left its lamps behind, inside the bodywork, by however far it travelled.
+		const auto mood = time_of_day::get();
+		if (mood) {
+			mood->on_race_frame();
+		}
 		if (const auto lights = headlights::get(); lights) {
 			lights->on_race_frame(m_view_inverse.m[3]);
 		}
 		if (const auto light = sun::get(); light) {
 			light->on_race_frame();
+		}
+		if (const auto lamps = street_lights::get(); lamps) {
+			lamps->on_race_frame(mood && mood->is_night());
 		}
 
 		if (m_in_frontend) {
@@ -3589,7 +3606,8 @@ namespace comp
 	 */
 	void brender_inject::draw_sky(IDirect3DDevice9* dev)
 	{
-		if (!shared::common::config::get().sky.synthesize) {
+		// Remix Plus renders its own physical sky (time_of_day.hpp) and skips sky draws.
+		if (!shared::common::config::get().sky.synthesize || shared::common::remix_api::has_atmosphere()) {
 			return;
 		}
 

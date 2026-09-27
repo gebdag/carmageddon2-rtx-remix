@@ -59,6 +59,14 @@ namespace shared::common
 		// CreateLight, DestroyLight, DrawLightInstance and SetConfigVariable.
 		static const char* runtime() { return get().m_runtime; }
 
+		// The runtime renders a physical sky with its own sun (Remix Plus). False until
+		// initialized, and on NVIDIA's runtime.
+		static bool has_atmosphere() { return get().m_initialized && get().m_atmosphere; }
+
+		// Sets one of Remix's own options, as rtx.conf would. False when the API is not up
+		// or the runtime refuses the option.
+		static bool set_config(const char* key, const std::string& value);
+
 		PFN_remixapi_BridgeCallback begin_scene_callback_external = nullptr;
 		PFN_remixapi_BridgeCallback end_scene_callback_external = nullptr;
 		PFN_remixapi_BridgeCallback present_callback_external = nullptr;
@@ -97,6 +105,7 @@ namespace shared::common
 		remix_api() : m_initialized(false) {}
 		bool m_initialized;
 		const char* m_runtime = "";
+		bool m_atmosphere = false;
 		uint32_t m_init_attempts = 0;
 		uint32_t m_init_cooldown = 0;
 
