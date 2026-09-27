@@ -4122,10 +4122,11 @@ black near area with the distance clear. Remix (gmod base, `rtx_global_volumetri
   over the frame: `f = (fogEnd - viewDistance) * fogScale`, colour `FOGCOLOR * rtx.fogColorScale`.
 
 For the airport's depth cue (6.98 to 35), the estimate is 0.177 at 1x, 0.0669 at 2.9x and
-0.0648 at 3.0x. So 3x is exactly where it crosses. Below that it's compositor fog at the
-default `fogColorScale` of 0.25, which turns `5884AE` nearly black (the black band). Above
-it's the volumetric medium, whose atmosphere doesn't fit this world (see `apply_fog`), and
-which darkens the near field.
+0.0648 at 3.0x. So 3x is exactly where it crosses. Below that it's compositor fog, fading
+the far field towards the fog colour. The black in the report was the tester's own
+exaggerated settings, not `fogColorScale`. Above it's the volumetric medium, whose atmosphere
+doesn't fit this world (see `apply_fog`), and which darkens the near field. That inversion is
+the actual fault.
 
 `package/rtx.conf` now pins the compositor fog with `rtx.volumetrics.waterFogDensityThreshold
 = 0`, so a fogged track never converts; at 1x it never did anyway. `rtx.fogColorScale` stays at
