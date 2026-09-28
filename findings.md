@@ -4481,7 +4481,7 @@ Not verified in game yet.
 
 ## 57. Sky brightness per sky on the rasterized sky (2026-09-28)
 
-On the stock runtime, Remix lights the track with the sky the proxy rasterizes (section 48),
+On the stock runtime, Remix lights the track with the sky the proxy rasterizes (section 37),
 scaled by `rtx.skyBrightness`. The shipped rtx.conf sets that to 0.33. In the user's tests
 that suits the city (cityskape) but leaves the quarry (qdark) dim, which looked right at 1.
 
