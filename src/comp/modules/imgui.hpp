@@ -209,6 +209,9 @@ namespace comp
 		};
 		static fog_settings fog_now();
 		fog_settings m_saved_fog{};
+
+		void sky_section();
+		bool m_saved_dynamic_sky = true;
 		void tab_conversion();
 		
 		bool m_im_window_focused = false;

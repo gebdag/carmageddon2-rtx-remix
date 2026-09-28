@@ -11,6 +11,7 @@
 #include "brender_inject.hpp"
 #include "shared/common/imgui_helper.hpp"
 #include "shared/common/config.hpp"
+#include "shared/common/remix_api.hpp"
 
 // Allow us to directly call the ImGui WndProc function.
 extern LRESULT ImGui_ImplWin32_WndProcHandler(HWND, UINT, WPARAM, LPARAM);
@@ -288,6 +289,50 @@ namespace comp
 		if (const auto light = sun::get(); light) {
 			light->draw_menu();
 		}
+
+		ImGui::Spacing();
+		ImGui::Separator();
+		ImGui::Spacing();
+		sky_section();
+	}
+
+	void imgui::sky_section()
+	{
+		auto& config = shared::common::config::get();
+		auto& sky = config.sky;
+
+		ImGui::Checkbox("Dynamic sky brightness", &sky.dynamic_brightness);
+		ImGui::TextWrapped("Sets RTX Remix's sky brightness per track from how much light its sky throws on "
+			"the ground, so bright skies do not flood the track and dark ones do not leave it dim. "
+			"Off, rtx.conf's sky brightness applies to every track.");
+
+		if (shared::common::remix_api::has_atmosphere()) {
+			ImGui::TextDisabled("Remix Plus draws its own physical sky; this applies to the rasterized sky only.");
+		}
+		else if (const auto inject = brender_inject::get(); inject)
+		{
+			const auto lighting = inject->sky_lighting();
+			if (std::isnan(lighting.brightness)) {
+				ImGui::TextDisabled("No sky set yet (not in a race).");
+			}
+			else {
+				ImGui::TextDisabled("This sky lights the ground at %.3f of a white sky; sky brightness %.2f",
+					lighting.ground_light, lighting.brightness);
+			}
+		}
+
+		save_row(sky.dynamic_brightness != m_saved_dynamic_sky,
+			[&] {
+				config.set_bool("Sky", "DynamicBrightness", sky.dynamic_brightness);
+				m_saved_dynamic_sky = sky.dynamic_brightness;
+			},
+			[&] {
+				sky.dynamic_brightness = config.get_bool("Sky", "DynamicBrightness", true);
+				m_saved_dynamic_sky = sky.dynamic_brightness;
+			},
+			[&] {
+				sky.dynamic_brightness = true;
+			});
 	}
 
 	// Save / Reload / Defaults for a tab whose settings live in remix-comp-proxy.ini. Changes
@@ -986,6 +1031,7 @@ namespace comp
 		const auto& effects = shared::common::config::get().effects;
 		m_saved_effects = { effects.cull_closed_meshes, effects.additive_car_flames };
 		m_saved_fog = fog_now();
+		m_saved_dynamic_sky = shared::common::config::get().sky.dynamic_brightness;
 
 		IMGUI_CHECKVERSION();
 		ImGui::CreateContext();

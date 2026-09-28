@@ -286,6 +286,12 @@ namespace shared::common
 			// track on a stock Remix runtime, whose sky is otherwise black. Turn it off where
 			// the runtime supplies a sky of its own (a physical atmosphere).
 			bool synthesize = true;
+
+			// Set rtx.skyBrightness per sky from how much light the baked panorama throws
+			// on the ground, so bright and dark skies light their tracks alike. Off, the
+			// value in rtx.conf / user.conf applies to every sky. The rasterized sky only:
+			// Remix Plus's physical sky is lit by its own sun.
+			bool dynamic_brightness = true;
 		} sky;
 
 	private:

@@ -104,6 +104,14 @@ namespace comp
 		};
 		const fog_range& handed_fog() const { return m_handed_fog; }
 
+		// The rasterized sky's lighting at the last race scene, for the menu.
+		struct sky_light
+		{
+			double ground_light;   // the panorama's light on the ground, 1 for a white sky
+			float brightness;      // rtx.skyBrightness handed to Remix; NaN until one is
+		};
+		sky_light sky_lighting() const { return { m_sky.ground_light(), m_sky_brightness }; }
+
 		/*
 		 * Whether the game's frame is converted for Remix. Off hands everything back to the
 		 * game: its own render of every model, its own frustum culling and draw distance,
@@ -799,6 +807,12 @@ std::vector<static_chunk> m_chunks;
 
 		// The track's horizon as a sky Remix rasterizes, drawn first in every race submit.
 		void draw_sky(IDirect3DDevice9* dev);
+
+		// Sets rtx.skyBrightness for the current sky: per sky with DynamicBrightness, the
+		// configured value without. Pushed only when it changes.
+		void apply_sky_brightness();
+		static float configured_sky_brightness();
+		float m_sky_brightness = std::numeric_limits<float>::quiet_NaN();
 		sky_dome m_sky;
 
 		// Built on the first submit and re-captured each scene thereafter.

@@ -203,6 +203,37 @@ namespace comp
 			}
 		}
 
+		/*
+		 * The panorama's irradiance on an upward-facing surface, relative to a white sky: the
+		 * cosine-weighted mean of its upper half's linear luminance. The texels are decoded
+		 * with gamma 2.2, as Remix reads an 8-bit sky.
+		 */
+		double measure_ground_light(const std::vector<uint32_t>& level)
+		{
+			std::array<double, 256> linear{};
+			for (int i = 0; i < 256; ++i) {
+				linear[i] = std::pow(i / 255.0, 2.2);
+			}
+
+			double lit = 0.0, white = 0.0;
+			for (uint32_t y = 0; y < PANORAMA_HEIGHT / 2; ++y)
+			{
+				const double elevation = (90.0 - (y + 0.5) / PANORAMA_HEIGHT * 180.0) * DEG_TO_RAD;
+				// cos to the zenith times the row's solid angle (which carries cos(elevation))
+				const double weight = std::sin(elevation) * std::cos(elevation);
+				double row = 0.0;
+				for (uint32_t x = 0; x < PANORAMA_WIDTH; ++x)
+				{
+					const uint32_t c = level[static_cast<size_t>(y) * PANORAMA_WIDTH + x];
+					row += 0.2126 * linear[(c >> 16) & 0xFF] + 0.7152 * linear[(c >> 8) & 0xFF]
+						+ 0.0722 * linear[c & 0xFF];
+				}
+				lit += row * weight;
+				white += PANORAMA_WIDTH * weight;
+			}
+			return white > 0.0 ? lit / white : 0.0;
+		}
+
 		// Halves a level with a 2x2 box, wrapping in azimuth and clamping at the poles.
 		std::vector<uint32_t> downsample(const std::vector<uint32_t>& level, const uint32_t w, const uint32_t h)
 		{
@@ -237,6 +268,7 @@ namespace comp
 		for (uint32_t y = 0; y < PANORAMA_HEIGHT; ++y) {
 			bake_row(src, source, y, level.data() + static_cast<size_t>(y) * PANORAMA_WIDTH);
 		}
+		const double ground_light = measure_ground_light(level);
 
 		uint32_t levels = 1;
 		for (uint32_t w = PANORAMA_WIDTH, h = PANORAMA_HEIGHT; w > 1 || h > 1; w = std::max(w / 2, 1u), h = std::max(h / 2, 1u)) {
@@ -278,6 +310,7 @@ namespace comp
 		}
 		m_panorama = texture;
 		m_key = key;
+		m_ground_light = ground_light;
 		return true;
 	}
 

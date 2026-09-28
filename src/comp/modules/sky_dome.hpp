@@ -59,6 +59,10 @@ namespace comp
 		// Replaces the panorama. Returns false, keeping the old one, if the bake failed.
 		bool bake(IDirect3DDevice9* dev, const horizon& source, const source_key& key);
 
+		// Irradiance the current panorama's upper half throws on a surface facing up, in
+		// linear light, as a fraction of what a white sky would: 1 for white, 0 for black.
+		double ground_light() const { return m_ground_light; }
+
 		/*
 		 * Draws the shell as sky, if a panorama exists.
 		 *
@@ -79,6 +83,7 @@ namespace comp
 
 		IDirect3DTexture9* m_panorama = nullptr;
 		source_key m_key{};
+		double m_ground_light = 0.0;
 
 		IDirect3DVertexBuffer9* m_vertex_buffer = nullptr;
 		IDirect3DIndexBuffer9* m_index_buffer = nullptr;

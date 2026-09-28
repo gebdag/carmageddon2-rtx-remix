@@ -3663,10 +3663,78 @@ namespace comp
 				baked ? shared::common::LOG_TYPE::LOG_TYPE_DEFAULT : shared::common::LOG_TYPE::LOG_TYPE_ERROR, false);
 		}
 
+		apply_sky_brightness();
+
 		// Anywhere between the near and far planes will do: the sky is drawn without depth,
 		// and Remix re-renders it from the camera position for its probe.
 		const auto cam = static_cast<const game::br_camera*>(m_camera->type_data);
 		m_sky.draw(dev, m_view_inverse.m[3], 0.5f * (cam->hither_z + cam->yon_z));
+	}
+
+	/*
+	 * Remix lights the track with the sky it rasterizes, scaled by rtx.skyBrightness, and the
+	 * horizon textures throw anywhere from 0.005 (the night skies) to 0.66 (the snowfield) of
+	 * a white sky's light on the ground. One value cannot suit them all.
+	 *
+	 * With DynamicBrightness the value follows the baked panorama's ground light E:
+	 * 0.179 * E^-0.582, within [0.15, 1.5]. The curve passes through the two values chosen by
+	 * eye in game -- 0.3 for the city's cityskape (E 0.41) and 1.0 for the quarry's qdark
+	 * (E 0.052) -- and lights the track with 0.179 * E^0.418: a brighter sky still lights
+	 * more, compressed. The cap keeps the night skies (E < 0.01) dark.
+	 */
+	void brender_inject::apply_sky_brightness()
+	{
+		constexpr double SCALE = 0.179;
+		constexpr double EXPONENT = -0.582;
+		constexpr float MIN_BRIGHTNESS = 0.15f;
+		constexpr float MAX_BRIGHTNESS = 1.5f;
+
+		const double ground_light = m_sky.ground_light();
+		const bool dynamic = shared::common::config::get().sky.dynamic_brightness && ground_light > 0.0;
+		const float wanted = dynamic
+			? std::clamp(static_cast<float>(SCALE * std::pow(ground_light, EXPONENT)), MIN_BRIGHTNESS, MAX_BRIGHTNESS)
+			: configured_sky_brightness();
+
+		if (wanted == m_sky_brightness) {
+			return;
+		}
+		if (shared::common::remix_api::set_config("rtx.skyBrightness", std::format("{:.3f}", wanted)))
+		{
+			m_sky_brightness = wanted;
+			shared::common::log("BRender", std::format("rtx.skyBrightness = {:.3f} ({})", wanted, dynamic
+				? std::format("this sky lights the ground at {:.3f} of white", ground_light)
+				: std::string("as configured")));
+		}
+	}
+
+	// rtx.skyBrightness as Remix read it at start-up: rtx.conf, then user.conf over it.
+	float brender_inject::configured_sky_brightness()
+	{
+		float value = 1.0f;
+		for (const char* name : { "rtx.conf", "user.conf" })
+		{
+			std::ifstream file(shared::globals::root_path + "\\" + name);
+			std::string line;
+			while (std::getline(file, line))
+			{
+				const auto eq = line.find('=');
+				if (eq == std::string::npos) {
+					continue;
+				}
+				std::string key = line.substr(0, eq);
+				std::erase_if(key, [](const unsigned char c) { return std::isspace(c) != 0; });
+				if (key != "rtx.skyBrightness") {
+					continue;
+				}
+				const std::string text = line.substr(eq + 1);
+				char* end = nullptr;
+				const float parsed = std::strtof(text.c_str(), &end);
+				if (end != text.c_str()) {
+					value = parsed;
+				}
+			}
+		}
+		return value;
 	}
 
 	/*

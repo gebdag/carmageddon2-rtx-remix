@@ -4478,3 +4478,50 @@ headlights and the sun always destroyed theirs.
 the emitted light changes colour.
 
 Not verified in game yet.
+
+## 57. Sky brightness per sky on the rasterized sky (2026-09-28)
+
+On the stock runtime, Remix lights the track with the sky the proxy rasterizes (section 48),
+scaled by `rtx.skyBrightness`. The shipped rtx.conf sets that to 0.33. In the user's tests
+that suits the city (cityskape) but leaves the quarry (qdark) dim, which looked right at 1.
+
+**Measure.** `sky_dome::bake` now also computes the panorama's ground light: the
+cosine-weighted mean linear luminance (gamma 2.2) of its upper half, relative to a white
+sky. This is the irradiance the sky throws on an upward-facing surface. Measured offline
+with the same layout rules (race TXT horizon settings) for every shipped sky:
+
+| Sky | Ground light | Races |
+|---|---|---|
+| skisky_01 | 0.657 | skitrack |
+| cityskape | 0.413 | newcity1, newcity_mission |
+| desky2, carday, twingreen, nyhoriznf, cityskapef, twinpink, car2sky, desky | 0.21 to 0.27 | |
+| airport3, sumosky, carsky1 | 0.16 to 0.17 | |
+| skyblue_01 | 0.124 | funfair (horizon row 160) |
+| nyhorizn | 0.114 | junkyard |
+| skyblue_01 | 0.071 | airport1 (horizon row 83) |
+| qdark | 0.052 | quarry1, quarry2, quarrynet |
+| nyhoriznp, cityskape4, airglum, desglum | 0.037 to 0.045 | |
+| cityskapen, twinnight, qnight | 0.005 to 0.008 | the night races |
+
+**Curve.** Constant lighting would put the quarry at 2.4 against the city's 0.3, brighter
+than the user wanted. A power law through both chosen points gives brightness
+`b = 0.179 * E^-0.582`. The track is then lit with `0.179 * E^0.418`, so brighter skies still
+light more, compressed.
+- **Clamp:** b stays within [0.15, 1.5].
+- **Night skies** would ask for about 3.3 and are capped at 1.5, which keeps them dark
+  (lighting 0.007 to 0.012 against the quarry's 0.052).
+- **Resulting brightness:** skitrack 0.23, city 0.30, desert and timber 0.38 to 0.44,
+  funfair 0.60, junkyard 0.64, airport1 0.83, quarry 1.00, the gloom skies 1.09 to 1.21,
+  night 1.5.
+
+**Mechanism.**
+- **When it is set:** `brender_inject::apply_sky_brightness` pushes `rtx.skyBrightness`
+  through the API whenever the wanted value changes, from `draw_sky`. That is the raster path
+  only; Remix Plus's physical sky is left alone.
+- **Switched off:** with `[Sky] DynamicBrightness=0` (on by default; also in the F4 Sun tab)
+  the value is the one Remix read at start-up, parsed from rtx.conf and then user.conf in the
+  game folder (1 if neither sets it).
+
+Not verified in game yet. The in-game measurement comes from the proxy's own bake, which
+blurs the edge rows exactly rather than approximately as the offline script did, so it may
+differ slightly from the table.
