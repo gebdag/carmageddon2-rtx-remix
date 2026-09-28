@@ -10,9 +10,9 @@ namespace comp
 	 * over the street) and 49 of one traffic light (&03traffic.act, a signal head at the end
 	 * of a 0.79 unit arm). The capture reports every one it draws with its model-to-world
 	 * matrix. A street lamp gets a sphere light just below its head, shaped into a downward
-	 * cone. A traffic light gets a smaller, fainter one in front of whichever lens is lit,
-	 * cycling green, amber, red as US signals do. All are drawn only while the race is a
-	 * night race (time_of_day.hpp).
+	 * cone. A traffic light gets a smaller, fainter one under its signal head, cycling green,
+	 * amber, red as US signals do. Where each sits is a model-space setting, so it follows
+	 * every copy. All are lit only while the race is a night race (time_of_day.hpp).
 	 */
 	class street_lights final : public shared::common::loader::component_module
 	{
@@ -31,14 +31,16 @@ namespace comp
 			float emitter_radius = 0.03f;               // world units; the lamp head is ~0.11 wide
 			float cone_angle = 70.0f;                   // degrees, axis to edge
 			float cone_softness = 0.4f;
+			float position[3] = { 0.0f, 1.33f, 0.60f }; // model space: just under the lamp head
 
-			// Traffic lights glow rather than light the street: fainter, smaller, and aimed
-			// out of the lens along the road.
+			// Traffic lights glow rather than light the street: fainter, smaller, and pooling
+			// on the road under the signal head.
 			bool signals = true;
 			float signal_brightness = 0.25f;
 			float signal_radius = 0.01f;                // a lens is ~0.025 across
-			float signal_cone_angle = 60.0f;
+			float signal_cone_angle = 40.0f;
 			float signal_cone_softness = 0.5f;
+			float signal_position[3] = { 0.0f, 1.0f, 0.755f };   // model space: just under the head
 			float green_seconds = 8.0f;
 			float amber_seconds = 3.0f;
 
@@ -64,13 +66,12 @@ namespace comp
 			signal,
 		};
 
-		// A lamp model and where its lights sit, in model space.
+		// A lamp model and which way its light shines, in model space.
 		struct lamp_kind
 		{
 			const char* model;
 			lamp_style style;
 			float direction[3];   // cone axis
-			float points[3][3];   // street: the light in [0]; signal: the red, amber and green lens
 		};
 
 	private:
@@ -87,8 +88,8 @@ namespace comp
 		{
 			const lamp_kind* kind = nullptr;
 			remixapi_LightHandle handle = nullptr;
-			float points[3][3] = {};
-			float direction[3] = {};
+			game::br_matrix34 model_to_world{};
+			uint32_t incarnation = 0;   // part of the hash, bumped when its light is destroyed
 			aspect shown = aspect::lit;
 			bool drawn = false;
 			bool placed = true;   // new or moved: describe again
@@ -97,6 +98,7 @@ namespace comp
 		const lamp_kind* kind_of(const game::br_model* model);
 		aspect aspect_of(const lamp& l, double seconds) const;
 		void describe(const game::br_actor* actor, lamp& l, aspect shown);
+		void put_out(lamp& l);
 		void destroy_all();
 		void load();
 		void save();

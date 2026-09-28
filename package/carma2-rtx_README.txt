@@ -75,7 +75,7 @@ per race" switch that puts the standard sun back on every race.
 Keys
 ----
 
-  F4       proxy menu: Headlights, Sun, Fog (at the level's far side or at the
+  F4       proxy menu: Lights, Sun, Fog (at the level's far side or at the
            game's own distances), Effects (culling of crushed doors, additive car flames) and
            Conversion, which switches the path tracing off to show the game's own
            rendering. Hold the right mouse button outside the menu to give
@@ -89,7 +89,7 @@ Keys
 Headlight settings are adjusted in the F4 menu and saved to carma2-headlights.ini in the
 game folder with "Save to ini". The sun works the same way and saves to carma2-sun.ini.
 It starts at the angle the game gives its own light: 60 degrees up, the same on every
-track. The street lamps of the night races are set in the Headlights tab and saved to
+track. The street lamps of the night races are set in the Lights tab and saved to
 carma2-streetlights.ini.
 
 
@@ -104,7 +104,7 @@ Troubleshooting
     proxy does not know. Everything but the headlights and the sun still works.
   - The picture is rasterized, not path-traced: nGlide's resolution does not match the
     desktop resolution.
-  - The Headlights tab says why the player's car is dark when its lights are missing.
+  - The Lights tab says why the player's car is dark when its lights are missing.
 
 
 Uninstalling

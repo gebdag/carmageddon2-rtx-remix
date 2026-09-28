@@ -182,7 +182,7 @@ namespace comp
 	private:
 		void tab_about();
 		void tab_dev();
-		void tab_headlights();
+		void tab_lights();
 		void tab_sun();
 		void tab_effects();
 		void tab_fog();

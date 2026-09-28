@@ -269,7 +269,7 @@ namespace comp
 		dev_debug_container();
 	}
 
-	void imgui::tab_headlights()
+	void imgui::tab_lights()
 	{
 		if (const auto lights = headlights::get(); lights) {
 			lights->draw_menu();
@@ -733,7 +733,7 @@ namespace comp
 		{
 			ImGui::PopStyleColor();
 			ImGui::PopStyleVar(1);
-			ADD_TAB("Headlights", tab_headlights);
+			ADD_TAB("Lights", tab_lights);
 			ADD_TAB("Sun", tab_sun);
 			ADD_TAB("Fog", tab_fog);
 			ADD_TAB("Effects", tab_effects);

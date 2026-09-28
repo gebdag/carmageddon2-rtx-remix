@@ -22,24 +22,21 @@ namespace comp
 		constexpr float GREEN[3] = { 0.15f, 1.0f, 0.55f };
 
 		/*
-		 * The lamp models and where their lights sit (newcity), in model space.
+		 * The lamp models (newcity). Where each light sits is a setting; these are the cone axes.
 		 *
 		 * &02lamp.act: the head is a wedge at the end of the arm, z 0.49 to 0.71 and y 1.34 to
 		 * 1.42, its underside sloping to ~1.37 at z 0.6. The light sits just under that, aimed
 		 * down.
 		 *
 		 * &03traffic.act: the signal head is a box at the end of the arm, x +-0.031, y 1.02 to
-		 * 1.241, z 0.724 to 0.787. Only its pole-facing end (z 0.724, facing -z) carries the
-		 * lens texture TRAFFICL, whose three lenses are centred on texture rows 24, 36.5 and 50
-		 * of 64 -- y 1.156, 1.115 and 1.068 on that face. Each light sits just in front of its
-		 * lens.
+		 * 1.241, z 0.724 to 0.787. Its lenses (TRAFFICL) are on the end facing back along the
+		 * arm towards the pole, so a light aimed out of them lights only the pole; the glow is
+		 * instead a pool on the road straight under the head.
 		 */
 		constexpr street_lights::lamp_kind LAMP_KINDS[] =
 		{
-			{ "&02lamp.act", street_lights::lamp_style::street, { 0.0f, -1.0f, 0.0f },
-				{ { 0.0f, 1.33f, 0.60f } } },
-			{ "&03traffic.act", street_lights::lamp_style::signal, { 0.0f, 0.0f, -1.0f },
-				{ { 0.0f, 1.156f, 0.716f }, { 0.0f, 1.115f, 0.716f }, { 0.0f, 1.068f, 0.716f } } },
+			{ "&02lamp.act", street_lights::lamp_style::street, { 0.0f, -1.0f, 0.0f } },
+			{ "&03traffic.act", street_lights::lamp_style::signal, { 0.0f, -1.0f, 0.0f } },
 		};
 
 		bool remix_lights_available()
@@ -113,12 +110,18 @@ namespace comp
 		read_float("EmitterRadius", s.emitter_radius, 0.001f, 0.5f);
 		read_float("ConeAngle", s.cone_angle, 1.0f, 90.0f);
 		read_float("ConeSoftness", s.cone_softness, 0.0f, 1.0f);
+		read_float("PositionX", s.position[0], -5.0f, 5.0f);
+		read_float("PositionY", s.position[1], -5.0f, 5.0f);
+		read_float("PositionZ", s.position[2], -5.0f, 5.0f);
 
 		s.signals = GetPrivateProfileIntA(INI_SECTION, "Signals", s.signals ? 1 : 0, path.c_str()) != 0;
 		read_float("SignalBrightness", s.signal_brightness, 0.0f, 100000.0f);
 		read_float("SignalEmitterRadius", s.signal_radius, 0.001f, 0.5f);
 		read_float("SignalConeAngle", s.signal_cone_angle, 1.0f, 90.0f);
 		read_float("SignalConeSoftness", s.signal_cone_softness, 0.0f, 1.0f);
+		read_float("SignalPositionX", s.signal_position[0], -5.0f, 5.0f);
+		read_float("SignalPositionY", s.signal_position[1], -5.0f, 5.0f);
+		read_float("SignalPositionZ", s.signal_position[2], -5.0f, 5.0f);
 		read_float("SignalGreenSeconds", s.green_seconds, 1.0f, 120.0f);
 		read_float("SignalAmberSeconds", s.amber_seconds, 0.5f, 30.0f);
 
@@ -144,12 +147,18 @@ namespace comp
 		ok &= write("EmitterRadius", number(s.emitter_radius));
 		ok &= write("ConeAngle", number(s.cone_angle));
 		ok &= write("ConeSoftness", number(s.cone_softness));
+		ok &= write("PositionX", number(s.position[0]));
+		ok &= write("PositionY", number(s.position[1]));
+		ok &= write("PositionZ", number(s.position[2]));
 
 		ok &= write("Signals", s.signals ? "1" : "0");
 		ok &= write("SignalBrightness", number(s.signal_brightness));
 		ok &= write("SignalEmitterRadius", number(s.signal_radius));
 		ok &= write("SignalConeAngle", number(s.signal_cone_angle));
 		ok &= write("SignalConeSoftness", number(s.signal_cone_softness));
+		ok &= write("SignalPositionX", number(s.signal_position[0]));
+		ok &= write("SignalPositionY", number(s.signal_position[1]));
+		ok &= write("SignalPositionZ", number(s.signal_position[2]));
 		ok &= write("SignalGreenSeconds", number(s.green_seconds));
 		ok &= write("SignalAmberSeconds", number(s.amber_seconds));
 
@@ -200,18 +209,10 @@ namespace comp
 		lamp& l = m_lamps[actor];
 		l.kind = kind;
 
-		float points[3][3], direction[3];
-		for (int p = 0; p < 3; ++p) {
-			transform_point(model_to_world, kind->points[p], points[p]);
-		}
-		transform_direction(model_to_world, kind->direction, direction);
-
 		// A lamp that moved (knocked over) is described again.
-		if (std::memcmp(points, l.points, sizeof(points)) != 0
-			|| std::memcmp(direction, l.direction, sizeof(direction)) != 0)
+		if (std::memcmp(&model_to_world, &l.model_to_world, sizeof(model_to_world)) != 0)
 		{
-			std::memcpy(l.points, points, sizeof(points));
-			std::memcpy(l.direction, direction, sizeof(direction));
+			l.model_to_world = model_to_world;
 			l.placed = true;
 		}
 		l.drawn = true;
@@ -229,8 +230,13 @@ namespace comp
 			return aspect::lit;
 		}
 
+		// The lenses face model -z; which world axis that lies along decides the phase.
+		constexpr float LENS_FACING[3] = { 0.0f, 0.0f, -1.0f };
+		float facing[3];
+		transform_direction(l.model_to_world, LENS_FACING, facing);
+
 		const double half = m_settings.green_seconds + m_settings.amber_seconds + ALL_RED_SECONDS;
-		const bool crossing = std::abs(l.direction[0]) > std::abs(l.direction[2]);
+		const bool crossing = std::abs(facing[0]) > std::abs(facing[2]);
 		const double t = std::fmod(seconds + (crossing ? half : 0.0), 2.0 * half);
 
 		if (t < m_settings.green_seconds) {
@@ -248,14 +254,17 @@ namespace comp
 		const bool signal = l.kind->style == lamp_style::signal;
 
 		const float* colour = s.colour;
-		const float* position = l.points[0];
 		switch (shown)
 		{
-		case aspect::red:   colour = RED;   position = l.points[0]; break;
-		case aspect::amber: colour = AMBER; position = l.points[1]; break;
-		case aspect::green: colour = GREEN; position = l.points[2]; break;
+		case aspect::red:   colour = RED;   break;
+		case aspect::amber: colour = AMBER; break;
+		case aspect::green: colour = GREEN; break;
 		default: break;
 		}
+
+		float position[3], direction[3];
+		transform_point(l.model_to_world, signal ? s.signal_position : s.position, position);
+		transform_direction(l.model_to_world, l.kind->direction, direction);
 
 		const float brightness = signal ? s.signal_brightness : s.brightness;
 		const float radius = signal ? s.signal_radius : s.emitter_radius;
@@ -266,7 +275,7 @@ namespace comp
 		sphere.position = { position[0], position[1], position[2] };
 		sphere.radius = radius;
 		sphere.shaping_hasvalue = TRUE;
-		sphere.shaping_value.direction = { l.direction[0], l.direction[1], l.direction[2] };
+		sphere.shaping_value.direction = { direction[0], direction[1], direction[2] };
 		sphere.shaping_value.coneAngleDegrees = signal ? s.signal_cone_angle : s.cone_angle;
 		sphere.shaping_value.coneSoftness = signal ? s.signal_cone_softness : s.cone_softness;
 		sphere.shaping_value.focusExponent = 0.0f;
@@ -275,8 +284,8 @@ namespace comp
 		remixapi_LightInfo info{};
 		info.sType = REMIXAPI_STRUCT_TYPE_LIGHT_INFO;
 		info.pNext = &sphere;
-		info.hash = shared::utils::string_hash64(std::format("carma2-streetlight-{}-{:x}",
-			m_generation, reinterpret_cast<uintptr_t>(actor)));
+		info.hash = shared::utils::string_hash64(std::format("carma2-streetlight-{}-{:x}-{}",
+			m_generation, reinterpret_cast<uintptr_t>(actor), l.incarnation));
 		info.radiance = { colour[0] * radiance, colour[1] * radiance, colour[2] * radiance };
 		info.isDynamic = TRUE;
 
@@ -295,12 +304,28 @@ namespace comp
 		l.shown = shown;
 	}
 
+	/*
+	 * A lamp that should be dark has its light destroyed, not merely left undrawn: Remix Plus
+	 * keeps an API light in the scene once it exists. The lamp's next light takes a new
+	 * incarnation, because Remix Plus applies a destroy one scene frame late and would erase
+	 * a light re-created under the old hash before then.
+	 */
+	void street_lights::put_out(lamp& l)
+	{
+		if (!l.handle) {
+			return;
+		}
+		shared::common::remix_api::get().m_bridge.DestroyLight(l.handle);
+		l.handle = nullptr;
+		++l.incarnation;
+	}
+
 	void street_lights::on_race_frame(const bool night)
 	{
 		m_lit_lamps = 0;
 		m_lit_signals = 0;
 
-		if (night && remix_lights_available())
+		if (remix_lights_available())
 		{
 			// A lamp is described again when a setting changes, when it moves, and when a
 			// signal changes aspect; otherwise it is only drawn, which keeps it in this frame.
@@ -311,10 +336,12 @@ namespace comp
 			for (auto& [actor, l] : m_lamps)
 			{
 				const bool signal = l.kind->style == lamp_style::signal;
-				const bool wanted = signal
+				const bool wanted = night && l.drawn && (signal
 					? m_settings.signals && m_settings.signal_brightness > 0.0f
-					: m_settings.enabled && m_settings.brightness > 0.0f;
-				if (!l.drawn || !wanted) {
+					: m_settings.enabled && m_settings.brightness > 0.0f);
+				if (!wanted)
+				{
+					put_out(l);
 					continue;
 				}
 
@@ -379,15 +406,19 @@ namespace comp
 		ImGui::SliderFloat("Lamp emitter radius", &s.emitter_radius, 0.005f, 0.2f, "%.3f units", ImGuiSliderFlags_Logarithmic);
 		ImGui::SliderFloat("Lamp cone angle", &s.cone_angle, 10.0f, 90.0f, "%.1f deg");
 		ImGui::SliderFloat("Lamp cone softness", &s.cone_softness, 0.0f, 1.0f, "%.2f");
+		ImGui::DragFloat3("Lamp position", s.position, 0.002f, -5.0f, 5.0f, "%.3f");
+		ImGui::TextDisabled("Model space: X across the arm, Y up, Z along the arm (the head is at Z 0.49 to 0.71).");
 
 		ImGui::Spacing();
 		ImGui::Checkbox("Traffic lights at night", &s.signals);
-		ImGui::TextWrapped("A faint light in front of the lit lens of every traffic light, cycling green, amber, "
+		ImGui::TextWrapped("A faint light under the head of every traffic light, cycling green, amber, "
 			"red. Signals facing across each other run opposite phases.");
 		ImGui::SliderFloat("Signal brightness", &s.signal_brightness, 0.01f, 100.0f, "%.2f", ImGuiSliderFlags_Logarithmic);
 		ImGui::SliderFloat("Signal emitter radius", &s.signal_radius, 0.002f, 0.05f, "%.3f units", ImGuiSliderFlags_Logarithmic);
 		ImGui::SliderFloat("Signal cone angle", &s.signal_cone_angle, 10.0f, 90.0f, "%.1f deg");
 		ImGui::SliderFloat("Signal cone softness", &s.signal_cone_softness, 0.0f, 1.0f, "%.2f");
+		ImGui::DragFloat3("Signal position", s.signal_position, 0.002f, -5.0f, 5.0f, "%.3f");
+		ImGui::TextDisabled("Model space: X across the arm, Y up, Z along the arm (the head is at Y 1.02 to 1.24, Z 0.72 to 0.79).");
 		ImGui::SliderFloat("Green", &s.green_seconds, 1.0f, 60.0f, "%.1f s");
 		ImGui::SliderFloat("Amber", &s.amber_seconds, 0.5f, 10.0f, "%.1f s");
 

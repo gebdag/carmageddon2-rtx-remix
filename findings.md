@@ -4442,21 +4442,37 @@ to 0.787.
 - **Orientations in the layout:** the 49 instances are axis-aligned and face all four
   directions, 25 along x and 24 along z.
 
-**The lights** (`street_lights`, `lamp_style::signal`). There is one sphere light per signal,
-0.008 in front of the lit lens (z 0.716), aimed −z.
+**The lights** (`street_lights`, `lamp_style::signal`). There is one sphere light per signal.
+- **Position:** under the signal head, aimed straight down, at model space (0, 1.0, 0.755).
+  - The first version put it 0.008 in front of the lit lens, aimed out of it (−z). That face
+    looks back along the arm, so the cone lit only the pole, and in game the light read as
+    sitting by the pole.
+  - The position is now a setting for both lamp kinds (`PositionX/Y/Z`,
+    `SignalPositionX/Y/Z`), with XYZ drags in the menu. The table keeps only each model's cone
+    axis.
 - **Shape:** fainter and smaller than the street lamps: brightness 0.25, radius 0.01, a
-  60-degree cone with softness 0.5.
+  40-degree cone with softness 0.5.
 - **Colours:** red (1, 0.06, 0.02), amber (1, 0.55, 0.02), green (0.15, 1, 0.55).
-- **One citywide cycle:** green 8 s, amber 3 s, then red. A signal facing mostly along
-  world x runs half a cycle behind one facing along z, so crossing directions alternate,
-  with 1 s of all-red between them.
+- **One citywide cycle:** green 8 s, amber 3 s, then red. A signal whose lenses face mostly
+  along world x runs half a cycle behind one facing along z, so crossing directions
+  alternate, with 1 s of all-red between them.
 - **Updates:** a signal is re-described only when its aspect changes. In between it is only
   drawn.
 - **When they show:** night races only, like the lamps.
 - **Settings:** in the `[StreetLights]` section of `carma2-streetlights.ini`: `Signals`,
   `SignalBrightness`, `SignalEmitterRadius`, `SignalConeAngle`, `SignalConeSoftness`,
-  `SignalGreenSeconds`, `SignalAmberSeconds`. They are set in the F4 Headlights tab, under
-  the street lamps.
+  `SignalPositionX/Y/Z`, `SignalGreenSeconds`, `SignalAmberSeconds`. They are set in the F4
+  Lights tab (formerly Headlights), under the street lamps.
+
+**Switching lamps off.** The street light and signal toggles did nothing in game on Remix
+Plus. The module only stopped calling `DrawLightInstance` for a light it no longer wanted,
+and Remix Plus keeps an API light in the scene once it has been created. Section 33.3's "a
+light is in the scene only in frames where it is drawn" held on NVIDIA's runtime. The
+headlights and the sun always destroyed theirs.
+- **Fix:** a lamp that should be dark (toggled off, brightness 0, not drawn this scene, or not
+  a night race) now has its light destroyed (`put_out`).
+- **Hashes:** the next light for that lamp takes a new incarnation in its hash. Remix Plus
+  applies a destroy one scene frame late (43.6) and would otherwise erase the new light.
 
 **Not done:** the lens texture stays as the game paints it, all three lenses orange. Only
 the emitted light changes colour.
