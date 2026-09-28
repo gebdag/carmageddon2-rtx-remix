@@ -24,7 +24,7 @@ namespace comp
 		{
 			bool enabled = true;
 			float colour[3] = { 1.0f, 0.78f, 0.52f };   // sodium-warm
-			float brightness = 40.0f;                   // radiance times emitter area, as the headlights
+			float brightness = 1.0f;                    // radiance times emitter area, as the headlights
 			float emitter_radius = 0.03f;               // world units; the lamp head is ~0.11 wide
 			float cone_angle = 70.0f;                   // degrees, axis to edge
 			float cone_softness = 0.4f;

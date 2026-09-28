@@ -4303,7 +4303,7 @@ twilight glow is sunlight from below the horizon.
 - `street_lights` puts a shaped sphere light under the head of every `&02lamp.act`, the
   city's one lamp model, placed 86 times. The capture reports each lamp with its
   model-to-world matrix. The head wedge spans model-space z 0.49 to 0.71 and y 1.34 to 1.42,
-  and the light sits at (0, 1.33, 0.60), aimed down. Defaults are brightness 40, radius 0.03,
+  and the light sits at (0, 1.33, 0.60), aimed down. Defaults are brightness 1 (40 at first, lowered after testing), radius 0.03,
   a 70-degree cone and softness 0.4. The lights are saved to `carma2-streetlights.ini` and
   tuned in the F4 Headlights tab.
 - Light hashes carry a generation that is bumped whenever the lamps are dropped on leaving

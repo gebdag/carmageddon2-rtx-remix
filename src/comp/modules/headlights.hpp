@@ -52,7 +52,7 @@ namespace comp
 
 			// lamp
 			float colour[3] = { 1.0f, 0.93f, 0.80f };
-			float brightness = 10.06f;      // radiance times emitter area, so the radius only softens shadows
+			float brightness = 4.0f;        // radiance times emitter area, so the radius only softens shadows
 			float emitter_radius = 0.012f;  // world units; a car is roughly 0.4 wide
 			float volumetric_scale = 1.0f;
 
