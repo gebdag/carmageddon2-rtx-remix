@@ -4349,3 +4349,81 @@ Known limits:
   sky's horizon.
 
 Not verified in game yet.
+
+## 55. Remix Plus: clouds and haze from each race's sky (2026-09-28)
+
+**The runtime.** The Remix Plus build installed in the game folder (`.trex\d3d9.dll`) is far
+newer than the gmod-fork source in `rtx-runtimes` (6d75248), which has no clouds. The option
+names below were read from the DLL's strings.
+- `rtx.skyMode`: 0 "Skybox Rasterization", 1 "Numos" (Hillaire atmospheric scattering).
+- It has volumetric clouds (Nubis Cubed), with these options under `rtx.atmosphere`:
+  - `cloudEnabled`;
+  - `cloudCoverageMean`, from 0 = clear to 1 = overcast;
+  - `cloudTypeMean`, from 0 = stratus through 0.5 = stratocumulus to 1 = cumulus;
+  - `cloudDensity`, an opacity multiplier;
+  - `cloudColor`, the albedo.
+  
+  It also has a second cloud layer, stars, moons (`rtx.atmosphere.moon0..3`), a Milky Way and
+  lightning.
+- It has a weather blender with twelve presets (`rtx.weather.preset.<name>`: clear,
+  partlyCloudy, overcast, hazy, foggy, drizzle, rainstorm, thunderstorm, snow, blizzard,
+  sandstorm, smoggy). They are selected through the API key `__weather.target` and blended
+  over `__weather.blend_seconds`.
+  - A preset also drives the volumetric fog (`transmittanceColor`, the fog remap options,
+    `singleScatteringAlbedo`). That would overwrite what the proxy sets from the track's depth
+    cue (section 51), so the proxy leaves the blender dormant and sets the cloud options itself.
+
+**The sky path.** On an atmosphere runtime the proxy never draws its sky dome (`draw_sky`
+returns before baking). `time_of_day` sets `rtx.skyMode 1` and `cloudEnabled` once. It then
+pushes each sky's weather whenever it changes: `cloudCoverageMean`, `cloudTypeMean`,
+`cloudDensity`, `cloudColor` and `aerosolDensity`. Haze moved out of the sun's per-mood look
+into this per-sky weather.
+
+**The table** (`SKIES` in `time_of_day.cpp`) covers all 23 shipped skies. They were
+extracted and measured in the band above each skyline or ridge.
+- A per-row cloud estimate worked where clouds differ from the sky in saturation or
+  brightness: the city (cover 0.42), nyhorizn (0.54), qdark (0.63), qnight (0.53).
+- It missed grey clouds on a grey sky: airport3 and carsky1 measured 0.12 but are visibly
+  heavy bands. So cover and type were set from the full-size textures, and the colours and
+  darkness come from the measurements.
+
+| Sky | Mood | Cover | Type | Density | Haze |
+|---|---|---|---|---|---|
+| skyblue_01 | day | 0.45 | 0.2 | 1.0 | 1.0 |
+| desky2 | day | 0.35 | 0.6 | 1.0 | 1.0 |
+| carday | day | 0.35 | 0.5 | 1.0 | 1.0 |
+| cityskape | day | 0.40 | 0.2 | 0.9 | 1.0 |
+| twingreen | day | 0.10 | 0.5 | 1.0 | 2.0 |
+| skisky_01 | day | 0.75 | 0.0 | 0.5 | 2.5 |
+| airglum | overcast | 0.60 | 0.6 | 1.6 | 1.5 |
+| airport3 | overcast | 0.70 | 0.3 | 1.2 | 1.5 |
+| carsky1 | overcast | 0.70 | 0.3 | 1.2 | 1.5 |
+| desglum | overcast | 0.60 | 0.6 | 1.6 | 1.5 |
+| sumosky | dusk | 0.35 | 0.1 | 0.8 | 1.5 |
+| desky | dusk | 0.05 | 0.3 | 1.0 | 1.5 |
+| car2sky | dusk | 0.05 | 0.3 | 1.0 | 1.5 |
+| nyhorizn | dusk | 0.45 | 0.3 | 1.0 | 1.5 |
+| nyhoriznp | dusk | 0.45 | 0.2 | 1.0 | 1.5 |
+| qdark | dusk | 0.80 | 0.4 | 1.5 | 1.5 |
+| twinpink | dusk | 0.05 | 0.3 | 1.0 | 2.5 |
+| twinnight | night | 0.00 | 0.5 | 1.0 | 1.0 |
+| cityskapen | night | 0.15 | 0.2 | 1.0 | 1.0 |
+| qnight | night | 0.85 | 0.4 | 1.5 | 1.0 |
+| cityskapef, nyhoriznf, cityskape4 | fog | 1.00 | 0.0 | 1.0 | 8.0 |
+
+Colours are near-white, tinted where the texture's clouds are:
+- carday: lavender;
+- cityskape: teal;
+- airglum: violet-grey;
+- airport3, carsky1, qdark: warm grey;
+- desglum: brown;
+- nyhorizn: peach;
+- nyhoriznp, twinpink: pink.
+
+Indoor tracks, and races with time of day switched off, get a fair-weather sky: cover 0.3,
+type 0.5.
+
+`sumosky` (Sumo) was listed as a day sky in section 53. It is an orange sunset, now dusk.
+
+Not verified in game yet. The cloud option names are read from strings, not source. Remix
+Plus's Alt+X atmosphere panel should show the cover change between races.

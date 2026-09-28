@@ -17,7 +17,7 @@ CARMA2_HW.EXE (BRender) -> Glide -> nGlide -> d3d9.dll (this mod) -> d3d9_remix.
 - The game's own render of injected models suppressed, so it isn't drawn over the path-traced frame
 - Frustum culling disabled and a longer far plane for path tracing; powerup pickups keep the game's own culling
 - Time of day per race, read from each race's sky: the sun's angle, colour and strength for day, overcast, dusk, fog and night. Tuned from the F4 menu and saved to `carma2-sun.ini`
-- On NVIDIA's RTX Remix, a sky built from each race's horizon texture and a Remix distant light for the sun; on Remix Plus, its physical sky, with the sun placed the same way
+- On NVIDIA's RTX Remix, a sky built from each race's horizon texture and a Remix distant light for the sun; on Remix Plus, its physical sky in place of that, with the sun placed the same way and clouds and haze matched to each race's sky texture
 - Night races: the sun just below the horizon, headlights on for every car, and a light under every city street lamp (`carma2-streetlights.ini`)
 - Headlights: two Remix spot lights per car. F cycles off, player car, all cars. Tuned from the F4 menu and saved to `carma2-headlights.ini`
 - Shading normals that keep hard edges sharp, so flat roads and walls shade flat

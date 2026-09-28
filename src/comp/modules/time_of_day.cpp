@@ -6,46 +6,69 @@
 
 namespace comp
 {
+	struct time_of_day::sky_entry
+	{
+		const char* sky;
+		time_of_day::mood tone;
+		sky_weather weather;
+	};
+
 	namespace
 	{
-		struct sky_mood
+		using weather = time_of_day::sky_weather;
+		using mood = time_of_day::mood;
+
+		constexpr weather white_clouds(const float cover, const float type, const float density = 1.0f,
+			const float aerosol = 1.0f)
 		{
-			const char* sky;
-			time_of_day::mood mood;
+			return { cover, type, density, { 0.95f, 0.95f, 0.95f }, aerosol };
+		}
+
+		/*
+		 * Every sky a shipped race loads: the time of day it paints, and the clouds and haze in
+		 * it. Races without a sky (the silo, the arenas) are indoors and keep the standard sun.
+		 *
+		 * The weather is read off the textures' sky band, above any skyline or ridge. Cover is
+		 * the share of that band under cloud; type is the cloud form, 0 for the banded, streaky
+		 * stratus most of these skies paint and 1 for heaped cumulus; density darkens and thickens
+		 * the storm and gloom skies; the colour is the measured mean of the cloud pixels, pulled
+		 * most of the way to white, since the physical sky lights and tints clouds itself. Haze
+		 * is raised where the texture washes out its distance (the valley mists, the snowfield,
+		 * the fog races).
+		 */
+		constexpr time_of_day::sky_entry SKIES[] =
+		{
+			{ "skyblue_01", mood::day, white_clouds(0.45f, 0.20f) },
+			{ "desky2",     mood::day, white_clouds(0.35f, 0.60f) },
+			{ "carday",     mood::day, { 0.35f, 0.50f, 1.0f, { 0.93f, 0.92f, 1.00f }, 1.0f } },
+			{ "cityskape",  mood::day, { 0.40f, 0.20f, 0.9f, { 0.90f, 0.98f, 0.97f }, 1.0f } },
+			{ "twingreen",  mood::day, white_clouds(0.10f, 0.50f, 1.0f, 2.0f) },
+			{ "skisky_01",  mood::day, white_clouds(0.75f, 0.00f, 0.5f, 2.5f) },
+
+			{ "airglum",    mood::overcast, { 0.60f, 0.60f, 1.6f, { 0.82f, 0.78f, 0.86f }, 1.5f } },
+			{ "airport3",   mood::overcast, { 0.70f, 0.30f, 1.2f, { 0.95f, 0.90f, 0.85f }, 1.5f } },
+			{ "carsky1",    mood::overcast, { 0.70f, 0.30f, 1.2f, { 0.95f, 0.90f, 0.85f }, 1.5f } },
+			{ "desglum",    mood::overcast, { 0.60f, 0.60f, 1.6f, { 0.88f, 0.80f, 0.72f }, 1.5f } },
+
+			{ "sumosky",    mood::dusk, white_clouds(0.35f, 0.10f, 0.8f, 1.5f) },
+			{ "desky",      mood::dusk, white_clouds(0.05f, 0.30f, 1.0f, 1.5f) },
+			{ "car2sky",    mood::dusk, white_clouds(0.05f, 0.30f, 1.0f, 1.5f) },
+			{ "nyhorizn",   mood::dusk, { 0.45f, 0.30f, 1.0f, { 0.97f, 0.88f, 0.82f }, 1.5f } },
+			{ "nyhoriznp",  mood::dusk, { 0.45f, 0.20f, 1.0f, { 0.97f, 0.85f, 0.95f }, 1.5f } },
+			{ "qdark",      mood::dusk, { 0.80f, 0.40f, 1.5f, { 0.90f, 0.84f, 0.78f }, 1.5f } },
+			{ "twinpink",   mood::dusk, { 0.05f, 0.30f, 1.0f, { 0.97f, 0.90f, 0.97f }, 2.5f } },
+
+			{ "twinnight",  mood::night, white_clouds(0.00f, 0.50f) },
+			{ "cityskapen", mood::night, white_clouds(0.15f, 0.20f) },
+			{ "qnight",     mood::night, white_clouds(0.85f, 0.40f, 1.5f) },
+
+			{ "cityskapef", mood::fog, white_clouds(1.00f, 0.00f, 1.0f, 8.0f) },
+			{ "nyhoriznf",  mood::fog, white_clouds(1.00f, 0.00f, 1.0f, 8.0f) },
+			{ "cityskape4", mood::fog, white_clouds(1.00f, 0.00f, 1.0f, 8.0f) },
 		};
 
-		// Every sky a shipped race loads, by the time of day it paints. Races without a sky
-		// (the silo, the arenas) are indoors and keep the standard sun.
-		constexpr sky_mood SKY_MOODS[] =
-		{
-			{ "skyblue_01", time_of_day::mood::day },
-			{ "desky2", time_of_day::mood::day },
-			{ "carday", time_of_day::mood::day },
-			{ "cityskape", time_of_day::mood::day },
-			{ "twingreen", time_of_day::mood::day },
-			{ "skisky_01", time_of_day::mood::day },
-			{ "sumosky", time_of_day::mood::day },
-
-			{ "airglum", time_of_day::mood::overcast },
-			{ "airport3", time_of_day::mood::overcast },
-			{ "carsky1", time_of_day::mood::overcast },
-			{ "desglum", time_of_day::mood::overcast },
-
-			{ "desky", time_of_day::mood::dusk },
-			{ "nyhorizn", time_of_day::mood::dusk },
-			{ "nyhoriznp", time_of_day::mood::dusk },
-			{ "qdark", time_of_day::mood::dusk },
-			{ "twinpink", time_of_day::mood::dusk },
-			{ "car2sky", time_of_day::mood::dusk },
-
-			{ "twinnight", time_of_day::mood::night },
-			{ "cityskapen", time_of_day::mood::night },
-			{ "qnight", time_of_day::mood::night },
-
-			{ "cityskapef", time_of_day::mood::fog },
-			{ "nyhoriznf", time_of_day::mood::fog },
-			{ "cityskape4", time_of_day::mood::fog },
-		};
+		// Indoor tracks, unknown skies and the switched-off time of day: a fair-weather sky.
+		constexpr weather STANDARD_WEATHER = white_clouds(0.30f, 0.50f);
 	}
 
 	const char* time_of_day::mood_name(const mood m)
@@ -61,15 +84,25 @@ namespace comp
 		}
 	}
 
-	time_of_day::mood time_of_day::mood_for(const std::string& sky)
+	const time_of_day::sky_entry* time_of_day::entry_for(const std::string& sky)
 	{
-		for (const auto& entry : SKY_MOODS)
+		for (const auto& entry : SKIES)
 		{
 			if (_stricmp(entry.sky, sky.c_str()) == 0) {
-				return entry.mood;
+				return &entry;
 			}
 		}
-		return mood::standard;
+		return nullptr;
+	}
+
+	time_of_day::mood time_of_day::current() const
+	{
+		return m_enabled && m_entry ? m_entry->tone : mood::standard;
+	}
+
+	time_of_day::sky_weather time_of_day::weather() const
+	{
+		return m_enabled && m_entry ? m_entry->weather : STANDARD_WEATHER;
 	}
 
 	/*
@@ -83,11 +116,11 @@ namespace comp
 	{
 		switch (current())
 		{
-		case mood::overcast: return { 60.0f, 30.0f, { 0.92f, 0.95f, 1.0f }, 0.45f, 4.0f, 3.0f };
-		case mood::dusk:     return { 10.0f, 30.0f, { 1.0f, 0.62f, 0.38f }, 0.9f, 0.0f, 1.5f };
-		case mood::night:    return { -3.5f, 30.0f, { 0.6f, 0.7f, 1.0f }, 1.0f, 0.0f, 1.0f };
-		case mood::fog:      return { 50.0f, 30.0f, { 0.95f, 0.95f, 0.95f }, 0.35f, 8.0f, 8.0f };
-		default:             return { 60.0f, 30.0f, { 1.0f, 1.0f, 1.0f }, 1.0f, 0.0f, 1.0f };
+		case mood::overcast: return { 60.0f, 30.0f, { 0.92f, 0.95f, 1.0f }, 0.45f, 4.0f };
+		case mood::dusk:     return { 10.0f, 30.0f, { 1.0f, 0.62f, 0.38f }, 0.9f, 0.0f };
+		case mood::night:    return { -3.5f, 30.0f, { 0.6f, 0.7f, 1.0f }, 1.0f, 0.0f };
+		case mood::fog:      return { 50.0f, 30.0f, { 0.95f, 0.95f, 0.95f }, 0.35f, 8.0f };
+		default:             return { 60.0f, 30.0f, { 1.0f, 1.0f, 1.0f }, 1.0f, 0.0f };
 		}
 	}
 
@@ -101,9 +134,9 @@ namespace comp
 		if (sky != m_sky)
 		{
 			m_sky = sky;
-			m_mood = mood_for(sky);
+			m_entry = entry_for(sky);
 			shared::common::log("TimeOfDay", std::format("sky '{}': {}", sky.empty() ? "none" : sky,
-				mood_name(m_mood)), shared::common::LOG_TYPE::LOG_TYPE_DEFAULT, true);
+				mood_name(m_entry ? m_entry->tone : mood::standard)), shared::common::LOG_TYPE::LOG_TYPE_DEFAULT, true);
 		}
 
 		apply_atmosphere();
@@ -114,9 +147,12 @@ namespace comp
 	}
 
 	/*
-	 * On Remix Plus the sky is the runtime's own physical sky, rtx.skyMode 1, and each mood
-	 * sets its haze. The sun in it is placed by the sun module, which owns the sun's angle on
-	 * either runtime. Pushed once per change: these are global options crossing the bridge.
+	 * On Remix Plus the sky is the runtime's own physical sky, rtx.skyMode 1 (Numos), in
+	 * place of the rasterized sky the proxy draws on NVIDIA's runtime. Its clouds and haze
+	 * follow the race's sky texture; the sun in it is placed by the sun module, which owns
+	 * the sun's angle on either runtime. The weather presets are left alone: they also drive
+	 * the volumetric fog, which the proxy sets from the track's depth cue. Pushed once per
+	 * change: these are global options crossing the bridge.
 	 */
 	void time_of_day::apply_atmosphere()
 	{
@@ -131,18 +167,29 @@ namespace comp
 			shared::common::log("TimeOfDay", std::format("rtx.skyMode = 1 (physical sky) {}",
 				m_sky_mode_set ? "set" : "refused"), shared::common::LOG_TYPE::LOG_TYPE_DEFAULT, true);
 		}
+		if (!m_clouds_enabled) {
+			m_clouds_enabled = remix_api::set_config("rtx.atmosphere.cloudEnabled", "True");
+		}
 
-		if (m_pushed_any && m_pushed == current()) {
+		const sky_weather w = weather();
+		if (m_pushed == w) {
 			return;
 		}
 
-		const sun_look l = look();
-		if (remix_api::set_config("rtx.atmosphere.aerosolDensity", std::format("{:.2f}", l.aerosol)))
+		const auto number = [](const float value) { return std::format("{:.3f}", value); };
+		const bool pushed = remix_api::set_config("rtx.atmosphere.cloudCoverageMean", number(w.cloud_cover))
+			&& remix_api::set_config("rtx.atmosphere.cloudTypeMean", number(w.cloud_type))
+			&& remix_api::set_config("rtx.atmosphere.cloudDensity", number(w.cloud_density))
+			&& remix_api::set_config("rtx.atmosphere.cloudColor", std::format("{:.3f}, {:.3f}, {:.3f}",
+				w.cloud_colour[0], w.cloud_colour[1], w.cloud_colour[2]))
+			&& remix_api::set_config("rtx.atmosphere.aerosolDensity", number(w.aerosol));
+
+		if (pushed)
 		{
-			m_pushed = current();
-			m_pushed_any = true;
-			shared::common::log("TimeOfDay", std::format("physical sky: {} (aerosol {:.1f})",
-				mood_name(current()), l.aerosol));
+			m_pushed = w;
+			shared::common::log("TimeOfDay", std::format("physical sky: {} -- cloud cover {:.2f}, type {:.2f},"
+				" density {:.2f}, haze {:.1f}", mood_name(current()), w.cloud_cover, w.cloud_type,
+				w.cloud_density, w.aerosol));
 		}
 	}
 
