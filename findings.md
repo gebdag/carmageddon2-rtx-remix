@@ -4427,3 +4427,38 @@ type 0.5.
 
 Not verified in game yet. The cloud option names are read from strings, not source. Remix
 Plus's Alt+X atmosphere panel should show the cover change between races.
+
+## 56. Traffic lights in the night city (2026-09-28)
+
+**The model.** The city has one traffic-light model, `&03traffic.act`, placed 49 times in
+newcity2. Its signal head is a box at the end of the arm: x ±0.031, y 1.02 to 1.241, z 0.724
+to 0.787.
+- **Lens face:** only the end facing the pole (z 0.724, facing −z) carries the lens texture,
+  `TRAFFICL` (64x64). The other faces are housing (`TRAFFIL2/4/6`).
+- **The texture** paints all three lenses the same orange, so the game shows no signal
+  state. The lens centres are on texture rows 24, 36.5 and 50. Through the face's UVs
+  (v = 1 at y 1.02, v = 0 at y 1.241) that is y 1.156 (red), 1.115 (amber) and 1.068 (green),
+  at x 0.
+- **Orientations in the layout:** the 49 instances are axis-aligned and face all four
+  directions, 25 along x and 24 along z.
+
+**The lights** (`street_lights`, `lamp_style::signal`). There is one sphere light per signal,
+0.008 in front of the lit lens (z 0.716), aimed −z.
+- **Shape:** fainter and smaller than the street lamps: brightness 0.25, radius 0.01, a
+  60-degree cone with softness 0.5.
+- **Colours:** red (1, 0.06, 0.02), amber (1, 0.55, 0.02), green (0.15, 1, 0.55).
+- **One citywide cycle:** green 8 s, amber 3 s, then red. A signal facing mostly along
+  world x runs half a cycle behind one facing along z, so crossing directions alternate,
+  with 1 s of all-red between them.
+- **Updates:** a signal is re-described only when its aspect changes. In between it is only
+  drawn.
+- **When they show:** night races only, like the lamps.
+- **Settings:** in the `[StreetLights]` section of `carma2-streetlights.ini`: `Signals`,
+  `SignalBrightness`, `SignalEmitterRadius`, `SignalConeAngle`, `SignalConeSoftness`,
+  `SignalGreenSeconds`, `SignalAmberSeconds`. They are set in the F4 Headlights tab, under
+  the street lamps.
+
+**Not done:** the lens texture stays as the game paints it, all three lenses orange. Only
+the emitted light changes colour.
+
+Not verified in game yet.

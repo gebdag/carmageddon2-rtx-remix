@@ -3,13 +3,16 @@
 namespace comp
 {
 	/*
-	 * A Remix light under the head of every street lamp, for the night races.
+	 * Remix lights on the city's street furniture, for the night races.
 	 *
-	 * The lamps are ordinary scenery actors: the city places 86 copies of one lamp model
-	 * (&02lamp.act, a post 1.42 units tall with an arm reaching 0.71 units over the street).
-	 * The capture reports every lamp it draws with its model-to-world matrix, and each gets
-	 * a sphere light just below its head, shaped into a downward cone, drawn only while the
-	 * race is a night race (time_of_day.hpp).
+	 * The lamps and signals are ordinary scenery actors: the city places 86 copies of one
+	 * street lamp model (&02lamp.act, a post 1.42 units tall with an arm reaching 0.71 units
+	 * over the street) and 49 of one traffic light (&03traffic.act, a signal head at the end
+	 * of a 0.79 unit arm). The capture reports every one it draws with its model-to-world
+	 * matrix. A street lamp gets a sphere light just below its head, shaped into a downward
+	 * cone. A traffic light gets a smaller, fainter one in front of whichever lens is lit,
+	 * cycling green, amber, red as US signals do. All are drawn only while the race is a
+	 * night race (time_of_day.hpp).
 	 */
 	class street_lights final : public shared::common::loader::component_module
 	{
@@ -29,6 +32,16 @@ namespace comp
 			float cone_angle = 70.0f;                   // degrees, axis to edge
 			float cone_softness = 0.4f;
 
+			// Traffic lights glow rather than light the street: fainter, smaller, and aimed
+			// out of the lens along the road.
+			bool signals = true;
+			float signal_brightness = 0.25f;
+			float signal_radius = 0.01f;                // a lens is ~0.025 across
+			float signal_cone_angle = 60.0f;
+			float signal_cone_softness = 0.5f;
+			float green_seconds = 8.0f;
+			float amber_seconds = 3.0f;
+
 			bool operator==(const settings&) const = default;
 		};
 
@@ -36,8 +49,8 @@ namespace comp
 		void on_model_drawn(const game::br_actor* actor, const game::br_model* model,
 			const game::br_matrix34& model_to_world);
 
-		// Once per race-view submit, after the capture: lights every lamp drawn this scene
-		// when `night`, and none otherwise.
+		// Once per race-view submit, after the capture: lights every lamp and signal drawn
+		// this scene when `night`, and none otherwise.
 		void on_race_frame(bool night);
 
 		// Leaving the race view: lamp actors are recycled by the next track.
@@ -45,26 +58,45 @@ namespace comp
 
 		void draw_menu();
 
-		// A lamp model and where its light sits, in model space.
+		enum class lamp_style : uint8_t
+		{
+			street,
+			signal,
+		};
+
+		// A lamp model and where its lights sit, in model space.
 		struct lamp_kind
 		{
 			const char* model;
-			float head[3];
+			lamp_style style;
 			float direction[3];   // cone axis
+			float points[3][3];   // street: the light in [0]; signal: the red, amber and green lens
 		};
 
 	private:
+		// What a lamp shows. Street lamps are always `lit`.
+		enum class aspect : uint8_t
+		{
+			lit,
+			red,
+			amber,
+			green,
+		};
+
 		struct lamp
 		{
+			const lamp_kind* kind = nullptr;
 			remixapi_LightHandle handle = nullptr;
-			float position[3] = {};
+			float points[3][3] = {};
 			float direction[3] = {};
+			aspect shown = aspect::lit;
 			bool drawn = false;
 			bool placed = true;   // new or moved: describe again
 		};
 
 		const lamp_kind* kind_of(const game::br_model* model);
-		void describe(const game::br_actor* actor, lamp& l);
+		aspect aspect_of(const lamp& l, double seconds) const;
+		void describe(const game::br_actor* actor, lamp& l, aspect shown);
 		void destroy_all();
 		void load();
 		void save();
@@ -81,7 +113,8 @@ namespace comp
 		// applies a destroy one scene frame late, so a light re-created under its old hash
 		// before then would be erased; a new generation never shares a hash with the old.
 		uint32_t m_generation = 0;
-		uint32_t m_lit = 0;
+		uint32_t m_lit_lamps = 0;
+		uint32_t m_lit_signals = 0;
 		bool m_create_failed = false;
 	};
 }

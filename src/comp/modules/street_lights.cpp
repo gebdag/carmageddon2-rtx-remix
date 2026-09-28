@@ -11,14 +11,35 @@ namespace comp
 		constexpr const char* INI_SECTION = "StreetLights";
 		constexpr float PI = 3.14159265f;
 
+		// Every signal holds red for this long after the crossing direction turns red, so
+		// no two directions ever show green or amber together.
+		constexpr float ALL_RED_SECONDS = 1.0f;
+
+		// US signal colours: red, the amber of an incandescent lens, and the blue-green of
+		// modern signal green.
+		constexpr float RED[3] = { 1.0f, 0.06f, 0.02f };
+		constexpr float AMBER[3] = { 1.0f, 0.55f, 0.02f };
+		constexpr float GREEN[3] = { 0.15f, 1.0f, 0.55f };
+
 		/*
-		 * The lamp models and where each one's light sits. &02lamp.act (newcity): the head is
-		 * a wedge at the end of the arm, z 0.49 to 0.71 and y 1.34 to 1.42 in model space, its
-		 * underside sloping to ~1.37 at z 0.6. The light sits just under that, aimed down.
+		 * The lamp models and where their lights sit (newcity), in model space.
+		 *
+		 * &02lamp.act: the head is a wedge at the end of the arm, z 0.49 to 0.71 and y 1.34 to
+		 * 1.42, its underside sloping to ~1.37 at z 0.6. The light sits just under that, aimed
+		 * down.
+		 *
+		 * &03traffic.act: the signal head is a box at the end of the arm, x +-0.031, y 1.02 to
+		 * 1.241, z 0.724 to 0.787. Only its pole-facing end (z 0.724, facing -z) carries the
+		 * lens texture TRAFFICL, whose three lenses are centred on texture rows 24, 36.5 and 50
+		 * of 64 -- y 1.156, 1.115 and 1.068 on that face. Each light sits just in front of its
+		 * lens.
 		 */
 		constexpr street_lights::lamp_kind LAMP_KINDS[] =
 		{
-			{ "&02lamp.act", { 0.0f, 1.33f, 0.60f }, { 0.0f, -1.0f, 0.0f } },
+			{ "&02lamp.act", street_lights::lamp_style::street, { 0.0f, -1.0f, 0.0f },
+				{ { 0.0f, 1.33f, 0.60f } } },
+			{ "&03traffic.act", street_lights::lamp_style::signal, { 0.0f, 0.0f, -1.0f },
+				{ { 0.0f, 1.156f, 0.716f }, { 0.0f, 1.115f, 0.716f }, { 0.0f, 1.068f, 0.716f } } },
 		};
 
 		bool remix_lights_available()
@@ -48,6 +69,13 @@ namespace comp
 			if (length > 1e-6f) {
 				for (int i = 0; i < 3; ++i) { out[i] /= length; }
 			}
+		}
+
+		double seconds_now()
+		{
+			using clock = std::chrono::steady_clock;
+			static const clock::time_point start = clock::now();
+			return std::chrono::duration<double>(clock::now() - start).count();
 		}
 	}
 
@@ -86,6 +114,14 @@ namespace comp
 		read_float("ConeAngle", s.cone_angle, 1.0f, 90.0f);
 		read_float("ConeSoftness", s.cone_softness, 0.0f, 1.0f);
 
+		s.signals = GetPrivateProfileIntA(INI_SECTION, "Signals", s.signals ? 1 : 0, path.c_str()) != 0;
+		read_float("SignalBrightness", s.signal_brightness, 0.0f, 100000.0f);
+		read_float("SignalEmitterRadius", s.signal_radius, 0.001f, 0.5f);
+		read_float("SignalConeAngle", s.signal_cone_angle, 1.0f, 90.0f);
+		read_float("SignalConeSoftness", s.signal_cone_softness, 0.0f, 1.0f);
+		read_float("SignalGreenSeconds", s.green_seconds, 1.0f, 120.0f);
+		read_float("SignalAmberSeconds", s.amber_seconds, 0.5f, 30.0f);
+
 		m_settings = s;
 		m_saved = s;
 	}
@@ -108,6 +144,14 @@ namespace comp
 		ok &= write("EmitterRadius", number(s.emitter_radius));
 		ok &= write("ConeAngle", number(s.cone_angle));
 		ok &= write("ConeSoftness", number(s.cone_softness));
+
+		ok &= write("Signals", s.signals ? "1" : "0");
+		ok &= write("SignalBrightness", number(s.signal_brightness));
+		ok &= write("SignalEmitterRadius", number(s.signal_radius));
+		ok &= write("SignalConeAngle", number(s.signal_cone_angle));
+		ok &= write("SignalConeSoftness", number(s.signal_cone_softness));
+		ok &= write("SignalGreenSeconds", number(s.green_seconds));
+		ok &= write("SignalAmberSeconds", number(s.amber_seconds));
 
 		if (ok)
 		{
@@ -154,34 +198,77 @@ namespace comp
 		}
 
 		lamp& l = m_lamps[actor];
-		float position[3], direction[3];
-		transform_point(model_to_world, kind->head, position);
+		l.kind = kind;
+
+		float points[3][3], direction[3];
+		for (int p = 0; p < 3; ++p) {
+			transform_point(model_to_world, kind->points[p], points[p]);
+		}
 		transform_direction(model_to_world, kind->direction, direction);
 
 		// A lamp that moved (knocked over) is described again.
-		if (!std::equal(std::begin(position), std::end(position), std::begin(l.position))
-			|| !std::equal(std::begin(direction), std::end(direction), std::begin(l.direction)))
+		if (std::memcmp(points, l.points, sizeof(points)) != 0
+			|| std::memcmp(direction, l.direction, sizeof(direction)) != 0)
 		{
-			std::copy(std::begin(position), std::end(position), std::begin(l.position));
-			std::copy(std::begin(direction), std::end(direction), std::begin(l.direction));
+			std::memcpy(l.points, points, sizeof(points));
+			std::memcpy(l.direction, direction, sizeof(direction));
 			l.placed = true;
 		}
 		l.drawn = true;
 	}
 
-	void street_lights::describe(const game::br_actor* actor, lamp& l)
+	/*
+	 * One fixed cycle for the whole city, as a coordinated grid would run it. A signal facing
+	 * mostly along world x runs half a cycle behind one facing along z, so the two directions
+	 * at a crossing alternate: green, amber, then red while the crossing direction has its
+	 * green and amber, each change separated by a moment of all-red.
+	 */
+	street_lights::aspect street_lights::aspect_of(const lamp& l, const double seconds) const
+	{
+		if (l.kind->style == lamp_style::street) {
+			return aspect::lit;
+		}
+
+		const double half = m_settings.green_seconds + m_settings.amber_seconds + ALL_RED_SECONDS;
+		const bool crossing = std::abs(l.direction[0]) > std::abs(l.direction[2]);
+		const double t = std::fmod(seconds + (crossing ? half : 0.0), 2.0 * half);
+
+		if (t < m_settings.green_seconds) {
+			return aspect::green;
+		}
+		if (t < m_settings.green_seconds + m_settings.amber_seconds) {
+			return aspect::amber;
+		}
+		return aspect::red;
+	}
+
+	void street_lights::describe(const game::br_actor* actor, lamp& l, const aspect shown)
 	{
 		const settings& s = m_settings;
-		const float radiance = s.brightness / (PI * s.emitter_radius * s.emitter_radius);
+		const bool signal = l.kind->style == lamp_style::signal;
+
+		const float* colour = s.colour;
+		const float* position = l.points[0];
+		switch (shown)
+		{
+		case aspect::red:   colour = RED;   position = l.points[0]; break;
+		case aspect::amber: colour = AMBER; position = l.points[1]; break;
+		case aspect::green: colour = GREEN; position = l.points[2]; break;
+		default: break;
+		}
+
+		const float brightness = signal ? s.signal_brightness : s.brightness;
+		const float radius = signal ? s.signal_radius : s.emitter_radius;
+		const float radiance = brightness / (PI * radius * radius);
 
 		remixapi_LightInfoSphereEXT sphere{};
 		sphere.sType = REMIXAPI_STRUCT_TYPE_LIGHT_INFO_SPHERE_EXT;
-		sphere.position = { l.position[0], l.position[1], l.position[2] };
-		sphere.radius = s.emitter_radius;
+		sphere.position = { position[0], position[1], position[2] };
+		sphere.radius = radius;
 		sphere.shaping_hasvalue = TRUE;
 		sphere.shaping_value.direction = { l.direction[0], l.direction[1], l.direction[2] };
-		sphere.shaping_value.coneAngleDegrees = s.cone_angle;
-		sphere.shaping_value.coneSoftness = s.cone_softness;
+		sphere.shaping_value.coneAngleDegrees = signal ? s.signal_cone_angle : s.cone_angle;
+		sphere.shaping_value.coneSoftness = signal ? s.signal_cone_softness : s.cone_softness;
 		sphere.shaping_value.focusExponent = 0.0f;
 		sphere.volumetricRadianceScale = 1.0f;
 
@@ -190,7 +277,7 @@ namespace comp
 		info.pNext = &sphere;
 		info.hash = shared::utils::string_hash64(std::format("carma2-streetlight-{}-{:x}",
 			m_generation, reinterpret_cast<uintptr_t>(actor)));
-		info.radiance = { s.colour[0] * radiance, s.colour[1] * radiance, s.colour[2] * radiance };
+		info.radiance = { colour[0] * radiance, colour[1] * radiance, colour[2] * radiance };
 		info.isDynamic = TRUE;
 
 		remixapi_LightHandle handle = l.handle;
@@ -205,34 +292,42 @@ namespace comp
 			return;
 		}
 		l.handle = handle;
+		l.shown = shown;
 	}
 
 	void street_lights::on_race_frame(const bool night)
 	{
-		m_lit = 0;
-		const bool lit = night && m_settings.enabled && m_settings.brightness > 0.0f && remix_lights_available();
+		m_lit_lamps = 0;
+		m_lit_signals = 0;
 
-		if (lit)
+		if (night && remix_lights_available())
 		{
-			// Every lamp is described again when a setting changes; otherwise each is only
-			// drawn, which is what keeps it in this frame.
+			// A lamp is described again when a setting changes, when it moves, and when a
+			// signal changes aspect; otherwise it is only drawn, which keeps it in this frame.
 			const bool changed = !(m_described == m_settings);
 			const auto& bridge = shared::common::remix_api::get().m_bridge;
+			const double seconds = seconds_now();
 
 			for (auto& [actor, l] : m_lamps)
 			{
-				if (!l.drawn) {
+				const bool signal = l.kind->style == lamp_style::signal;
+				const bool wanted = signal
+					? m_settings.signals && m_settings.signal_brightness > 0.0f
+					: m_settings.enabled && m_settings.brightness > 0.0f;
+				if (!l.drawn || !wanted) {
 					continue;
 				}
-				if (changed || l.placed || !l.handle)
+
+				const aspect shown = aspect_of(l, seconds);
+				if (changed || l.placed || !l.handle || shown != l.shown)
 				{
-					describe(actor, l);
+					describe(actor, l, shown);
 					l.placed = false;
 				}
 				if (l.handle)
 				{
 					bridge.DrawLightInstance(l.handle);
-					++m_lit;
+					++(signal ? m_lit_signals : m_lit_lamps);
 				}
 			}
 			m_described = m_settings;
@@ -274,15 +369,27 @@ namespace comp
 		settings& s = m_settings;
 
 		ImGui::Checkbox("Street lights at night", &s.enabled);
-		ImGui::TextDisabled("%u lamp(s) lit, %u known on this track", m_lit, static_cast<uint32_t>(m_lamps.size()));
+		ImGui::TextDisabled("%u lamp(s) and %u traffic light(s) lit, %u known on this track",
+			m_lit_lamps, m_lit_signals, static_cast<uint32_t>(m_lamps.size()));
 		ImGui::TextWrapped("A light under every street lamp's head in the night races. "
 			"A lamp is about 1.4 units tall; the cone spreads down from its head.");
 
 		ImGui::ColorEdit3("Lamp colour", s.colour);
-		ImGui::SliderFloat("Lamp brightness", &s.brightness, 0.5f, 2000.0f, "%.1f", ImGuiSliderFlags_Logarithmic);
+		ImGui::SliderFloat("Lamp brightness", &s.brightness, 0.05f, 2000.0f, "%.2f", ImGuiSliderFlags_Logarithmic);
 		ImGui::SliderFloat("Lamp emitter radius", &s.emitter_radius, 0.005f, 0.2f, "%.3f units", ImGuiSliderFlags_Logarithmic);
 		ImGui::SliderFloat("Lamp cone angle", &s.cone_angle, 10.0f, 90.0f, "%.1f deg");
 		ImGui::SliderFloat("Lamp cone softness", &s.cone_softness, 0.0f, 1.0f, "%.2f");
+
+		ImGui::Spacing();
+		ImGui::Checkbox("Traffic lights at night", &s.signals);
+		ImGui::TextWrapped("A faint light in front of the lit lens of every traffic light, cycling green, amber, "
+			"red. Signals facing across each other run opposite phases.");
+		ImGui::SliderFloat("Signal brightness", &s.signal_brightness, 0.01f, 100.0f, "%.2f", ImGuiSliderFlags_Logarithmic);
+		ImGui::SliderFloat("Signal emitter radius", &s.signal_radius, 0.002f, 0.05f, "%.3f units", ImGuiSliderFlags_Logarithmic);
+		ImGui::SliderFloat("Signal cone angle", &s.signal_cone_angle, 10.0f, 90.0f, "%.1f deg");
+		ImGui::SliderFloat("Signal cone softness", &s.signal_cone_softness, 0.0f, 1.0f, "%.2f");
+		ImGui::SliderFloat("Green", &s.green_seconds, 1.0f, 60.0f, "%.1f s");
+		ImGui::SliderFloat("Amber", &s.amber_seconds, 0.5f, 10.0f, "%.1f s");
 
 		ImGui::Spacing();
 		const bool dirty = !(m_settings == m_saved);

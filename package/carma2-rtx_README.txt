@@ -67,7 +67,8 @@ Each race's sky sets its time of day: day, overcast, dusk, fog or night. On NVID
 RTX Remix the proxy draws a sky from the race's own horizon texture and sets its sun to
 match. On Remix Plus the runtime's physical sky is used instead, with its sun placed the
 same way and its clouds and haze matched to what each race's sky texture shows. In the night races the sun sits just below the horizon, every car's headlights
-come on, and the city's street lamps light up. The F4 menu's Sun tab has a "Time of day
+come on, the city's street lamps light up, and its traffic lights cycle green, amber
+and red. The F4 menu's Sun tab has a "Time of day
 per race" switch that puts the standard sun back on every race.
 
 
