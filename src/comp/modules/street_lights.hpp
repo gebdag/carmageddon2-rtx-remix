@@ -41,6 +41,10 @@ namespace comp
 			float signal_cone_angle = 40.0f;
 			float signal_cone_softness = 0.5f;
 			float signal_position[3] = { 0.0f, 1.0f, 0.755f };   // model space: just under the head
+
+			// A small light in front of the lit lens itself, so the lens lights the head around it.
+			float signal_lens_brightness = 0.05f;
+			float signal_lens_radius = 0.008f;
 			float green_seconds = 8.0f;
 			float amber_seconds = 3.0f;
 
@@ -59,6 +63,11 @@ namespace comp
 		void on_frame_without_race();
 
 		void draw_menu();
+
+		// What the lens of the signal drawn by `actor` shows now: 1 red, 2 amber, 3 green, or
+		// 0 when the actor is not a traffic light. Signals cycle day and night; only their
+		// Remix lights are kept for the night races.
+		int signal_lens(const game::br_actor* actor) const;
 
 		enum class lamp_style : uint8_t
 		{
@@ -88,6 +97,8 @@ namespace comp
 		{
 			const lamp_kind* kind = nullptr;
 			remixapi_LightHandle handle = nullptr;
+			remixapi_LightHandle lens_handle = nullptr;   // signals: the light at the lit lens
+			uint32_t lens_incarnation = 0;                // as incarnation, for the lens light
 			game::br_matrix34 model_to_world{};
 			uint32_t incarnation = 0;   // part of the hash, bumped when its light is destroyed
 			aspect shown = aspect::lit;
@@ -98,7 +109,12 @@ namespace comp
 		const lamp_kind* kind_of(const game::br_model* model);
 		aspect aspect_of(const lamp& l, double seconds) const;
 		void describe(const game::br_actor* actor, lamp& l, aspect shown);
+		void describe_lens(const game::br_actor* actor, lamp& l, aspect shown);
+		bool create_light(uint64_t hash, const float position[3], const float direction[3], float radius,
+			const float colour[3], float brightness, float cone_angle, float cone_softness,
+			remixapi_LightHandle& handle);
 		void put_out(lamp& l);
+		void put_out_lens(lamp& l);
 		void destroy_all();
 		void load();
 		void save();

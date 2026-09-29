@@ -138,7 +138,55 @@ namespace comp::game
 				.model = model,
 				.is_player = is_player,
 				.knackered = *reinterpret_cast<const int*>(field(CAR_KNACKERED)) != 0,
+				.civilian = false,
 			});
+		}
+
+		bool is_road_car_form(const uint8_t* form)
+		{
+			if (!can_read(form, DRONE_FORM_SIZE)) {
+				return false;
+			}
+			return *reinterpret_cast<const int*>(form + DRONE_FORM_TYPE) == DRONE_TYPE_CAR
+				&& *reinterpret_cast<const float*>(form + DRONE_FORM_CONSTANT_SPEED) < 0.0f
+				&& !(*reinterpret_cast<const int*>(form + DRONE_FORM_FLAGS) & DRONE_FORM_FLAG_ALWAYS);
+		}
+
+		void append_civilian_cars(std::vector<race_car>& out)
+		{
+			const int count = *reinterpret_cast<const int*>(rebase(ADDR_g_num_drones));
+			const auto specs = *reinterpret_cast<const uint8_t* const*>(rebase(ADDR_g_drone_specs));
+			if (count <= 0 || count > static_cast<int>(MAX_DRONES)
+				|| !can_read(specs, static_cast<size_t>(count) * DRONE_SPEC_STRIDE))
+			{
+				return;
+			}
+
+			for (int i = 0; i < count; ++i)
+			{
+				const uint8_t* spec = specs + i * DRONE_SPEC_STRIDE;
+				if (!is_road_car_form(*reinterpret_cast<const uint8_t* const*>(spec + DRONE_SPEC_FORM))) {
+					continue;
+				}
+
+				const auto master = *reinterpret_cast<const br_actor* const*>(spec + DRONE_SPEC_ACTOR);
+				if (!can_read(master, sizeof(br_actor))) {
+					continue;
+				}
+				auto model = *reinterpret_cast<const br_actor* const*>(spec + DRONE_SPEC_MODEL_ACTOR);
+				if (!can_read(model, sizeof(br_actor))) {
+					model = nullptr;
+				}
+
+				out.push_back({
+					.spec = spec,
+					.master = master,
+					.model = model,
+					.is_player = false,
+					.knackered = false,
+					.civilian = true,
+				});
+			}
 		}
 
 		void append_opponent_specs(std::vector<race_car>& out, const uint32_t array_addr, const uint32_t count_addr)
@@ -168,6 +216,7 @@ namespace comp::game
 		append_car(out, reinterpret_cast<const void*>(rebase(ADDR_g_player_car)), true);
 		append_opponent_specs(out, ADDR_g_opponents, ADDR_g_num_opponents);
 		append_opponent_specs(out, ADDR_g_cops, ADDR_g_num_cops);
+		append_civilian_cars(out);
 	}
 
 	horizon_settings read_horizon()
@@ -235,6 +284,58 @@ namespace comp::game
 		}
 
 		return fog;
+	}
+
+	uint8_t funk_light_roles(const br_material* material)
+	{
+		const auto slots = *reinterpret_cast<const uint8_t* const*>(rebase(ADDR_g_funk_slots));
+		const int count = *reinterpret_cast<const int*>(rebase(ADDR_g_funk_slot_count));
+		if (!material || count <= 0 || !can_read(slots, static_cast<size_t>(count) * FUNK_SLOT_STRIDE)) {
+			return 0;
+		}
+
+		uint8_t roles = 0;
+		for (int i = 0; i < count; ++i)
+		{
+			const uint8_t* slot = slots + static_cast<size_t>(i) * FUNK_SLOT_STRIDE;
+			if (*reinterpret_cast<const int*>(slot + FUNK_SLOT_OWNER) == FUNK_OWNER_FREE
+				|| *reinterpret_cast<const br_material* const*>(slot + FUNK_SLOT_MATERIAL) != material
+				|| *reinterpret_cast<const int*>(slot + FUNK_SLOT_SPEED_MODE) != FUNK_SPEED_TEXTUREBITS) {
+				continue;
+			}
+
+			const auto spec = *reinterpret_cast<const uint8_t* const*>(slot + FUNK_SLOT_BIT_SPEC);
+			if (!can_read(spec, 1) || !can_read(spec, 1u + spec[0])) {
+				continue;
+			}
+			for (uint8_t letter = 0; letter < spec[0]; ++letter)
+			{
+				if (spec[1 + letter] == FUNK_LETTER_BRAKE) { roles |= LIGHT_ROLE_BRAKE; }
+				if (spec[1 + letter] == FUNK_LETTER_REVERSE) { roles |= LIGHT_ROLE_REVERSE; }
+			}
+		}
+		return roles;
+	}
+
+	bool funk_lamp_intact(const br_material* material)
+	{
+		const auto slots = *reinterpret_cast<const uint8_t* const*>(rebase(ADDR_g_funk_slots));
+		const int count = *reinterpret_cast<const int*>(rebase(ADDR_g_funk_slot_count));
+		if (!material || count <= 0 || !can_read(slots, static_cast<size_t>(count) * FUNK_SLOT_STRIDE)) {
+			return true;
+		}
+
+		for (int i = 0; i < count; ++i)
+		{
+			const uint8_t* slot = slots + static_cast<size_t>(i) * FUNK_SLOT_STRIDE;
+			if (*reinterpret_cast<const int*>(slot + FUNK_SLOT_OWNER) != FUNK_OWNER_FREE
+				&& *reinterpret_cast<const br_material* const*>(slot + FUNK_SLOT_MATERIAL) == material
+				&& *reinterpret_cast<const int*>(slot + FUNK_SLOT_SPEED_MODE) == FUNK_SPEED_TEXTUREBITS
+				&& *reinterpret_cast<const int*>(slot + FUNK_SLOT_DISABLE) != 0) {
+				return false;
+			}
+		}
+		return true;
 	}
 
 	bool show_headup_message(const char* text, const int lifetime_ms)

@@ -217,6 +217,8 @@ namespace comp
 		read_float("OtherCarsBrightness", s.other_brightness, 0.0f, 4.0f);
 		read_float("OtherCarsRange", s.other_range, 0.0f, 1000.0f);
 		s.wasted_stay_lit = read_bool("WastedStayLit", s.wasted_stay_lit);
+		read_float("CivilianCarsBrightness", s.civilian_brightness, 0.0f, 4.0f);
+		read_float("CivilianCarsRange", s.civilian_range, 0.0f, 1000.0f);
 
 		m_settings = s;
 		m_saved = s;
@@ -250,6 +252,8 @@ namespace comp
 		ok &= write("OtherCarsBrightness", number(s.other_brightness));
 		ok &= write("OtherCarsRange", number(s.other_range));
 		ok &= write("WastedStayLit", s.wasted_stay_lit ? "1" : "0");
+		ok &= write("CivilianCarsBrightness", number(s.civilian_brightness));
+		ok &= write("CivilianCarsRange", number(s.civilian_range));
 
 		if (ok)
 		{
@@ -345,6 +349,35 @@ namespace comp
 		return false;
 	}
 
+	bool headlights::lamp_mount(const game::race_car& car, const int side, const bool rear,
+		float position[3], float facing[3])
+	{
+		if (car.master->t_type > BR_TRANSFORM_MATRIX34_LP) {
+			return false;
+		}
+		const car_bounds* bounds = measure(car);
+		if (!bounds) {
+			return false;
+		}
+
+		const settings& s = m_settings;
+		const float sign = side == 0 ? -1.0f : 1.0f;
+		const float centre_x = 0.5f * (bounds->min[0] + bounds->max[0]);
+		const float half_width = 0.5f * (bounds->max[0] - bounds->min[0]);
+
+		// A car faces down its local -Z: the front face of the box is min z, the back max z.
+		const float local_pos[3] = {
+			centre_x + sign * s.spacing * half_width,
+			bounds->min[1] + s.height * (bounds->max[1] - bounds->min[1]),
+			rear ? bounds->max[2] + s.forward : bounds->min[2] - s.forward,
+		};
+		const float local_dir[3] = { 0.0f, 0.0f, rear ? 1.0f : -1.0f };
+
+		transform_point(car.master->t, local_pos, position);
+		transform_direction(car.master->t, local_dir, facing);
+		return true;
+	}
+
 	const headlights::car_bounds* headlights::measure(const game::race_car& car)
 	{
 		auto& cached = m_bounds[car.spec];
@@ -425,19 +458,20 @@ namespace comp
 		sphere.volumetricRadianceScale = s.volumetric_scale;
 
 		const uint64_t key = lamp_key(car.spec, side);
+		lamp& l = m_lamps[key];
 
+		// Remix Plus applies a destroy one scene frame late, so a lamp that went out and comes
+		// back takes a new incarnation rather than its old hash.
 		remixapi_LightInfo info{};
 		info.sType = REMIXAPI_STRUCT_TYPE_LIGHT_INFO;
 		info.pNext = &sphere;
-		info.hash = shared::utils::string_hash64(std::format("carma2-headlight-{:x}", key));
+		info.hash = shared::utils::string_hash64(std::format("carma2-headlight-{:x}-{}", key, l.incarnation));
 		info.radiance = { s.colour[0] * radiance, s.colour[1] * radiance, s.colour[2] * radiance };
 
 		// Remix puts a light it takes for static to sleep; a lamp on a parked car would be one.
 		info.isDynamic = TRUE;
 
 		const auto& bridge = shared::common::remix_api::get().m_bridge;
-		lamp& l = m_lamps[key];
-
 		remixapi_LightHandle handle = l.handle;
 		if (bridge.CreateLight(&info, &handle) != REMIXAPI_ERROR_CODE_SUCCESS)
 		{
@@ -509,6 +543,10 @@ namespace comp
 				continue;
 			}
 
+			// Its lights are on: the lens shows lit at any distance, even where the Remix
+			// light is left out for range.
+			m_lit_masters.insert(car.master);
+
 			float brightness = m_settings.brightness;
 			if (!car.is_player)
 			{
@@ -517,10 +555,10 @@ namespace comp
 					car.master->t.m[3][1] - camera_pos[1],
 					car.master->t.m[3][2] - camera_pos[2],
 				};
-				if (length(to_car) > m_settings.other_range) {
+				if (length(to_car) > (car.civilian ? m_settings.civilian_range : m_settings.other_range)) {
 					continue;
 				}
-				brightness *= m_settings.other_brightness;
+				brightness *= car.civilian ? m_settings.civilian_brightness : m_settings.other_brightness;
 			}
 
 			if (!(brightness > 0.0f)) {
@@ -543,22 +581,20 @@ namespace comp
 
 			describe_lamp(car, *bounds, 0, brightness);
 			describe_lamp(car, *bounds, 1, brightness);
-			m_lit_masters.insert(car.master);
 			++m_lit_cars;
 		}
 
+		// Lamps stay in the map while the race lasts so their incarnation survives going out.
 		const auto& bridge = shared::common::remix_api::get().m_bridge;
-		std::erase_if(m_lamps, [&bridge](auto& entry)
+		for (auto& [key, l] : m_lamps)
 		{
-			lamp& l = entry.second;
-			if (l.drawn_this_frame) {
-				return false;
-			}
-			if (l.handle) {
+			if (!l.drawn_this_frame && l.handle)
+			{
 				bridge.DestroyLight(l.handle);
+				l.handle = nullptr;
+				++l.incarnation;
 			}
-			return true;
-		});
+		}
 	}
 
 	void headlights::on_frame_without_race()
@@ -600,7 +636,7 @@ namespace comp
 		else
 		{
 			ImGui::TextDisabled("%s: %u car(s) lit, %u Remix light(s)", shared::common::remix_api::runtime(),
-				m_lit_cars, static_cast<uint32_t>(m_lamps.size()));
+				m_lit_cars, static_cast<uint32_t>(std::ranges::count_if(m_lamps, [](const auto& e) { return e.second.handle != nullptr; })));
 			if (m_mode != mode::off) {
 				ImGui::TextDisabled("Player car: %s", m_player_status.c_str());
 			}
@@ -653,6 +689,13 @@ namespace comp
 			ImGui::SliderFloat("Brightness scale", &s.other_brightness, 0.0f, 2.0f, "%.2f");
 			ImGui::SliderFloat("Range from camera", &s.other_range, 1.0f, 100.0f, "%.1f units", ImGuiSliderFlags_Logarithmic);
 			ImGui::Checkbox("Wasted cars stay lit", &s.wasted_stay_lit);
+		}
+
+		if (ImGui::CollapsingHeader("Civilian cars", ImGuiTreeNodeFlags_DefaultOpen))
+		{
+			ImGui::TextDisabled("City traffic, lit in 'All cars' mode. The game only draws the few nearest the camera.");
+			ImGui::SliderFloat("Civilian brightness scale", &s.civilian_brightness, 0.0f, 2.0f, "%.2f");
+			ImGui::SliderFloat("Civilian range from camera", &s.civilian_range, 1.0f, 100.0f, "%.1f units", ImGuiSliderFlags_Logarithmic);
 		}
 
 		ImGui::Spacing();

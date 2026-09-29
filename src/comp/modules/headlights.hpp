@@ -52,7 +52,7 @@ namespace comp
 
 			// lamp
 			float colour[3] = { 1.0f, 0.93f, 0.80f };
-			float brightness = 4.0f;        // radiance times emitter area, so the radius only softens shadows
+			float brightness = 2.0f;        // radiance times emitter area, so the radius only softens shadows
 			float emitter_radius = 0.012f;  // world units; a car is roughly 0.4 wide
 			float volumetric_scale = 1.0f;
 
@@ -60,6 +60,10 @@ namespace comp
 			float other_brightness = 1.0f;  // scale on brightness for cars that are not the player's
 			float other_range = 12.0f;      // world units from the camera beyond which other cars stay dark
 			bool wasted_stay_lit = false;
+
+			// civilian traffic (the drones), in 'all cars' mode; the game draws only those near the camera
+			float civilian_brightness = 0.35f;  // scale on brightness
+			float civilian_range = 20.0f;       // world units from the camera
 
 			bool operator==(const settings&) const = default;
 		};
@@ -75,6 +79,11 @@ namespace comp
 
 		// Whether `actor` is part of a car whose headlights were on at the last race frame.
 		bool lights_actor(const game::br_actor* actor) const;
+
+		// Where a lamp sits on `car` by the beam placement: the front corners (side 0 left,
+		// 1 right) facing forward, or with `rear` the matching points at the back facing
+		// back. World space. False when the car cannot be measured.
+		bool lamp_mount(const game::race_car& car, int side, bool rear, float position[3], float facing[3]);
 
 		// A night race turns every car's lights on; the mode from before comes back when it
 		// ends, unless the player changed it in between.
@@ -98,6 +107,7 @@ namespace comp
 		struct lamp
 		{
 			remixapi_LightHandle handle = nullptr;
+			uint32_t incarnation = 0;   // part of the hash, bumped when its light is destroyed
 			bool drawn_this_frame = false;
 		};
 

@@ -148,6 +148,11 @@ namespace shared::common
 			// headlights are on, each is drawn with a lit copy instead: the same image with
 			// the lowest blue bit of its first texel flipped, which gives it a hash of its
 			// own for a mod to replace with a glowing version. Unlit, the original draws.
+			// Pixelmap names of traffic-light lenses. Each signal draws its lens with the copy
+			// for what it shows: bit 0, 1 or both of the first texel flipped for red, amber
+			// and green, three hashes a mod can give three lit versions.
+			std::vector<std::string> signal_textures = { "trafficl" };
+
 			std::vector<std::string> headlight_textures = { "eheadlig", "eheadligv", "eheadligb", "eheadligz", "eheadligc", "eheadligg", "eheadligx", "eheadligl", "eheadligi", "eheadligp", "eheadligw", "eheadligy", "frlite", "bghlite", "mehlite", "dfhlite", "fahlte", "rzhlte", "slhlte", "smhlite", "zehlte", "wbhlite", "mbhlit", "tbflit", "clightsh", "fordligh", "cerlight", "bdlit", "hlights", "hindicat", "vlights", "volight" };
 		} lights;
 

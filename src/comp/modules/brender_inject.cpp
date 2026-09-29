@@ -7,6 +7,7 @@
 #include "sun.hpp"
 #include "time_of_day.hpp"
 #include "street_lights.hpp"
+#include "lens_lights.hpp"
 #include "shared/common/config.hpp"
 #include "shared/common/ffp_state.hpp"
 #include "shared/common/remix_api.hpp"
@@ -1139,7 +1140,7 @@ namespace comp
 		for (auto& [pm, cached] : m_glass_frames) {
 			if (cached.texture) { cached.texture->Release(); }
 		}
-		for (auto& [pm, cached] : m_lit_textures) {
+		for (auto& [key, cached] : m_lens_textures) {
 			if (cached.texture) { cached.texture->Release(); }
 		}
 		if (m_no_frame_texture) { m_no_frame_texture->Release(); }
@@ -1379,6 +1380,7 @@ namespace comp
 			geometry.index_buffer->Unlock();
 		}
 
+		find_lamps(parts, vertices, indices, fallback_material);
 		geometry.parts = std::move(parts);
 		geometry.vertex_count = static_cast<uint32_t>(vertices.size());
 
@@ -1459,7 +1461,7 @@ namespace comp
 	 * Runs inside BrZbModelRender, where every material involved is necessarily alive.
 	 * Submit works off the records left behind and never touches the game's memory.
 	 */
-	void brender_inject::resolve_draw_state(IDirect3DDevice9* dev, const model_geometry& geometry, const bool lit,
+	void brender_inject::resolve_draw_state(IDirect3DDevice9* dev, const model_geometry& geometry, const lens_state lens,
 		game::br_material* fallback_material, queued_model& queued)
 	{
 		const auto& effects = shared::common::config::get().effects;
@@ -1491,7 +1493,7 @@ namespace comp
 				}
 				else
 				{
-					IDirect3DTexture9* texture = lit ? lit_texture_for(dev, material) : nullptr;
+					IDirect3DTexture9* texture = lens != lens_state::plain ? lens_texture_for(dev, material, lens) : nullptr;
 					if (!texture) {
 						texture = texture_for(dev, material);
 					}
@@ -2030,17 +2032,188 @@ namespace comp
 
 	// The two things about an actor that follow from its model rather than from what it is
 	// doing: which chunks it may join, and whether it may join any at all.
-	bool brender_inject::on_race_car(const game::br_actor* actor) const
+	const game::br_actor* brender_inject::race_car_master(const game::br_actor* actor) const
 	{
 		// A car is a handful of levels deep: master, the loaded .ACT, its parts.
 		constexpr int MAX_DEPTH = 16;
 		for (int depth = 0; actor && depth < MAX_DEPTH; ++depth, actor = actor->parent)
 		{
 			if (m_car_masters.contains(actor)) {
-				return true;
+				return actor;
 			}
 		}
-		return false;
+		return nullptr;
+	}
+
+	/*
+	 * The lamps of a model's lens runs: runs drawn with a headlight texture ([Lights]
+	 * HeadlightTextures) or with a material the game shows the car's brake or reverse bit
+	 * through. A run usually carries both lamps of a pair, so its triangles are split into
+	 * connected pieces, one lamp each.
+	 */
+	void brender_inject::find_lamps(std::vector<geometry_part>& parts, const std::vector<ffp_vertex>& vertices,
+		const std::vector<uint32_t>& indices, game::br_material* fallback_material) const
+	{
+		constexpr size_t MAX_LAMPS_PER_RUN = 8;
+		const auto& heads = shared::common::config::get().lights.headlight_textures;
+
+		for (auto& part : parts)
+		{
+			if (part.glass_frame || part.triangle_count == 0) {
+				continue;
+			}
+			game::br_material* material = part.inherits_material ? fallback_material : part.material;
+			if (!material || !readable(material, sizeof(game::br_material))) {
+				continue;
+			}
+
+			uint8_t roles = 0;
+			const auto pm = static_cast<const game::br_pixelmap*>(material->colour_map);
+			if (pm && readable(pm, sizeof(*pm)) && pm->identifier && readable(pm->identifier, 1)
+				&& std::any_of(heads.begin(), heads.end(), [pm](const std::string& name) {
+					return _stricmp(name.c_str(), pm->identifier) == 0;
+				})) {
+				roles |= 1;
+			}
+			const uint8_t funk = game::funk_light_roles(material);
+			if (funk & game::LIGHT_ROLE_BRAKE) { roles |= 2; }
+			if (funk & game::LIGHT_ROLE_REVERSE) { roles |= 4; }
+			if (!roles) {
+				continue;
+			}
+
+			// Connected pieces, joined through shared vertices of the run.
+			const uint32_t first = part.index_start;
+			const uint32_t count = part.triangle_count * 3;
+			std::unordered_map<uint32_t, uint32_t> parent;
+			const std::function<uint32_t(uint32_t)> root = [&](uint32_t v) {
+				while (parent[v] != v) { v = parent[v] = parent[parent[v]]; }
+				return v;
+			};
+			for (uint32_t i = 0; i < count; ++i) {
+				parent.try_emplace(indices[first + i], indices[first + i]);
+			}
+			for (uint32_t t = 0; t < count; t += 3)
+			{
+				const uint32_t a = root(indices[first + t]);
+				parent[root(indices[first + t + 1])] = a;
+				parent[root(indices[first + t + 2])] = a;
+			}
+
+			struct accum { float area = 0, p[3] = {}, n[3] = {}; };
+			std::unordered_map<uint32_t, accum> pieces;
+			for (uint32_t t = 0; t < count; t += 3)
+			{
+				const ffp_vertex& v0 = vertices[indices[first + t]];
+				const ffp_vertex& v1 = vertices[indices[first + t + 1]];
+				const ffp_vertex& v2 = vertices[indices[first + t + 2]];
+				const float e1[3] = { v1.x - v0.x, v1.y - v0.y, v1.z - v0.z };
+				const float e2[3] = { v2.x - v0.x, v2.y - v0.y, v2.z - v0.z };
+				float n[3];
+				cross(e1, e2, n);
+				const float area = 0.5f * std::sqrt(n[0] * n[0] + n[1] * n[1] + n[2] * n[2]);
+				if (!(area > 0.0f)) {
+					continue;
+				}
+				// The facing comes from the vertex normals, which point out of the model whatever
+				// the winding; the cross product only measures the area.
+				accum& piece = pieces[root(indices[first + t])];
+				piece.area += area;
+				const float c[3] = { (v0.x + v1.x + v2.x) / 3, (v0.y + v1.y + v2.y) / 3, (v0.z + v1.z + v2.z) / 3 };
+				const float vn[3] = { v0.nx + v1.nx + v2.nx, v0.ny + v1.ny + v2.ny, v0.nz + v1.nz + v2.nz };
+				for (int i = 0; i < 3; ++i)
+				{
+					piece.p[i] += c[i] * area;
+					piece.n[i] += vn[i] * area;
+				}
+			}
+
+			std::vector<accum> sorted;
+			for (auto& [key, piece] : pieces) { sorted.push_back(piece); }
+			std::sort(sorted.begin(), sorted.end(), [](const accum& a, const accum& b) { return a.area > b.area; });
+			if (sorted.size() > MAX_LAMPS_PER_RUN) {
+				sorted.resize(MAX_LAMPS_PER_RUN);
+			}
+
+			for (const auto& piece : sorted)
+			{
+				geometry_part::lamp_spot spot{};
+				for (int i = 0; i < 3; ++i)
+				{
+					spot.position[i] = piece.p[i] / piece.area;
+					spot.facing[i] = piece.n[i];
+				}
+				part.lamps.push_back(spot);
+			}
+			part.lamp_roles = roles;
+			part.lamp_material = material;
+		}
+	}
+
+	/*
+	 * Which of a lamp run's roles still work. A smashed lamp keeps its geometry but shows its
+	 * damage texture: a headlight's material stops showing a headlight texture, and a brake or
+	 * reverse material's funk slot is disabled.
+	 */
+	uint8_t brender_inject::intact_lamp_roles(const geometry_part& part) const
+	{
+		const game::br_material* material = part.lamp_material;
+		if (!material || !readable(material, sizeof(game::br_material))) {
+			return 0;
+		}
+
+		uint8_t intact = part.lamp_roles & 6;
+		if ((intact & 6) && !game::funk_lamp_intact(material)) {
+			intact = 0;
+		}
+
+		if (part.lamp_roles & 1)
+		{
+			const auto& heads = shared::common::config::get().lights.headlight_textures;
+			const auto pm = static_cast<const game::br_pixelmap*>(material->colour_map);
+			if (pm && readable(pm, sizeof(*pm)) && pm->identifier && readable(pm->identifier, 1)
+				&& std::any_of(heads.begin(), heads.end(), [pm](const std::string& name) {
+					return _stricmp(name.c_str(), pm->identifier) == 0;
+				})) {
+				intact |= 1;
+			}
+		}
+		return intact;
+	}
+
+	void brender_inject::report_lamps(const game::br_actor* master, const game::br_model* model,
+		const model_geometry& geometry, const game::br_matrix34& model_to_world) const
+	{
+		const auto lens = lens_lights::get();
+		if (!lens) {
+			return;
+		}
+
+		for (size_t p = 0; p < geometry.parts.size(); ++p)
+		{
+			const auto& part = geometry.parts[p];
+			if (part.lamps.empty()) {
+				continue;
+			}
+			const uint8_t intact = intact_lamp_roles(part);
+			for (size_t i = 0; i < part.lamps.size(); ++i)
+			{
+				const auto& spot = part.lamps[i];
+				float position[3], facing[3];
+				for (int c = 0; c < 3; ++c)
+				{
+					position[c] = spot.position[0] * model_to_world.m[0][c] + spot.position[1] * model_to_world.m[1][c]
+						+ spot.position[2] * model_to_world.m[2][c] + model_to_world.m[3][c];
+					facing[c] = spot.facing[0] * model_to_world.m[0][c] + spot.facing[1] * model_to_world.m[1][c]
+						+ spot.facing[2] * model_to_world.m[2][c];
+				}
+				const uint64_t id = (static_cast<uint64_t>(reinterpret_cast<uintptr_t>(model)) << 16)
+					^ (static_cast<uint64_t>(p) << 4) ^ i;
+				if (part.lamp_roles & 1) { lens->note(master, lens_lights::role::head, id, position, facing, intact & 1); }
+				if (part.lamp_roles & 2) { lens->note(master, lens_lights::role::brake, id, position, facing, intact & 2); }
+				if (part.lamp_roles & 4) { lens->note(master, lens_lights::role::reverse, id, position, facing, intact & 4); }
+			}
+		}
 	}
 
 	void brender_inject::classify_actor(actor_record& record, const game::br_actor* actor,
@@ -2124,6 +2297,7 @@ namespace comp
 		// pools and every model that failed extraction off the per-frame hashing path.
 		if (!record.bakeable) {
 			return record.vehicle ? dynamic_reason::vehicle
+				: record.signal ? dynamic_reason::signal
 				: record.bakes ? dynamic_reason::unbakeable : dynamic_reason::vanishing;
 		}
 
@@ -2157,6 +2331,19 @@ namespace comp
 			record.bakeable = false;
 			record.vehicle = true;
 			return dynamic_reason::vehicle;
+		}
+
+		// A traffic light's lens is drawn with the copy for what it shows, per signal, and all
+		// of them share one texture: baked, they would all show the same.
+		if (!record.baked && record.sightings + 1 >= settle)
+		{
+			const auto lamps = street_lights::get();
+			if (lamps && lamps->signal_lens(actor) != 0)
+			{
+				record.bakeable = false;
+				record.signal = true;
+				return dynamic_reason::signal;
+			}
 		}
 
 		if (!record.baked && ++record.sightings >= settle)
@@ -2474,6 +2661,9 @@ namespace comp
 		if (const auto lamps = street_lights::get(); lamps) {
 			lamps->on_frame_without_race();
 		}
+		if (const auto lens = lens_lights::get(); lens) {
+			lens->on_frame_without_race();
+		}
 
 		// Whatever camera the race was measured against is finished with. Keeping it would
 		// let a recycled camera pointer in the next track pass for the race view, and the
@@ -2536,11 +2726,11 @@ namespace comp
 		}
 		m_glass_frames.clear();
 
-		for (auto& [pixelmap, cached] : m_lit_textures)
+		for (auto& [key, cached] : m_lens_textures)
 		{
 			if (cached.texture) { cached.texture->Release(); }
 		}
-		m_lit_textures.clear();
+		m_lens_textures.clear();
 
 		// m_materials keeps what it has: the loader taught it this track's stored tokens on
 		// the way in, and nothing re-teaches them once the race is running. The flat and
@@ -2781,6 +2971,10 @@ namespace comp
 		// The queue held pointers into these until the previous scene submitted.
 		m_transient_used = 0;
 
+		if (const auto lens = lens_lights::get(); lens) {
+			lens->begin_scene();
+		}
+
 		game::collect_race_cars(m_race_cars);
 		m_car_masters.clear();
 		for (const auto& car : m_race_cars) {
@@ -2945,12 +3139,29 @@ namespace comp
 			return false;
 		}
 
-		const auto lights = headlights::get();
-		const bool lit = race_scene && actor && lights && lights->lights_actor(actor);
-		resolve_draw_state(dev, *geometry, lit, fallback_material, queued);
+		lens_state lens = lens_state::plain;
+		if (race_scene && actor)
+		{
+			const auto lights = headlights::get();
+			const auto lamps = street_lights::get();
+			if (lights && lights->lights_actor(actor)) {
+				lens = lens_state::lit;
+			}
+			else if (const int signal = lamps ? lamps->signal_lens(actor) : 0; signal != 0) {
+				lens = static_cast<lens_state>(static_cast<int>(lens_state::lit) + signal);
+			}
+		}
+		resolve_draw_state(dev, *geometry, lens, fallback_material, queued);
 		geometry->queued_scene = m_scene_walks;
 		queued.geometry = geometry;
 		m_queue.push_back(queued);
+
+		if (race_scene && actor)
+		{
+			if (const auto master = race_car_master(actor); master) {
+				report_lamps(master, model, *geometry, model_to_world);
+			}
+		}
 
 		/*
 		 * The game's render of a dynamic model is the raster twin of what was just queued:
@@ -3158,6 +3369,9 @@ namespace comp
 		}
 		if (const auto lamps = street_lights::get(); lamps) {
 			lamps->on_race_frame(mood && mood->is_night());
+		}
+		if (const auto lens = lens_lights::get(); lens) {
+			lens->on_race_frame(m_view_inverse.m[3]);
 		}
 
 		if (m_in_frontend) {
@@ -4040,6 +4254,7 @@ namespace comp
 		case dynamic_reason::callback:   return "callback";
 		case dynamic_reason::vanishing:  return "vanishing";
 		case dynamic_reason::vehicle:    return "vehicle";
+		case dynamic_reason::signal:     return "signal";
 		case dynamic_reason::instanced:  return "instanced";
 		case dynamic_reason::unbakeable: return "unbakeable";
 		case dynamic_reason::moving:     return "moving";
@@ -4304,14 +4519,15 @@ namespace comp
 	}
 
 	/*
-	 * A headlight lens's lit copy, when the material's texture is on the list.
+	 * A lens texture's copy for one state, when the material's texture is a lens of that kind.
 	 *
-	 * The copy is the game's image with the lowest blue bit of its first texel flipped: no
-	 * visible change, but Remix hashes the upload, so it gets a hash of its own. A mod
-	 * gives that hash the glowing texture and emission, and leaves the original -- the lens
-	 * with the lights off -- as it is.
+	 * The copy is the game's image with low bits of its first texel's blue flipped: 1 for a
+	 * lit headlight and for a red signal, 2 for amber, 3 for green. No visible change, but
+	 * Remix hashes the upload, so each copy has a hash of its own. A mod gives those hashes
+	 * the glowing versions and leaves the original -- the lens that is off -- as it is.
 	 */
-	IDirect3DTexture9* brender_inject::lit_texture_for(IDirect3DDevice9* dev, const game::br_material* material)
+	IDirect3DTexture9* brender_inject::lens_texture_for(IDirect3DDevice9* dev, const game::br_material* material,
+		const lens_state lens)
 	{
 		if (!material || !material->colour_map) {
 			return nullptr;
@@ -4323,16 +4539,18 @@ namespace comp
 		}
 
 		const pixelmap_identity identity = identify(pm);
-		if (const auto it = m_lit_textures.find(pm); it != m_lit_textures.end())
+		const uint64_t key = static_cast<uint64_t>(reinterpret_cast<uintptr_t>(pm)) * 8 + static_cast<uint8_t>(lens);
+		if (const auto it = m_lens_textures.find(key); it != m_lens_textures.end())
 		{
 			if (it->second.identity == identity) {
 				return it->second.texture;
 			}
 			if (it->second.texture) { it->second.texture->Release(); }
-			m_lit_textures.erase(it);
+			m_lens_textures.erase(it);
 		}
 
-		const auto& names = shared::common::config::get().lights.headlight_textures;
+		const auto& lights = shared::common::config::get().lights;
+		const auto& names = lens == lens_state::lit ? lights.headlight_textures : lights.signal_textures;
 		const bool listed = pm->identifier && readable(pm->identifier, 1)
 			&& std::any_of(names.begin(), names.end(), [pm](const std::string& name) {
 				return _stricmp(name.c_str(), pm->identifier) == 0;
@@ -4342,11 +4560,11 @@ namespace comp
 		std::vector<uint32_t> argb;
 		if (listed && decode_pixelmap(pm, argb) && !argb.empty())
 		{
-			argb[0] ^= 1u;
+			argb[0] ^= lens == lens_state::lit ? 1u : static_cast<uint32_t>(lens) - static_cast<uint32_t>(lens_state::lit);
 			texture = upload_argb(dev, pm->width, pm->height, argb);
 		}
 
-		m_lit_textures[pm] = { texture, identity };
+		m_lens_textures[key] = { texture, identity };
 		return texture;
 	}
 

@@ -149,8 +149,30 @@ namespace comp::game
 	constexpr uint32_t ADDR_g_funk_slot_count = 0x0068B844u;  // int
 	constexpr uint32_t FUNK_SLOT_STRIDE = 0x158u;
 	constexpr uint32_t FUNK_SLOT_OWNER = 0x00u;               // int: FUNK_OWNER_FREE for an unused slot
+	constexpr uint32_t FUNK_SLOT_DISABLE = 0x04u;             // int flags: bit 0 smash damage, bit 1 net/powerup
 	constexpr uint32_t FUNK_SLOT_MATERIAL = 0x08u;            // br_material*
 	constexpr int FUNK_OWNER_FREE = -999;
+
+	// A texturebits funk (speed mode 6) picks its frame from the car's light bits; its bit
+	// spec lists the letters, as indices into "THBVLRF", one byte each after a count byte
+	// (findings 45).
+	constexpr uint32_t FUNK_SLOT_SPEED_MODE = 0x5Cu;          // int
+	constexpr uint32_t FUNK_SLOT_BIT_SPEC = 0x60u;            // uint8_t* spec
+	constexpr int FUNK_SPEED_TEXTUREBITS = 6;
+	constexpr uint8_t FUNK_LETTER_BRAKE = 2;                  // 'B'
+	constexpr uint8_t FUNK_LETTER_REVERSE = 3;                // 'V'
+
+	// Which car lights a material shows through a texturebits funk: bit 0 brake, bit 1
+	// reverse. 0 for any other material.
+	constexpr uint8_t LIGHT_ROLE_BRAKE = 1;
+	constexpr uint8_t LIGHT_ROLE_REVERSE = 2;
+	uint8_t funk_light_roles(const br_material* material);
+
+	// Whether the lamp a texturebits material shows still works. Smashing a car's lamp
+	// (SmashMaterialToLevel 0x004ED2B0) puts its damage texture on the material and disables
+	// the funk slot, so the lamp no longer follows the light bits; repairing it to level 0
+	// enables the slot again (findings 46).
+	bool funk_lamp_intact(const br_material* material);
 
 	typedef void(__cdecl* BrZbSceneRender_t)(br_actor* world, br_actor* camera, void* colour, void* depth);
 	typedef void(__cdecl* BrZbSceneRenderEnd_t)();
@@ -270,7 +292,32 @@ namespace comp::game
 	// actor is the loaded car .ACT, linked under the master with an identity transform.
 	constexpr uint32_t CAR_MASTER_ACTOR = 0x010u;           // br_actor*
 	constexpr uint32_t CAR_KNACKERED = 0x1D4u;              // int, set by KnackerThisCar (0x0043F5F0)
+	constexpr uint32_t CAR_LIGHT_BITS = 0x18CCu;            // int, UpdateCarLightBits (0x0041E5A0): bit 2 brake, bit 3 reverse
+	constexpr int CAR_LIGHT_BIT_BRAKE = 1 << 2;
+	constexpr int CAR_LIGHT_BIT_REVERSE = 1 << 3;
 	constexpr uint32_t CAR_MODEL_ACTOR = 0xE0Cu;            // br_actor*
+
+	/*
+	 * Civilian traffic: the drones (findings 67). A flat heap array, NULL between races and in
+	 * net games. Each drone's root actor is drone-to-world with no scale and faces local -Z like
+	 * a car; its render_style is NONE while the game is not drawing it, which is all but the
+	 * few nearest the camera. Road cars are CAR forms that follow their path at the path's own
+	 * speed (no constant speed) and are not 'always' rides: that leaves out the cable car,
+	 * roller coaster and log flume, which are CAR forms too.
+	 */
+	constexpr uint32_t ADDR_g_drone_specs = 0x00684504u;    // tDrone_spec* (heap)
+	constexpr uint32_t ADDR_g_num_drones = 0x006820D0u;     // int
+	constexpr uint32_t MAX_DRONES = 200u;
+	constexpr uint32_t DRONE_SPEC_STRIDE = 0x5D8u;
+	constexpr uint32_t DRONE_SPEC_FORM = 0x04u;             // tDrone_form*
+	constexpr uint32_t DRONE_SPEC_ACTOR = 0xECu;            // br_actor*, root, drone-to-world
+	constexpr uint32_t DRONE_SPEC_MODEL_ACTOR = 0xF0u;      // br_actor*, the <NAME>.ACT root
+	constexpr uint32_t DRONE_FORM_TYPE = 0x10u;             // int: 0 CAR, 1 PLANE, 2 TRAIN, 3 CHOPPER
+	constexpr uint32_t DRONE_FORM_CONSTANT_SPEED = 0x18u;   // float, < 0 when the path sets the speed
+	constexpr uint32_t DRONE_FORM_FLAGS = 0x2Cu;            // 1 smooth, 2 respawn, 4 always, 8 drivable, 0x10 vertical
+	constexpr uint32_t DRONE_FORM_SIZE = 0x30u;
+	constexpr int DRONE_TYPE_CAR = 0;
+	constexpr int DRONE_FORM_FLAG_ALWAYS = 4;
 
 	// gProgram_state.racing -- raised at the top of MainGameLoop (0x00492A5C), dropped on
 	// every way out of a race and for the length of the pause frontend (0x00494484).
@@ -283,10 +330,11 @@ namespace comp::game
 		const br_actor* model;      // may be null
 		bool is_player;
 		bool knackered;
+		bool civilian;              // a drone: `spec` is its tDrone_spec, which has no tCar_spec fields
 	};
 
 	// Every car in the race whose master actor can be read: the player first, then the
-	// opponents, then the cops. Empty outside a race.
+	// opponents, the cops, and the civilian road cars. Empty outside a race.
 	void collect_race_cars(std::vector<race_car>& out);
 
 	// Whether the whole span can be read without faulting. Game pointers that are only

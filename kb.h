@@ -1136,6 +1136,137 @@ $ 0x0074c7c0 tCar_spec* g_active_car_list[]
 $ 0x0074c9ec int    g_num_active_cars
 $ 0x0068b918 int    g_net_mode             /* 0 = single player */
 
+/* ---- Drones: the civilian traffic, planes, trains (2026-09-29; see findings 67) ------------
+ *
+ * DRONE.C. Each drone type (DATA\DRONES\<NAME>.TWT: <NAME>.TXT + <NAME>.ACT) is a
+ * tDrone_form. The race file's "START OF DRONE PATHS" block gives nodes; every node that
+ * names a type spawns one tDrone_spec. No tCar_spec exists for a drone (GetCarSpec(4)
+ * fatal-errors, "OPPONENT.C: GetCarSpec() can't return drone car_specs" @0x0065B664).
+ *
+ * Actors: spec->actor ("Drone%d", BrActorAllocate(NONE)) sits directly under
+ * g_effects_parent_actor [0x007634B8], so its t (+0x2C) is drone-to-world. Its only child is
+ * spec->model_actor, the .ACT root (identity transform in every shipped .ACT, model = the
+ * body, children = wheels/pivots/rotors). The world matrix is built by BrTransformToTransform
+ * from a LOOK_UP transform (look = path direction, up = +Y): row 2 = -look, orthonormal,
+ * no scale. A drone faces local -Z, +Y up, +X right, like the cars.
+ *
+ * Visible this frame <=> actor->render_style == BR_RSTYLE_FACES (4). Hidden = NONE (1),
+ * set at load and by StopRendering; 7 (BOUNDING_FACES) only flashes the drone selected in
+ * the drone-path editor. At most 10 render at once (g_num_rendering_drones).
+ */
+struct tDrone_form {                /* stride 0x88, g_drone_forms[64] at 0x00682178 */
+    char name[12];                  /* 0x00  "SEDAN01", "747", "CABLECAR" ... (strncpy 12) */
+    int  pad0C;                     /* 0x0C */
+    int  type;                      /* 0x10  0 CAR, 1 PLANE, 2 TRAIN, 3 CHOPPER (names @0x00594770) */
+    float mass;                     /* 0x14  tonnes */
+    float constant_speed;           /* 0x18  -1.0 when "variable" */
+    float min_speed;                /* 0x1C */
+    float max_speed;                /* 0x20 */
+    float max_accel;                /* 0x24 */
+    float crushability;             /* 0x28  0 = uncrushable (no dup models) */
+    unsigned flags;                 /* 0x2C  1 smooth, 2 respawn, 4 always (else distance),
+                                     *       8 drivable_on, 0x10 vertical (else inline),
+                                     *       0x20 crush box computed */
+    unsigned char pad30[0x3C];      /* 0x30  centre of mass, crush limits %, crush box 0x54..0x68 */
+    int  num_users;                 /* 0x6C  specs using this form */
+    int  first_model;               /* 0x70  index range in the model table [0x0076236C] */
+    int  num_models;                /* 0x74 */
+    int  model_index;               /* 0x78  body model, [0x0076236C][model_index] */
+    int  num_dup_models;            /* 0x7C  per-drone crush copies, <= 10 */
+    unsigned char *dup_in_use;      /* 0x80 */
+    void **dup_models;              /* 0x84  br_model*[num_dup_models] */
+};
+
+struct tDrone_section {             /* stride 0x24, 8 per node from node+0x0C */
+    short to_node;                  /* 0x00 */
+    short node_b;                   /* 0x02 */
+    struct br_vector3 delta;        /* 0x04  to_node.pos - node.pos (the look vector) */
+    struct br_vector3 dir;          /* 0x10  normalised */
+    float length;                   /* 0x1C */
+    unsigned char flags;            /* 0x20  <= 7 */
+    unsigned char b21;              /* 0x21 */
+    short pad22;
+};
+
+struct tDrone_node {                /* stride 0x134, g_drone_nodes */
+    struct br_vector3 pos;          /* 0x000 */
+    struct tDrone_section sections[8]; /* 0x00C */
+    unsigned short num_sections;    /* 0x12C */
+    unsigned char b12E;             /* 0x12E */
+    unsigned char pad12F;
+    short form_index;               /* 0x130  -1 = plain path node, else spawns a drone */
+    short pad132;
+};
+
+struct tDrone_spec {                /* stride 0x5D8, g_drone_specs */
+    int id;                         /* 0x000  index; "Drone%d" */
+    struct tDrone_form *form;       /* 0x004 */
+    short start_node;               /* 0x008 */
+    short node;                     /* 0x00A  current node */
+    short next_node;                /* 0x00C */
+    short node_0E;                  /* 0x00E */
+    struct tDrone_section *section; /* 0x010  section being driven */
+    void *prev_section;             /* 0x014 */
+    struct br_vector3 velocity;     /* 0x018  per second, from last frame's move */
+    struct br_vector3 last_pos;     /* 0x024  actor translation at the start of the frame */
+    unsigned last_state_change;     /* 0x030  ms */
+    unsigned last_physics_try;      /* 0x034 */
+    int state;                      /* 0x038  1 reset, 2 controlled movement, 3 physics active
+                                     *        (hit), 4 stationary passive, 5 fell out of world */
+    int prev_state;                 /* 0x03C */
+    int prev_prev_state;            /* 0x040 */
+    unsigned char processing;       /* 0x044  moved/collidable; <= 12 unless form "always" */
+    unsigned char near_camera;      /* 0x045  inside the form type's box around the camera */
+    unsigned char has_funk;         /* 0x046 */
+    unsigned char pad47;
+    float speed;                    /* 0x048 */
+    unsigned char pad4C[0xA0];      /* 0x04C  movement state; +0x0DC mode, +0x0E4 speed copy */
+    br_actor *actor;                /* 0x0EC  root, world transform, render_style = visibility */
+    br_actor *model_actor;          /* 0x0F0  .ACT root, child of actor */
+    int dup_model_slot;             /* 0x0F4  -1, or the crush copy swapped into model_actor->model */
+    unsigned char physics_obj[0x23C]; /* 0x0F8  embedded collision object; its +0x23C (0x334)
+                                     *        points back at this spec */
+    /* 0x184 br_matrix34 saved_matrix -- last "reasserted" actor matrix (inside physics_obj) */
+    unsigned char pad334[0x29C];    /* 0x334 */
+    void *funk_groove;              /* 0x5D0  steering/wheel grooves on model children */
+    void *hit_by;                   /* 0x5D4  car that knocked it into physics */
+};
+
+@ 0x00450bf0 void LoadInDronePaths(void);           /* nodes (stride 0x134), then one spec per typed node, limit 200 */
+@ 0x00451210 void __fastcall InitDroneSpec(tDrone_spec *spec /*ecx*/, int node /*edx*/);
+@ 0x0044ed10 void LoadPanGameDroneInfo(void);       /* DRONES\DRONE.TXT -> g_drone_forms from each <NAME>.TXT */
+@ 0x0044fda0 void LoadPerRaceDroneStuff(void);      /* per spec: LoadDroneActorAndModel, mechanics, crush dup models */
+@ 0x00450150 void __fastcall LoadDroneActorAndModel(tDrone_spec *spec /*ecx*/); /* actor "Drone%d" under [0x007634B8], style NONE; model_actor = <name>.ACT */
+@ 0x0044f700 void InitDrones(void);                 /* race start: every spec -> state 1 */
+@ 0x004512f0 void ProcessDrones(void);              /* per frame, from 0x00401170 @0x0040123B */
+@ 0x00451ca0 void __fastcall DroneFrameStart(int index /*ecx*/); /* last_pos, state run, grooves, velocity */
+@ 0x00451810 void __fastcall DroneStartRendering(tDrone_spec *spec /*ecx*/); /* render_style 4 */
+@ 0x004516d0 void __fastcall DroneStopRendering(tDrone_spec *spec /*ecx*/);  /* render_style 1 */
+@ 0x00451710 void __fastcall DroneProcessingOff(tDrone_spec *spec /*ecx*/, int force /*edx*/);
+@ 0x0044cc70 void __fastcall DroneStateFuncReset(tDrone_spec *spec /*ecx*/, int phase /*edx*/); /* back to start node, restores crushed model */
+@ 0x0044d1d0 void __fastcall DroneStateFuncControlledMovement(tDrone_spec *spec /*ecx*/, int phase /*edx*/);
+@ 0x0044eb70 void __fastcall DroneStateFuncPhysicsActive(tDrone_spec *spec /*ecx*/, int phase /*edx*/);
+@ 0x0044ec50 void __fastcall DroneStateFuncStationaryPassive(tDrone_spec *spec /*ecx*/, int phase /*edx*/);
+@ 0x0044e540 void __fastcall MoveThisDroneCar(tDrone_spec *spec /*ecx*/);   /* CAR, TRAIN, CHOPPER */
+@ 0x0044d2a0 void __fastcall MoveThisDronePlane(tDrone_spec *spec /*ecx*/); /* PLANE */
+@ 0x004013d0 void __fastcall ActorLookAlong(br_actor *a /*ecx*/, br_vector3 *look /*edx*/); /* LOOK_UP, up +Y, keeps t */
+@ 0x00452230 int  __fastcall MyDroneHathCollideth(void *obj /*ecx*/, void *other /*edx*/); /* -> state 3 */
+@ 0x00452360 int  __fastcall MyDroneHathHalteth(void *obj /*ecx*/);  /* -> state 4 */
+@ 0x00450b50 void* __fastcall DroneGetCrushModel(void *obj /*ecx*/); /* swaps a dup model into model_actor */
+@ 0x0044ecf0 void __fastcall SetDronesOn(int on /*ecx*/);           /* options key "DronesOn" */
+
+$ 0x00682178 tDrone_form g_drone_forms[64]
+$ 0x0068450c int    g_num_drone_forms
+$ 0x00684508 tDrone_node* g_drone_nodes
+$ 0x00684510 int    g_num_drone_nodes
+$ 0x00684504 tDrone_spec* g_drone_specs      /* heap, g_num_drones * 0x5D8; NULL between races */
+$ 0x006820d0 int    g_num_drones            /* <= 200 */
+$ 0x00684500 int    g_num_rendering_drones  /* <= 10 */
+$ 0x00681fb4 int    g_num_processing_drones /* <= 12, "always" forms not counted */
+$ 0x006820b8 int    g_drones_running
+$ 0x00684518 int    g_drones_off            /* set from "DronesOn" = 0; skips LoadInDronePaths */
+$ 0x0079efbc float  g_world_min_y           /* below it - 50 a drone goes to state 5 */
+
 /* --- Sun / global directional light (findings.md section 43) --- */
 @ 0x0048f2e0 void __fastcall LoadInLight(char *path /*ecx, unused*/);  /* REG\LIGHTS callback: BrActorAllocate(2), DIRECT, colour from g_light_rgb, RotateX(0xD558) PostRotateY(0x1554); appends to g_lights and enables */
 @ 0x00486dc0 void __fastcall ParseGlobalLighting(void *file /*ecx*/);  /* race TXT GLOBAL LIGHTING DATA: RGB ints then 3 ambient,diffuse float pairs */

@@ -4963,3 +4963,299 @@ material has no UV-scale input, so the proxy scales the water's texture coordina
 
 Not verified in game yet.
 
+## 64. Lens states: opponents' headlights, traffic-light lenses (2026-09-29)
+
+**Opponents.** In game, the player's lit lens worked but opponents' did not.
+- **Cause:** `m_lit_masters` was filled only for cars that got a Remix light, which for
+  opponents means within `OtherCarsRange` (12 units).
+- **Fix:** a car now joins it as soon as its lights are on, meaning:
+  - the mode includes it;
+  - it is not wrecked, unless `WastedStayLit`;
+  - it is drawn and has a matrix.
+- **Result:** its lenses show lit at any distance. The Remix light keeps its range.
+
+**Traffic-light lenses.** `lens_texture_for` generalises the lit copy to a lens state:
+- **Headlights:** lit, bit 0 of texel 0's blue flipped (`[Lights] HeadlightTextures`).
+- **Signal lenses** (`[Lights] SignalTextures`, default `trafficl`): red flips bit 0, amber
+  bit 1, green both. The street-light module says what each signal shows
+  (`signal_lens`, from the same cycle as its lights), day and night.
+- **Hashes:** `TRAFFICL` is `C6670969D0E3C200` in the city and the junkyard. Its copies are
+  red `A172C73EF4E7D446`, amber `F51529E0722A091D` and green `B31C9A97E8F0DE4E`, exported to
+  `rtx-remix\captures\textures\traffic_lights`.
+- **No baking:** the 49 signals share one texture, so a baked signal could not show its own
+  state. They are kept out of the bake when they would first bake, with the dynamic reason
+  `signal`.
+
+**Lamp-sized lights at the lenses (assessed, not built).**
+- **Brake signal:** the car's light bits (car +0x18CC, section 45) give brake (bit 2) and
+  reverse (bit 3) for every car, every frame.
+- **Coverage:** 39 of 52 car archives (28 of 41 distinct cars) have a brake-state funk
+  material.
+- **Positions:** lamp positions can come from the lens geometry itself. Each lens part's
+  triangles, clustered into left and right lamps, give a centre and a facing, computed once
+  per model.
+
+## 65. Lens lights: small lights on the car lamps (2026-09-29)
+
+In game, emissive-only lenses read oddly: a glowing lens that lit nothing. `lens_lights` puts a
+small, cone-shaped Remix sphere light on each lamp:
+- headlight lenses while the car's headlights are on (`headlights::lights_actor`);
+- brake lenses in red while braking;
+- reverse lenses in white while reversing.
+
+Brake and reverse come from the car's light bits (`tCar_spec + 0x18CC`: bit 2 brake, bit 3
+reverse; section 45), the same bits the game's brake-light textures follow.
+
+**Where the lamps are.** When a model is built, `find_lamps` marks its lens runs: runs drawn
+with a `[Lights] HeadlightTextures` texture, or with a material whose texturebits funk
+(speed mode 6, spec at slot +0x60) lists `B` or `V` (`game::funk_light_roles`).
+- **Lamps:** a run's triangles are split into connected pieces (shared vertices), one lamp
+  each, up to 8 per run.
+- **Per lamp:** the area-weighted centre, and a facing from the vertex normals (not the
+  winding).
+- **Each frame:** the capture reports them in world space for every draw under a race car's
+  master (`race_car_master`, `report_lamps`).
+
+**Cars without lens geometry.** The 21 cars with lamps painted into the body get lights at the
+headlight beams' mounting points (`headlights::lamp_mount`), with brake and reverse lights at
+the matching points at the back.
+
+**Lights.**
+- **Defaults:** radius 0.008, lifted 0.004 off the lens, a 80-degree cone with softness 0.5;
+  brightness 0.15 head, 0.2 brake, 0.1 reverse.
+- **Range:** within 12 units of the camera, the player always.
+- **Switching off:** a lamp that goes out is destroyed, and its next light takes a new
+  incarnation in the hash (Remix Plus applies destroys a frame late).
+- **Settings:** in the F4 Lights tab, saved to `[LensLights]` in carma2-headlights.ini.
+
+**Body textures for the 21 cars** are exported per car to
+`rtx-remix\captures\textures\headlights_body\<car>\`:
+- 558 textures, each named by its unlit hash, with the lit hash in `index.csv`.
+- Likely lamp textures are marked on each car's contact sheet (front-facing faces, or names
+  like porlmp, bblghts2, musfnt, jetfrnt).
+- A lit body texture only takes effect once its name is added to `[Lights] HeadlightTextures`.
+
+Not verified in game yet.
+
+## 66. Traffic-light emissives and the signal lens light (2026-09-29)
+
+**Mod layer.** `rtxmod/emissives_traffic.usda` (a sublayer of `mod.usda`, after the lit headlights)
+replaces the four TRAFFICL hashes:
+
+| state | hash | layer |
+|---|---|---|
+| off (the game's own) | C6670969D0E3C200 | diffuse only |
+| red (texel 0 blue ^1) | A172C73EF4E7D446 | diffuse + emissive, intensity 1 |
+| amber (^2) | F51529E0722A091D | diffuse + emissive, intensity 1 |
+| green (^3) | B31C9A97E8F0DE4E | diffuse + emissive, intensity 1 |
+
+The proxy picks the copy from `street_lights::signal_lens` (§64). The emissive lens then shows the
+phase, but emissive surfaces light nothing in Remix, so the head around the lens stays dark.
+
+**Lens light.** Every lit signal gets a second, small sphere light just in front of the lit lens, in
+the phase colour, alongside the pool light under the head. `&03traffic.act`'s lenses sit on the
+head's pole-facing end (model z 0.724, facing -z). The texture rows 24, 36.5 and 50 of 64 put
+their centres at y 1.156 (red), 1.115 (amber) and 1.068 (green), with x 0. The light sits at
+z 0.716, just clear of the face. It uses an 80° cone, softness 0.5, and the settings
+`[StreetLights] SignalLensBrightness` (0.05) and `SignalLensRadius` (0.008), in the Lights tab.
+Brightness 0 turns it off.
+
+The lens light has its own handle and incarnation. It moves to the new lens when the aspect
+changes, and it goes out with the pool light. Because a Remix Plus DestroyLight lands a frame late,
+a re-created lens light needs a hash its predecessor never had.
+
+## 67. Drones: the city's civilian cars (2026-09-29)
+
+Static only (Ghidra, CARMA2_HW.EXE program in `ghidra/Carmageddon2.gpr`), plus the shipped
+`DATA\DRONES\*.TWT`. Not checked in a running game. The kb.h block "Drones" has the structs.
+
+**Lists.** The civilian cars are C2's *drones* (DRONE.C). There are three arrays:
+- **Types**: `g_drone_forms` @ 0x00682178, stride 0x88, max 64, count `[0x0068450C]`. Filled by
+  LoadPanGameDroneInfo 0x0044ED10 from `DRONES\DRONE.TXT`, which names each `<NAME>.TWT`.
+- **Path nodes**: `[0x00684508]`, stride 0x134, count `[0x00684510]`.
+- **Live drones**: `g_drone_specs` = `[0x00684504]` (a heap pointer), stride 0x5D8, count
+  `g_num_drones` `[0x006820D0]`, max 200 ("Too many drones in race (limit %d)").
+
+LoadInDronePaths 0x00450BF0 allocates `g_drone_specs` as `count * 0x5D8`. It calls
+InitDroneSpec 0x00451210 for every node whose `form_index` (+0x130) is 0 or more. The array
+is only built when `g_net_mode == 0` and `DronesOn` is not 0 (`[0x00684518]`). The drone
+teardown 0x0044FC10 frees it and sets the pointer to NULL between races. It is a flat array
+with a fixed count during a race, not a linked list. `GetCarSpec(4)` is fatal on purpose
+(0x0065B664): a drone has no tCar_spec.
+
+**The actor.**
+- `spec+0xEC` is the root actor. LoadDroneActorAndModel 0x00450150 creates it with
+  `BrActorAllocate(0,0)`, names it `"Drone%d"` (spec id) and adds it under `[0x007634B8]`
+  (the world-content actor). Its `t` (+0x2C) is therefore drone-to-world. Every placement
+  writes this actor: MoveThisDroneCar 0x0044E540 writes `t.m[3]` (+0x50/54/58), and so does
+  Reset 0x0044CC70. The physics code writes the same actor ("Object and drone actors are the
+  same thing").
+- `spec+0xF0` is the `<NAME>.ACT` root (`BrActorLoad` of `name + ".ACT"`), added as the only
+  child of +0xEC. In every shipped .ACT the root transform is identity. Its model is the body.
+  Its children are RRWHEEL/RLWHEEL, FLPIVOT->FLWHEEL and FRPIVOT->FRWHEEL for the road cars,
+  the rotors for SEAKING, and the plane's parts for 747.
+- The funk grooves (`spec+0x5D0`, 0x00451E70) turn the wheel and pivot children every frame.
+  Their matrices are rewritten, but they stay below +0xF0.
+
+**Active and visible.**
+- **Visible**: `actor(+0xEC)->render_style`, byte +0x20. It is 4 (FACES) while the drone is
+  drawn and 1 (NONE) when it is hidden, so the actor walkers skip it (§ render_style).
+  - The loader sets NONE.
+  - DroneStartRendering 0x00451810 sets 4 ("START RENDERING"). So do 0x004526C0 and
+    ProcessDrones 0x004512F0 for the editor's selected drone, which flashes 4/7.
+  - DroneStopRendering 0x004516D0, 0x00451710 and 0x0044CC70 set 1 ("STOP RENDERING").
+  - `[0x00684500]` counts the rendered drones, max 10.
+- A drone starts rendering only when all of these hold:
+  - `processing` (+0x44) is set. It is capped at 12 by `[0x00681FB4]`, except for "always" forms.
+  - `near_camera` (+0x45) is set, from the per-type box test (table 0x00594760) around
+    `camera pos + 5 * camera forward` (0x00451BD0). The box is ±15/12/15 for CAR (0x0044CA90)
+    and ±40/30/40 for PLANE and CHOPPER (0x0044CAE0).
+  - Fewer than 10 drones are rendering.
+- So only the few drones near the camera are ever drawn. Every other drone keeps its actor
+  in the scene with style NONE.
+- **State** (+0x38): 1 reset, 2 controlled movement (driving its path), 3 physics active,
+  4 stationary passive, 5 fell below `g_world_min_y - 50` (no processing). The state
+  functions are in the table at 0x00594738 (0x0044CC70, 0x0044D1D0, 0x0044EB70, 0x0044EC50).
+
+**When the player hits one.**
+- MyDroneHathCollideth 0x00452230 is a physics callback on the collision object embedded at
+  `spec+0xF8` (its +0x23C points back at the spec). It stores who hit the drone in
+  `spec+0x5D4` and switches to state 3: Phil's physics now moves the same root actor.
+  MyDroneHathHalteth 0x00452360 switches to state 4 once the drone comes to rest.
+- No tCar_spec or non-car is created, and the actors are not replaced.
+- A crushable form (`crushability` +0x28 != 0) behaves differently: on its first crush,
+  DroneGetCrushModel 0x00450B50 swaps `model_actor->model` (+0xF0 -> +0x18) for a per-drone
+  duplicate (`form->dup_models[slot]`, up to 10, slot in `spec+0xF4`). So **the body's
+  br_model pointer changes when a drone gets dented**.
+- When the drone is out of range and the form has `respawn`, Reset 0x0044CC70 runs. It stops
+  rendering, copies the original vertices back into the duplicate and restores the shared
+  model (`[0x0076236C][form->model_index]`). It then puts the actor back at its start node.
+
+**Road car or not.**
+- `spec->form` (+0x04) points at the tDrone_form. `form->name` (+0x00, char[12]) is the name,
+  and `form->type` (+0x10) is 0 CAR, 1 PLANE, 2 TRAIN or 3 CHOPPER. LoadPanGameDroneInfo
+  compares the type against the name table at 0x00594770.
+- **Type alone is not enough**: CABLECAR, ROLLERCAR and LOGFLUME are declared `CAR`. They
+  differ from the road cars in their text files:
+  - they have `constant` speed, so `form->constant_speed` (+0x18) is 0 or more;
+  - LOGFLUME and ROLLERCAR are marked `always` (`flags & 4`);
+  - CABLECAR is `vertical` (`flags & 0x10`).
+- Road cars (SEDAN01, HATCH01, ESTATE01, EST02RED/BLU/YEL, MOVER01; plus MINI, WAGON, CAPRICE
+  and BULANCE, which have files but are not listed in DRONE.TXT) all have
+  `type == 0 && constant_speed < 0 && !(flags & 4)`.
+- 747 and F14 are PLANE, SPAMTRAK is TRAIN and SEAKING is CHOPPER.
+- The model actor's identifier is the .ACT actor name (e.g. "SEDAN01"). The root is named
+  "Drone<n>".
+
+**Facing and scale.**
+- MoveThisDroneCar (straight start, 0x0044EA9E..0x0044EAD9) and MoveThisDronePlane 0x0044D2A0
+  call ActorLookAlong 0x004013D0 with `look = section->delta` (to the next node). For
+  `vertical` forms the y component is zeroed first.
+- ActorLookAlong builds a BR_TRANSFORM_LOOK_UP (type 4, up (0,1,0)) and converts it with
+  BrTransformToTransform 0x00531D70 -> 0x00531870. Case 4 there normalises the look vector,
+  negates it into row 2, and derives rows 0 and 1 by cross products.
+- So the matrix is **orthonormal with no scale, and the drone faces local -Z** (+Y up, +X
+  right), the same as the player and opponent cars. The shipped .ACT files agree: the SEDAN01
+  front pivots are at z -0.245 and the rear wheels at z +0.211.
+- In state 3 the physics owns the matrix. ProcessDrones re-checks the rows against the saved
+  copy at `spec+0x184` with a dot product of at least 0.92 ("REASSERTING OBJECT MATRIX").
+  There is no scale there either.
+
+**Per-frame order.** The per-frame physics/AI tick is 0x00401170, called from MainGameLoop at
+0x00492CBB. It calls ProcessDrones at 0x0040123B, before RenderAFrame, so the actor matrices
+and styles are final for the frame the proxy sees.
+
+## 68. Headlights on the civilian traffic; unshaped headlight lens lights (2026-09-29)
+
+**Civilian cars.** `game::collect_race_cars` now also returns the road-car drones from §67,
+flagged `civilian`, with the drone's root actor (`spec+0xEC`) as the master and `spec+0xF0`
+as the model. It leaves out the other drones: planes, trains, the helicopter, and the
+cable car, roller coaster and log flume.
+
+Every consumer of the list picks them up:
+- **Headlights:** civilians are lit in "all cars" mode, which includes the night-race
+  switch.
+  - They have their own settings: `[Headlights] CivilianCarsBrightness` (0.35, a scale on
+    Brightness) and `CivilianCarsRange` (20 units).
+  - Hidden drones have render_style NONE, and the existing "not drawn" check skips them. So
+    at most the game's 10 drawn drones are ever lit.
+- **Lens lights:** a civilian gets headlight lens lights only, scaled by
+  `[LensLights] CivilianScale` (0.5). A drone spec has no tCar_spec, so the light bits at
+  +0x18CC are never read for it.
+- **Capture:**
+  - civilians no longer bake (`vehicle`);
+  - their lamp runs are reported;
+  - their lenses take the lit state when a texture is on the `[Lights] HeadlightTextures`
+    list.
+
+**Light count.** The Remix runtime in `.trex` has no cap on API lights. Its only light
+limits are the anti-culling ones (`rtx.antiCulling.light.*`), which apply to converted game
+lights and are off.
+
+The practical ceiling is ours: the range settings, and the game drawing at most 10 drones.
+A busy city frame adds 2 headlights and 2 to 4 lens lights for each lit civilian.
+
+**Headlight lamp incarnation.** Headlight lamps now keep their map entry for the whole race
+and carry an incarnation in the hash, as the lens and street lights do. Before, a car that
+left the range and came back the next frame reused the hash of a light whose Remix Plus
+destroy had not landed yet, and lost its lamp.
+
+**Headlight lens light shape.** The head role is an unshaped sphere, so it lights the
+bodywork around the lamp. Without it, the emissive lens was a hard-edged cutout on a dark
+car. Brake and reverse keep their outward cone.
+
+The defaults changed to head 0.02, brake 0.01 and reverse 0.01. In game, brake and reverse
+looked right at 0.01.
+
+**Headlight lens light, first tuning pass (same day).**
+- **Brightness:** 0.001 was still a little too bright. The lowest value the old slider could
+  reach was 0.001: a logarithmic ImGui slider takes its smallest step from the display
+  precision, and the display was `%.3f`. Now:
+  - the head brightness slider runs from 0.00001 to 0.1 (`%.5f`), default 0.0005;
+  - the ini writes `{:.6g}`, so small values survive a save.
+- **Radius and lift:** the head lens light has its own `HeadRadius` (0.02, up to 0.3) and
+  `HeadLift` (0.02, up to 0.3). Brake and reverse keep `Radius` and `Lift` at their old ranges.
+
+## 69. Smashed lamps put their lens light out (2026-09-29)
+
+In game, a smashed brake light still had its lens light. When the game smashes a lamp,
+`SmashMaterialToLevel` 0x004ED2B0 (findings 46) does three things:
+- it puts the damage pixelmap on the material;
+- it sets bit 0 of the funk slot's disable word (+0x04);
+- the lamp then stops following the light bits.
+
+Repairing the lamp to level 0 clears the bit again.
+
+**The check.**
+- `find_lamps` keeps each lamp run's material (`geometry_part::lamp_material`).
+- At capture, `intact_lamp_roles` checks that material again:
+  - **brake and reverse:** the run counts only while no texturebits slot on the material has
+    a non-zero disable word (`game::funk_lamp_intact`);
+  - **head:** the run counts only while the material's colour_map is still a
+    `[Lights] HeadlightTextures` name.
+- `lens_lights::note` passes the result as `intact`.
+
+**A smashed lamp still counts as covered.** It still stands for the car's own lamp of that
+role, so the painted-lamp fallback (`headlights::lamp_mount`) does not take over and light
+the car's corners instead. It just gets no light.
+
+**Not covered.** Cars whose lamps are painted into the body have no lamp run to check, so
+their fallback lamps stay lit when damaged.
+
+## 71. Brake and reverse lens lights face straight back (2026-09-29)
+
+In game, some brake and reverse lights sat too far from the lamp and appeared further away.
+
+**Cause.** The lift moved each light along its lens's area-weighted normal. Rear lenses wrap
+round the body's corners and tilt with its panels, so that normal pointed sideways or up, and
+the lifted light ended up in or behind neighbouring bodywork.
+
+**Change.**
+- Brake and reverse lights keep the lens centre as their base point, from lens geometry or the
+  painted-lamp mount.
+- Their facing is now the car's back direction, matrix row 2, with the y component dropped and
+  the result normalised.
+- The lift and the cone both use that level direction.
+- Headlight lens lights are unchanged: they are unshaped spheres and use the lens normal only
+  for the lift.
+

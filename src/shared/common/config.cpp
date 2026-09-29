@@ -182,6 +182,7 @@ namespace shared::common
 		water.tile_scale = std::clamp(get_float("Water", "TileScale", 2.0f), 0.05f, 64.0f);
 
 		// [Lights]
+		lights.signal_textures = get_list("Lights", "SignalTextures", "trafficl");
 		lights.headlight_textures = get_list("Lights", "HeadlightTextures", "eheadlig,eheadligv,eheadligb,eheadligz,eheadligc,eheadligg,eheadligx,eheadligl,eheadligi,eheadligp,eheadligw,eheadligy,frlite,bghlite,mehlite,dfhlite,fahlte,rzhlte,slhlte,smhlite,zehlte,wbhlite,mbhlit,tbflit,clightsh,fordligh,cerlight,bdlit,hlights,hindicat,vlights,volight");
 
 		// [Sky]

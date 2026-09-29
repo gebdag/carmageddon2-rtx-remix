@@ -185,6 +185,18 @@ namespace comp
 			// This run is the painted frame of a split glass texture (config glass): the
 			// same faces lifted off the pane, drawn with only the texture's opaque texels.
 			bool glass_frame;
+
+			// A car lamp's lens (lens_lights.hpp): a headlight texture, or a material the
+			// game shows the car's brake or reverse state through. Bit 0 head, 1 brake,
+			// 2 reverse. Each lamp is one connected piece of the run's triangles.
+			uint8_t lamp_roles = 0;
+			game::br_material* lamp_material = nullptr;   // checked at capture: a smashed lamp stays dark
+			struct lamp_spot
+			{
+				float position[3];   // model space, the piece's area-weighted centre
+				float facing[3];     // its area-weighted normal
+			};
+			std::vector<lamp_spot> lamps;
 		};
 
 		/*
@@ -413,6 +425,7 @@ namespace comp
 			uint8_t bakes;            // times it has entered a chunk, capped
 			bool bakeable;  // cleared for anything that can vanish, or that failed to bake
 			bool vehicle;   // part of a race car, found when it would first have baked
+			bool signal;    // a traffic light, found the same way
 			bool demoted;   // has been unbaked at least once, so a later bake is a recovery
 			bool noncar;    // bakes into the noncar chunks, apart from the pristine world
 			bool baked;     // copied into a chunk, possibly one still accumulating
@@ -523,8 +536,18 @@ namespace comp
 		// Resolves how each part of a model looks for the draw being captured -- the
 		// material it inherits, the pixelmap behind it, its opacity and UV transform --
 		// into this scene's draw_state pool, and records where in the queued entry.
-		// `lit`: the draw belongs to a car with its headlights on (lit_texture_for).
-		void resolve_draw_state(IDirect3DDevice9* dev, const model_geometry& geometry, bool lit,
+		// Which copy of a lens texture a draw uses (lens_texture_for). A lens is a texture on
+		// [Lights] HeadlightTextures or SignalTextures; any other texture draws as it is.
+		enum class lens_state : uint8_t
+		{
+			plain,   // the game's texture
+			lit,     // a headlight whose car has its lights on
+			red,     // a traffic light's lens, per what the signal shows
+			amber,
+			green,
+		};
+
+		void resolve_draw_state(IDirect3DDevice9* dev, const model_geometry& geometry, lens_state lens,
 		                        game::br_material* fallback_material, queued_model& queued);
 
 		// Chunks only ever hold solid geometry -- anything the game re-places or deletes
@@ -574,6 +597,7 @@ namespace comp
 			callback,    // the model draws through its own render callback
 			vanishing,   // pickup or decal quad: the game deletes it rather than moving it
 			vehicle,     // part of a race car: it drives off, so it is never baked
+			signal,      // a traffic light: its lens changes with what it shows
 			instanced,   // one actor re-placed between draws of a single scene
 			unbakeable,  // extraction failed, or it has used up its bakes
 			moving,      // its placement changed recently
@@ -587,9 +611,18 @@ namespace comp
 		void classify_actor(actor_record& record, const game::br_actor* actor,
 		                    game::br_model* model) const;
 
-		// Whether `actor` is part of one of the race's cars (the player, opponents, cops):
-		// the car's master actor or anything under it. Refreshed at every race scene.
-		bool on_race_car(const game::br_actor* actor) const;
+		// The master actor of the race car `actor` belongs to (the player, an opponent, a
+		// cop): the car's master actor or anything under it. Null for anything else.
+		// Refreshed at every race scene.
+		const game::br_actor* race_car_master(const game::br_actor* actor) const;
+		bool on_race_car(const game::br_actor* actor) const { return race_car_master(actor) != nullptr; }
+
+		// Finds the lamps in a car model's lens runs, once per build.
+		void find_lamps(std::vector<geometry_part>& parts, const std::vector<ffp_vertex>& vertices,
+			const std::vector<uint32_t>& indices, game::br_material* fallback_material) const;
+		void report_lamps(const game::br_actor* master, const game::br_model* model,
+			const model_geometry& geometry, const game::br_matrix34& model_to_world) const;
+		uint8_t intact_lamp_roles(const geometry_part& part) const;
 		std::vector<game::race_car> m_race_cars;
 		std::unordered_set<const game::br_actor*> m_car_masters;
 
@@ -854,10 +887,10 @@ std::vector<static_chunk> m_chunks;
 		// a frame run whose material has since been given a texture that is not split.
 		std::unordered_map<const game::br_pixelmap*, cached_texture> m_glass_frames;
 
-		// Lit copies of the headlight textures ([Lights] HeadlightTextures), and a null
-		// entry for every other texture asked about.
-		std::unordered_map<const game::br_pixelmap*, cached_texture> m_lit_textures;
-		IDirect3DTexture9* lit_texture_for(IDirect3DDevice9* dev, const game::br_material* material);
+		// Lens copies by pixelmap and state (key: pixelmap address * 8 + state), with a null
+		// entry for every texture that is not a lens of that kind.
+		std::unordered_map<uint64_t, cached_texture> m_lens_textures;
+		IDirect3DTexture9* lens_texture_for(IDirect3DDevice9* dev, const game::br_material* material, lens_state lens);
 		IDirect3DTexture9* upload_argb(IDirect3DDevice9* dev, uint32_t width, uint32_t height,
 			const std::vector<uint32_t>& argb);
 		IDirect3DTexture9* m_no_frame_texture = nullptr;

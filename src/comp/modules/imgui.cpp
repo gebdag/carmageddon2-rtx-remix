@@ -8,6 +8,7 @@
 #include "headlights.hpp"
 #include "sun.hpp"
 #include "street_lights.hpp"
+#include "lens_lights.hpp"
 #include "brender_inject.hpp"
 #include "shared/common/imgui_helper.hpp"
 #include "shared/common/config.hpp"
@@ -274,6 +275,13 @@ namespace comp
 	{
 		if (const auto lights = headlights::get(); lights) {
 			lights->draw_menu();
+		}
+		if (const auto lens = lens_lights::get(); lens)
+		{
+			ImGui::Spacing();
+			ImGui::Separator();
+			ImGui::Spacing();
+			lens->draw_menu();
 		}
 		if (const auto lamps = street_lights::get(); lamps)
 		{

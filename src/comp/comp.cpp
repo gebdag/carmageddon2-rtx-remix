@@ -7,6 +7,7 @@
 #include "modules/sun.hpp"
 #include "modules/time_of_day.hpp"
 #include "modules/street_lights.hpp"
+#include "modules/lens_lights.hpp"
 #include "modules/diagnostics.hpp"
 #include "modules/skinning.hpp"
 #include "modules/tracer.hpp"
@@ -95,6 +96,7 @@ namespace comp
 		shared::common::loader::module_loader::register_module(std::make_unique<sun>());
 		shared::common::loader::module_loader::register_module(std::make_unique<time_of_day>());
 		shared::common::loader::module_loader::register_module(std::make_unique<street_lights>());
+		shared::common::loader::module_loader::register_module(std::make_unique<lens_lights>());
 
 		auto& cfg = shared::common::config::get();
 

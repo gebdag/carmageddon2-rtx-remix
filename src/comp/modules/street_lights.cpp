@@ -22,6 +22,20 @@ namespace comp
 		constexpr float GREEN[3] = { 0.15f, 1.0f, 0.55f };
 
 		/*
+		 * &03traffic.act's lenses (TRAFFICL) are on the head's pole-facing end, z 0.724 facing
+		 * -z; texture rows 24, 36.5 and 50 of 64 put their centres at y 1.156 (red), 1.115
+		 * (amber) and 1.068 (green). The lens light sits just in front of the lit one.
+		 */
+		constexpr float SIGNAL_LENS_FACING[3] = { 0.0f, 0.0f, -1.0f };
+		constexpr float SIGNAL_LENSES[3][3] = {
+			{ 0.0f, 1.156f, 0.716f },
+			{ 0.0f, 1.115f, 0.716f },
+			{ 0.0f, 1.068f, 0.716f },
+		};
+		constexpr float SIGNAL_LENS_CONE = 80.0f;
+		constexpr float SIGNAL_LENS_SOFTNESS = 0.5f;
+
+		/*
 		 * The lamp models (newcity). Where each light sits is a setting; these are the cone axes.
 		 *
 		 * &02lamp.act: the head is a wedge at the end of the arm, z 0.49 to 0.71 and y 1.34 to
@@ -122,6 +136,8 @@ namespace comp
 		read_float("SignalPositionX", s.signal_position[0], -5.0f, 5.0f);
 		read_float("SignalPositionY", s.signal_position[1], -5.0f, 5.0f);
 		read_float("SignalPositionZ", s.signal_position[2], -5.0f, 5.0f);
+		read_float("SignalLensBrightness", s.signal_lens_brightness, 0.0f, 100000.0f);
+		read_float("SignalLensRadius", s.signal_lens_radius, 0.001f, 0.1f);
 		read_float("SignalGreenSeconds", s.green_seconds, 1.0f, 120.0f);
 		read_float("SignalAmberSeconds", s.amber_seconds, 0.5f, 30.0f);
 
@@ -159,6 +175,8 @@ namespace comp
 		ok &= write("SignalPositionX", number(s.signal_position[0]));
 		ok &= write("SignalPositionY", number(s.signal_position[1]));
 		ok &= write("SignalPositionZ", number(s.signal_position[2]));
+		ok &= write("SignalLensBrightness", number(s.signal_lens_brightness));
+		ok &= write("SignalLensRadius", number(s.signal_lens_radius));
 		ok &= write("SignalGreenSeconds", number(s.green_seconds));
 		ok &= write("SignalAmberSeconds", number(s.amber_seconds));
 
@@ -248,6 +266,21 @@ namespace comp
 		return aspect::red;
 	}
 
+	int street_lights::signal_lens(const game::br_actor* actor) const
+	{
+		const auto it = m_lamps.find(actor);
+		if (it == m_lamps.end() || !it->second.kind || it->second.kind->style != lamp_style::signal) {
+			return 0;
+		}
+		switch (aspect_of(it->second, seconds_now()))
+		{
+		case aspect::red:   return 1;
+		case aspect::amber: return 2;
+		case aspect::green: return 3;
+		default:            return 0;
+		}
+	}
+
 	void street_lights::describe(const game::br_actor* actor, lamp& l, const aspect shown)
 	{
 		const settings& s = m_settings;
@@ -266,8 +299,37 @@ namespace comp
 		transform_point(l.model_to_world, signal ? s.signal_position : s.position, position);
 		transform_direction(l.model_to_world, l.kind->direction, direction);
 
-		const float brightness = signal ? s.signal_brightness : s.brightness;
-		const float radius = signal ? s.signal_radius : s.emitter_radius;
+		const uint64_t hash = shared::utils::string_hash64(std::format("carma2-streetlight-{}-{:x}-{}",
+			m_generation, reinterpret_cast<uintptr_t>(actor), l.incarnation));
+		if (create_light(hash, position, direction,
+			signal ? s.signal_radius : s.emitter_radius, colour,
+			signal ? s.signal_brightness : s.brightness,
+			signal ? s.signal_cone_angle : s.cone_angle,
+			signal ? s.signal_cone_softness : s.cone_softness, l.handle))
+		{
+			l.shown = shown;
+		}
+	}
+
+	void street_lights::describe_lens(const game::br_actor* actor, lamp& l, const aspect shown)
+	{
+		const int lens = shown == aspect::red ? 0 : shown == aspect::amber ? 1 : 2;
+		const float* colour = lens == 0 ? RED : lens == 1 ? AMBER : GREEN;
+
+		float position[3], direction[3];
+		transform_point(l.model_to_world, SIGNAL_LENSES[lens], position);
+		transform_direction(l.model_to_world, SIGNAL_LENS_FACING, direction);
+
+		const uint64_t hash = shared::utils::string_hash64(std::format("carma2-signallens-{}-{:x}-{}",
+			m_generation, reinterpret_cast<uintptr_t>(actor), l.lens_incarnation));
+		create_light(hash, position, direction, m_settings.signal_lens_radius, colour,
+			m_settings.signal_lens_brightness, SIGNAL_LENS_CONE, SIGNAL_LENS_SOFTNESS, l.lens_handle);
+	}
+
+	bool street_lights::create_light(const uint64_t hash, const float position[3], const float direction[3],
+		const float radius, const float colour[3], const float brightness, const float cone_angle,
+		const float cone_softness, remixapi_LightHandle& handle)
+	{
 		const float radiance = brightness / (PI * radius * radius);
 
 		remixapi_LightInfoSphereEXT sphere{};
@@ -276,21 +338,20 @@ namespace comp
 		sphere.radius = radius;
 		sphere.shaping_hasvalue = TRUE;
 		sphere.shaping_value.direction = { direction[0], direction[1], direction[2] };
-		sphere.shaping_value.coneAngleDegrees = signal ? s.signal_cone_angle : s.cone_angle;
-		sphere.shaping_value.coneSoftness = signal ? s.signal_cone_softness : s.cone_softness;
+		sphere.shaping_value.coneAngleDegrees = cone_angle;
+		sphere.shaping_value.coneSoftness = cone_softness;
 		sphere.shaping_value.focusExponent = 0.0f;
 		sphere.volumetricRadianceScale = 1.0f;
 
 		remixapi_LightInfo info{};
 		info.sType = REMIXAPI_STRUCT_TYPE_LIGHT_INFO;
 		info.pNext = &sphere;
-		info.hash = shared::utils::string_hash64(std::format("carma2-streetlight-{}-{:x}-{}",
-			m_generation, reinterpret_cast<uintptr_t>(actor), l.incarnation));
+		info.hash = hash;
 		info.radiance = { colour[0] * radiance, colour[1] * radiance, colour[2] * radiance };
 		info.isDynamic = TRUE;
 
-		remixapi_LightHandle handle = l.handle;
-		if (shared::common::remix_api::get().m_bridge.CreateLight(&info, &handle) != REMIXAPI_ERROR_CODE_SUCCESS)
+		remixapi_LightHandle created = handle;
+		if (shared::common::remix_api::get().m_bridge.CreateLight(&info, &created) != REMIXAPI_ERROR_CODE_SUCCESS)
 		{
 			if (!m_create_failed)
 			{
@@ -298,10 +359,10 @@ namespace comp
 				shared::common::log("StreetLights", "Remix refused a street light (CreateLight failed)",
 					shared::common::LOG_TYPE::LOG_TYPE_ERROR, true);
 			}
-			return;
+			return false;
 		}
-		l.handle = handle;
-		l.shown = shown;
+		handle = created;
+		return true;
 	}
 
 	/*
@@ -312,12 +373,27 @@ namespace comp
 	 */
 	void street_lights::put_out(lamp& l)
 	{
-		if (!l.handle) {
+		if (!l.handle && !l.lens_handle) {
 			return;
 		}
-		shared::common::remix_api::get().m_bridge.DestroyLight(l.handle);
-		l.handle = nullptr;
-		++l.incarnation;
+		const auto& bridge = shared::common::remix_api::get().m_bridge;
+		if (l.handle)
+		{
+			bridge.DestroyLight(l.handle);
+			l.handle = nullptr;
+			++l.incarnation;
+		}
+		put_out_lens(l);
+	}
+
+	void street_lights::put_out_lens(lamp& l)
+	{
+		if (!l.lens_handle) {
+			return;
+		}
+		shared::common::remix_api::get().m_bridge.DestroyLight(l.lens_handle);
+		l.lens_handle = nullptr;
+		++l.lens_incarnation;
 	}
 
 	void street_lights::on_race_frame(const bool night)
@@ -346,15 +422,25 @@ namespace comp
 				}
 
 				const aspect shown = aspect_of(l, seconds);
-				if (changed || l.placed || !l.handle || shown != l.shown)
-				{
-					describe(actor, l, shown);
-					l.placed = false;
+				const bool lens_wanted = signal && m_settings.signal_lens_brightness > 0.0f;
+				if (!lens_wanted) {
+					put_out_lens(l);
 				}
+				const bool redo = changed || l.placed || shown != l.shown;
+				if (redo || !l.handle) {
+					describe(actor, l, shown);
+				}
+				if (lens_wanted && (redo || !l.lens_handle)) {
+					describe_lens(actor, l, shown);
+				}
+				l.placed = false;
 				if (l.handle)
 				{
 					bridge.DrawLightInstance(l.handle);
 					++(signal ? m_lit_signals : m_lit_lamps);
+				}
+				if (l.lens_handle) {
+					bridge.DrawLightInstance(l.lens_handle);
 				}
 			}
 			m_described = m_settings;
@@ -374,6 +460,9 @@ namespace comp
 			{
 				if (l.handle) {
 					bridge.DestroyLight(l.handle);
+				}
+				if (l.lens_handle) {
+					bridge.DestroyLight(l.lens_handle);
 				}
 			}
 		}
@@ -418,6 +507,9 @@ namespace comp
 		ImGui::SliderFloat("Signal cone angle", &s.signal_cone_angle, 10.0f, 90.0f, "%.1f deg");
 		ImGui::SliderFloat("Signal cone softness", &s.signal_cone_softness, 0.0f, 1.0f, "%.2f");
 		ImGui::DragFloat3("Signal position", s.signal_position, 0.002f, -5.0f, 5.0f, "%.3f");
+		ImGui::SliderFloat("Signal lens light brightness", &s.signal_lens_brightness, 0.0f, 2.0f, "%.3f", ImGuiSliderFlags_Logarithmic);
+		ImGui::SliderFloat("Signal lens light radius", &s.signal_lens_radius, 0.002f, 0.05f, "%.3f units", ImGuiSliderFlags_Logarithmic);
+		ImGui::TextDisabled("A small light in front of the lit lens, in its colour, lighting the signal head around it.");
 		ImGui::TextDisabled("Model space: X across the arm, Y up, Z along the arm (the head is at Y 1.02 to 1.24, Z 0.72 to 0.79).");
 		ImGui::SliderFloat("Green", &s.green_seconds, 1.0f, 60.0f, "%.1f s");
 		ImGui::SliderFloat("Amber", &s.amber_seconds, 0.5f, 10.0f, "%.1f s");
