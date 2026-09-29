@@ -816,7 +816,36 @@ namespace comp
 		ImGui::End();
 	}
 
-	void imgui::on_present()
+	/*
+	 * Lays ImGui out in the back buffer's pixels. The Win32 backend sizes it from the window's
+	 * client area, but nGlide renders at its own resolution and Present scales that into the
+	 * window: at 1080p in a 4K window, the client area is twice the back buffer, and anything
+	 * centred on it lands at the right edge of the picture. The cursor, which the backend
+	 * reads in client pixels, is scaled the same way.
+	 */
+	static void match_display_to_back_buffer(const uint32_t width, const uint32_t height)
+	{
+		auto& io = ImGui::GetIO();
+		const ImVec2 client = io.DisplaySize;
+		if (width == 0 || height == 0 || client.x <= 0.0f || client.y <= 0.0f) {
+			return;
+		}
+		if (client.x == static_cast<float>(width) && client.y == static_cast<float>(height)) {
+			return;
+		}
+
+		io.DisplaySize = ImVec2(static_cast<float>(width), static_cast<float>(height));
+
+		POINT cursor{};
+		if (GetForegroundWindow() == shared::globals::main_window && GetCursorPos(&cursor)
+			&& ScreenToClient(shared::globals::main_window, &cursor))
+		{
+			io.AddMousePosEvent(static_cast<float>(cursor.x) * width / client.x,
+				static_cast<float>(cursor.y) * height / client.y);
+		}
+	}
+
+	void imgui::on_present(const uint32_t width, const uint32_t height)
 	{
 		if (auto* im = imgui::get(); im)
 		{
@@ -842,6 +871,7 @@ namespace comp
 
 					ImGui_ImplDX9_NewFrame();
 					ImGui_ImplWin32_NewFrame();
+					match_display_to_back_buffer(width, height);
 					ImGui::NewFrame();
 
 					auto& io = ImGui::GetIO();

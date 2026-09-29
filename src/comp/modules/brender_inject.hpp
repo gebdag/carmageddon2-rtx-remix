@@ -523,7 +523,7 @@ namespace comp
 			return plan_blending(chunk.has_alpha, chunk.opacity, true);
 		}
 
-		bool build_projection(D3DMATRIX& out) const;
+		bool build_projection(IDirect3DDevice9* dev, D3DMATRIX& out) const;
 		model_geometry* geometry_for(IDirect3DDevice9* dev, game::br_model* model,
 		                             game::br_material* fallback_material);
 

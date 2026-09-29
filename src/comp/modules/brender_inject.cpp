@@ -2993,7 +2993,28 @@ namespace comp
 		}
 	}
 
-	bool brender_inject::build_projection(D3DMATRIX& out) const
+	/*
+	 * The race camera's projection, in the frame's own aspect.
+	 *
+	 * The camera carries 4:3 (br_camera::aspect). Remix path-traces into the render target
+	 * nGlide draws the frame to, at nGlide's resolution, so on a 16:9 target a 4:3 projection
+	 * is stretched sideways. With HorPlus the vertical field of view stays the game's and
+	 * the aspect becomes the target's, which widens the view instead. Frustum culling is off
+	 * (DisableFrustum), so the wider view has the geometry at its edges.
+	 */
+	static float render_target_aspect(IDirect3DDevice9* dev)
+	{
+		IDirect3DSurface9* target = nullptr;
+		if (FAILED(dev->GetRenderTarget(0, &target)) || !target) {
+			return 0.0f;
+		}
+		D3DSURFACE_DESC desc{};
+		const bool known = SUCCEEDED(target->GetDesc(&desc)) && desc.Height > 0;
+		target->Release();
+		return known ? static_cast<float>(desc.Width) / static_cast<float>(desc.Height) : 0.0f;
+	}
+
+	bool brender_inject::build_projection(IDirect3DDevice9* dev, D3DMATRIX& out) const
 	{
 		if (!m_camera || !m_camera->type_data) {
 			return false;
@@ -3007,7 +3028,9 @@ namespace comp
 		// BRender is right-handed with the camera looking down -Z, which is why
 		// BrCameraToScreenMatrix4 negates hither and yon before building its matrix.
 		const float fov_y = static_cast<float>(cam->field_of_view) * BR_ANGLE_TO_RADIANS;
-		const float aspect = (cam->aspect > 0.0f) ? cam->aspect : 4.0f / 3.0f;
+		const float target_aspect = shared::common::config::get().display.hor_plus ? render_target_aspect(dev) : 0.0f;
+		const float aspect = target_aspect > 0.0f ? target_aspect
+			: cam->aspect > 0.0f ? cam->aspect : 4.0f / 3.0f;
 
 		D3DXMatrixPerspectiveFovRH(reinterpret_cast<D3DXMATRIX*>(&out), fov_y, aspect, cam->hither_z, cam->yon_z);
 		return true;
@@ -3041,7 +3064,7 @@ namespace comp
 	void brender_inject::submit(IDirect3DDevice9* dev)
 	{
 		D3DMATRIX projection{};
-		if (!build_projection(projection)) {
+		if (!build_projection(dev, projection)) {
 			return;
 		}
 

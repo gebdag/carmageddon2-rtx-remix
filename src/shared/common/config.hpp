@@ -119,6 +119,14 @@ namespace shared::common
 			bool cull_pickups = true;
 		} culling;
 
+		struct display_settings
+		{
+			// Hor+ widescreen: keep the game camera's vertical field of view and widen the
+			// horizontal one to the frame's own aspect. Off, the projection keeps the
+			// camera's 4:3 aspect, which a 16:9 frame stretches sideways.
+			bool hor_plus = true;
+		} display;
+
 		struct glass_settings
 		{
 			// Pixelmap names (case-insensitive) of glass textures that paint their frames

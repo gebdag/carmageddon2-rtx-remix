@@ -11,7 +11,8 @@ namespace comp
 		static inline imgui* p_this = nullptr;
 		static imgui* get() { return p_this; }
 
-		static void on_present();
+		// Draws the overlay into the back buffer, which is `width` x `height` pixels.
+		static void on_present(uint32_t width, uint32_t height);
 
 		void devgui();
 		void theme();

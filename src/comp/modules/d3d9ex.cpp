@@ -161,13 +161,16 @@ namespace comp
 			return;
 		}
 
+		D3DSURFACE_DESC back_buffer_desc{};
+		back_buffer->GetDesc(&back_buffer_desc);
+
 		IDirect3DSurface9* game_target = nullptr;
 		m_pIDirect3DDevice9->GetRenderTarget(0, &game_target);
 
 		m_pIDirect3DDevice9->SetRenderTarget(0, back_buffer);
 		if (SUCCEEDED(m_pIDirect3DDevice9->BeginScene()))
 		{
-			imgui::get()->on_present();
+			imgui::get()->on_present(back_buffer_desc.Width, back_buffer_desc.Height);
 			m_pIDirect3DDevice9->EndScene();
 		}
 
