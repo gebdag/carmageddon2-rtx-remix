@@ -304,7 +304,7 @@ namespace comp
 		ImGui::Checkbox("Dynamic sky brightness", &sky.dynamic_brightness);
 		ImGui::TextWrapped("Sets RTX Remix's sky brightness per track from how much light its sky throws on "
 			"the ground, so bright skies do not flood the track and dark ones do not leave it dim. "
-			"Off, rtx.conf's sky brightness applies to every track.");
+			"Night skies are left dark. Off, rtx.conf's sky brightness applies to every track.");
 
 		if (shared::common::remix_api::has_atmosphere()) {
 			ImGui::TextDisabled("Remix Plus draws its own physical sky; this applies to the rasterized sky only.");

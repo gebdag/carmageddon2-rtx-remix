@@ -3680,17 +3680,23 @@ namespace comp
 	 * 0.179 * E^-0.582, within [0.15, 1.5]. The curve passes through the two values chosen by
 	 * eye in game -- 0.3 for the city's cityskape (E 0.41) and 1.0 for the quarry's qdark
 	 * (E 0.052) -- and lights the track with 0.179 * E^0.418: a brighter sky still lights
-	 * more, compressed. The cap keeps the night skies (E < 0.01) dark.
+	 * more, compressed.
+	 *
+	 * The curve evens out exposure between daylight skies; a night sky's darkness is the
+	 * point, and lifting it would light the track the headlights and street lamps are meant
+	 * to. Skies under NIGHT_LIGHT therefore keep the configured value. The night skies
+	 * measure 0.005 to 0.008 and the darkest daylight sky 0.037.
 	 */
 	void brender_inject::apply_sky_brightness()
 	{
 		constexpr double SCALE = 0.179;
 		constexpr double EXPONENT = -0.582;
+		constexpr double NIGHT_LIGHT = 0.02;
 		constexpr float MIN_BRIGHTNESS = 0.15f;
 		constexpr float MAX_BRIGHTNESS = 1.5f;
 
 		const double ground_light = m_sky.ground_light();
-		const bool dynamic = shared::common::config::get().sky.dynamic_brightness && ground_light > 0.0;
+		const bool dynamic = shared::common::config::get().sky.dynamic_brightness && ground_light >= NIGHT_LIGHT;
 		const float wanted = dynamic
 			? std::clamp(static_cast<float>(SCALE * std::pow(ground_light, EXPONENT)), MIN_BRIGHTNESS, MAX_BRIGHTNESS)
 			: configured_sky_brightness();
@@ -3703,7 +3709,7 @@ namespace comp
 			m_sky_brightness = wanted;
 			shared::common::log("BRender", std::format("rtx.skyBrightness = {:.3f} ({})", wanted, dynamic
 				? std::format("this sky lights the ground at {:.3f} of white", ground_light)
-				: std::string("as configured")));
+				: std::format("as configured; this sky lights the ground at {:.3f} of white", ground_light)));
 		}
 	}
 

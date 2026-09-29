@@ -4508,11 +4508,15 @@ than the user wanted. A power law through both chosen points gives brightness
 `b = 0.179 * E^-0.582`. The track is then lit with `0.179 * E^0.418`, so brighter skies still
 light more, compressed.
 - **Clamp:** b stays within [0.15, 1.5].
-- **Night skies** would ask for about 3.3 and are capped at 1.5, which keeps them dark
-  (lighting 0.007 to 0.012 against the quarry's 0.052).
+- **Night skies** are left out: their darkness is intended, and lifting it lights what the
+  headlights and street lamps are for.
+  - The curve would ask about 3.3 of them. The first version capped that at 1.5, which the
+    user found negated the darkness.
+  - Skies with ground light under 0.02 now keep the configured value (0.33 in the shipped
+    rtx.conf). The night skies measure 0.005 to 0.008, and the darkest daylight sky 0.037.
 - **Resulting brightness:** skitrack 0.23, city 0.30, desert and timber 0.38 to 0.44,
   funfair 0.60, junkyard 0.64, airport1 0.83, quarry 1.00, the gloom skies 1.09 to 1.21,
-  night 1.5.
+  night as configured.
 
 **Mechanism.**
 - **When it is set:** `brender_inject::apply_sky_brightness` pushes `rtx.skyBrightness`
