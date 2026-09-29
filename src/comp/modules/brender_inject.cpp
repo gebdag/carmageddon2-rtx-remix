@@ -9,6 +9,8 @@
 #include "street_lights.hpp"
 #include "lens_lights.hpp"
 #include "checkpoint_lights.hpp"
+#include "hud_toggle.hpp"
+#include "free_camera.hpp"
 #include "shared/common/config.hpp"
 #include "shared/common/ffp_state.hpp"
 #include "shared/common/remix_api.hpp"
@@ -1014,6 +1016,15 @@ namespace comp
 		                             uint32_t style, uint32_t bounds, uint32_t use_custom)
 		{
 			const auto self = brender_inject::get();
+
+			// A HUD pass with the HUD hidden (F2, hud_toggle.hpp) still runs, so its actor
+			// bookkeeping and custom callbacks go on, but draws nothing.
+			if (hud_toggle::hiding())
+			{
+				render_original(self, actor, model, material, env, (style & ~0xFFu) | game::BR_RSTYLE_NONE, bounds, use_custom);
+				return;
+			}
+
 			if (!self || !model || !self->conversion_enabled())
 			{
 				render_original(self, actor, model, material, env, style, bounds, use_custom);
@@ -3517,7 +3528,14 @@ namespace comp
 		// so both streams cross the bridge and both end up on screen.
 		m_profile.glide_draws = shared::common::ffp_state::get().draw_call_count();
 
-		const D3DMATRIX view = to_d3d(m_world_to_view);
+		// The free camera (F3) replaces only the view Remix gets. Every placement above and
+		// below was recovered through the game's own camera and stays as it is.
+		const auto free_cam = free_camera::get();
+		if (free_cam) {
+			free_cam->update(m_view_inverse);
+		}
+		const bool free_view = free_cam && free_cam->active();
+		const D3DMATRIX view = to_d3d(free_view ? free_cam->world_to_view() : m_world_to_view);
 
 		// nGlide owns the device for the rest of the frame and sets its state lazily, so
 		// everything this replay touches is captured and put back afterwards. The block is
@@ -4120,7 +4138,9 @@ namespace comp
 		// Anywhere between the near and far planes will do: the sky is drawn without depth,
 		// and Remix re-renders it from the camera position for its probe.
 		const auto cam = static_cast<const game::br_camera*>(m_camera->type_data);
-		m_sky.draw(dev, m_view_inverse.m[3], 0.5f * (cam->hither_z + cam->yon_z));
+		const auto free_cam = free_camera::get();
+		const float* eye = free_cam && free_cam->active() ? free_cam->position() : m_view_inverse.m[3];
+		m_sky.draw(dev, eye, 0.5f * (cam->hither_z + cam->yon_z));
 	}
 
 	/*

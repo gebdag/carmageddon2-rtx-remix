@@ -9,6 +9,7 @@
 #include "diagnostics.hpp"
 #include "headlights.hpp"
 #include "frame_pacer.hpp"
+#include "free_camera.hpp"
 #include "skinning.hpp"
 #include "shared/common/shader_cache.hpp"
 #include "shared/common/ffp_state.hpp"
@@ -193,6 +194,9 @@ namespace comp
 
 		if (const auto lights = headlights::get(); lights) {
 			lights->post_mode_notice();
+		}
+		if (const auto cam = free_camera::get(); cam) {
+			cam->post_notice();
 		}
 
 		draw_overlay();

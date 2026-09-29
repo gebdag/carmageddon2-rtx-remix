@@ -12,6 +12,8 @@
 #include "street_lights.hpp"
 #include "lens_lights.hpp"
 #include "checkpoint_lights.hpp"
+#include "hud_toggle.hpp"
+#include "free_camera.hpp"
 #include "brender_inject.hpp"
 #include "shared/common/imgui_helper.hpp"
 #include "shared/common/config.hpp"
@@ -61,6 +63,23 @@ namespace comp
 		{
 			if (const auto lights = headlights::get(); lights) {
 				lights->cycle_mode();
+			}
+		}
+
+		// F2 and F3 sit on key slots 29 and 30, which no control, toggle or key test reads;
+		// F1 is the game's own Cycle Headups.
+		if (message_type == WM_KEYDOWN && wparam == VK_F2 && !(lparam & (1 << 30))
+			&& !shared::globals::imgui_wants_text_input)
+		{
+			if (const auto hud = hud_toggle::get(); hud) {
+				hud->toggle();
+			}
+		}
+		if (message_type == WM_KEYDOWN && wparam == VK_F3 && !(lparam & (1 << 30))
+			&& !shared::globals::imgui_wants_text_input)
+		{
+			if (const auto cam = free_camera::get(); cam) {
+				cam->toggle();
 			}
 		}
 

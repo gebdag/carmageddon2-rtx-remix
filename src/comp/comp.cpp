@@ -9,6 +9,8 @@
 #include "modules/street_lights.hpp"
 #include "modules/lens_lights.hpp"
 #include "modules/checkpoint_lights.hpp"
+#include "modules/hud_toggle.hpp"
+#include "modules/free_camera.hpp"
 #include "modules/diagnostics.hpp"
 #include "modules/skinning.hpp"
 #include "modules/tracer.hpp"
@@ -99,6 +101,8 @@ namespace comp
 		shared::common::loader::module_loader::register_module(std::make_unique<street_lights>());
 		shared::common::loader::module_loader::register_module(std::make_unique<lens_lights>());
 		shared::common::loader::module_loader::register_module(std::make_unique<checkpoint_lights>());
+		shared::common::loader::module_loader::register_module(std::make_unique<hud_toggle>());
+		shared::common::loader::module_loader::register_module(std::make_unique<free_camera>());
 
 		auto& cfg = shared::common::config::get();
 

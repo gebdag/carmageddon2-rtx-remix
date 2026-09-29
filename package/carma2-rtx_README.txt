@@ -96,6 +96,12 @@ Keys
            arrows used to move. [Controls] ArrowKeyDriving=0 in remix-comp-proxy.ini
            restores your own key bindings.
   F        headlights: off -> player car -> all cars -> off
+  F2       hide or show the HUD, in a race and in action replay (F1, the game's own
+           Cycle Headups, only thins out the race HUD)
+  F3       free camera: W/A/S/D move, Q/E down and up, Shift faster, Ctrl slower,
+           hold the right mouse button to look around. Unlike RTX Remix's own free
+           camera, it moves the sky with the view. The game still reads its keys,
+           so pause an action replay first.
   Alt+X    RTX Remix's own menu
 
 Headlight and lamp light settings are adjusted in the F4 menu and saved to
