@@ -17,9 +17,11 @@ What is in this folder
   .trex\bridge.conf       RTX Remix bridge settings (exposes the Remix API - required
                           for the headlights)
   rtx-remix\mods\carma2rtx\
-                          RTX Remix mod: glowing fire and flame frames, car brake,
-                          reverse and head lights, and material overrides for water,
-                          glass and chrome
+                          RTX Remix mod: glowing fire and flame frames, lamps, screens
+                          and signs; car brake, reverse and head lights that light up
+                          with the car; traffic lights that show red, amber and green;
+                          animated city water, glass (with matching shards when it
+                          smashes) and a glossy oil slick
   carma2-rtx_README.txt   this file (named so it cannot replace the game's ReadMe.txt)
   LICENSE, THIRD_PARTY_NOTICES.md
   licenses\               licence texts of the libraries compiled into d3d9.dll
@@ -67,19 +69,25 @@ the tested configuration.
 Each race's sky sets its time of day: day, overcast, dusk, fog or night. On NVIDIA's
 RTX Remix the proxy draws a sky from the race's own horizon texture and sets its sun to
 match. On Remix Plus the runtime's physical sky is used instead, with its sun placed the
-same way and its clouds and haze matched to what each race's sky texture shows. In the night races the sun sits just below the horizon, every car's headlights
-come on, the city's street lamps light up, and its traffic lights cycle green, amber
-and red. The F4 menu's Sun tab has a "Time of day
-per race" switch that puts the standard sun back on every race.
+same way and its clouds and haze matched to what each race's sky texture shows; the F4
+menu's Sun tab can switch Remix Plus back to the game's own sky. (Switch it there, not
+in Remix's own menu, which leaves the sky black.) In the night races the sun sits just
+below the horizon, every car's headlights come on, including the city's civilian
+traffic, the street lamps light up, and the traffic lights cycle green, amber and red.
+The Sun tab's "Time of day per race" switch puts the standard sun back on every race.
+
+Car lamps carry small lights of their own: the headlight lenses glow onto the bodywork
+while the headlights are on, and the brake and reverse lights light up behind the car
+while braking or reversing. A smashed lamp goes dark.
 
 
 Keys
 ----
 
   F4       proxy menu: Lights, Sun, Fog (at the level's far side or at the
-           game's own distances), Effects (culling of crushed doors, additive car flames) and
-           Conversion, which switches the path tracing off to show the game's own
-           rendering. Hold the right mouse button outside the menu to give
+           game's own distances), Effects (culling of crushed doors, additive car
+           flames, frame pacing) and Conversion, which switches the path tracing off
+           to show the game's own rendering. Hold the right mouse button outside the menu to give
            input back to the game.
   Arrows   steer, accelerate and brake; numpad 8/2/4/6 take over the camera the
            arrows used to move. [Controls] ArrowKeyDriving=0 in remix-comp-proxy.ini
@@ -87,8 +95,8 @@ Keys
   F        headlights: off -> player car -> all cars -> off
   Alt+X    RTX Remix's own menu
 
-Headlight settings are adjusted in the F4 menu and saved to carma2-headlights.ini in the
-game folder with "Save to ini". The sun works the same way and saves to carma2-sun.ini.
+Headlight and lamp light settings are adjusted in the F4 menu and saved to
+carma2-headlights.ini in the game folder with "Save to ini". The sun works the same way and saves to carma2-sun.ini.
 It starts at the angle the game gives its own light: 60 degrees up, the same on every
 track. The street lamps of the night races are set in the Lights tab and saved to
 carma2-streetlights.ini.
@@ -106,11 +114,15 @@ Troubleshooting
   - The picture is rasterized, not path-traced: nGlide's resolution does not match the
     desktop resolution.
   - The Lights tab says why the player's car is dark when its lights are missing.
+  - The chase camera shakes up and down on slopes: keep Frame pacing on in the Effects
+    tab ([Timing] FramePacing=1). RTX Remix lets frames through in bursts, and the game
+    places the cars wrongly on a frame that arrives right behind another.
 
 
 Uninstalling
 ------------
 
 Delete d3d9.dll, remix-comp-proxy.ini, carma2-headlights.ini, carma2-sun.ini,
-carma2-streetlights.ini, rtx.conf, carma2-rtx_README.txt, rtx-remix\mods\carma2rtx and
-the rtx_comp folder from the game folder, then remove the RTX Remix runtime.
+carma2-streetlights.ini, rtx.conf, carma2-rtx_README.txt, LICENSE,
+THIRD_PARTY_NOTICES.md, the licenses folder, rtx-remix\mods\carma2rtx and the rtx_comp
+folder from the game folder, then remove the RTX Remix runtime.
