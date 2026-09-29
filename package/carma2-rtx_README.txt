@@ -93,8 +93,10 @@ Keys
            to show the game's own rendering. Hold the right mouse button outside the menu to give
            input back to the game.
   Arrows   steer, accelerate and brake; numpad 8/2/4/6 take over the camera the
-           arrows used to move. [Controls] ArrowKeyDriving=0 in remix-comp-proxy.ini
-           restores your own key bindings.
+           arrows used to move, K the sound toggle that was on S, and Shift+J
+           the screenshot that was on Shift+D.
+           [Controls] ArrowKeyDriving=0 in remix-comp-proxy.ini restores your own
+           key bindings.
   F        headlights: off -> player car -> all cars -> off
   F2       hide or show the HUD, in a race and in action replay (F1, the game's own
            Cycle Headups, only thins out the race HUD)

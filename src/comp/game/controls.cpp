@@ -25,6 +25,13 @@ namespace comp::game
 		constexpr int SLOT_ACCELERATE = 49;
 		constexpr int SLOT_BRAKE = 50;
 
+		// Keys moved off W/A/S/D for the free camera (F3), onto keys no layout binds: slot 37
+		// toggles the sound (0x00455A50), on S; slot 5 with Shift saves a DUMP screenshot
+		// (0x00518780), on D -- Shift is the free camera's "faster".
+		constexpr int SLOT_SOUND_TOGGLE = 37;
+		constexpr int SLOT_SCREENSHOT = 5;
+		constexpr int KEY_D = 24, KEY_J = 30, KEY_K = 31, KEY_S = 39;
+
 		constexpr int KEY_LEFT = 70, KEY_RIGHT = 71, KEY_UP = 72, KEY_DOWN = 73;
 		constexpr int KEY_PAD_2 = 83, KEY_PAD_4 = 85, KEY_PAD_6 = 87, KEY_PAD_8 = 89;
 		constexpr int FIRST_JOYSTICK_CODE = 107;                         // "Joy 1 B1"
@@ -79,6 +86,13 @@ namespace comp::game
 			drive(SLOT_STEER_RIGHT, KEY_RIGHT);
 			drive(SLOT_ACCELERATE, KEY_UP);
 			drive(SLOT_BRAKE, KEY_DOWN);
+
+			if (map[SLOT_SOUND_TOGGLE] == KEY_S) {
+				map[SLOT_SOUND_TOGGLE] = KEY_K;
+			}
+			if (map[SLOT_SCREENSHOT] == KEY_D) {
+				map[SLOT_SCREENSHOT] = KEY_J;
+			}
 		}
 
 		void __cdecl hk_load_key_mapping()
@@ -126,7 +140,7 @@ namespace comp::game
 		// before it, this writes into an array the loader is about to replace anyway.
 		apply_arrow_driving();
 
-		shared::common::log("Game", "arrow-key driving: steer and throttle on the arrows, the camera on numpad 8/2/4/6",
+		shared::common::log("Game", "arrow-key driving: steer and throttle on the arrows, the camera on numpad 8/2/4/6, sound toggle on K, screenshot on Shift+J",
 			shared::common::LOG_TYPE::LOG_TYPE_GREEN, true);
 	}
 }
