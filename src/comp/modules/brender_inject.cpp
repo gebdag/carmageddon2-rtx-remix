@@ -3962,8 +3962,8 @@ namespace comp
 	 */
 	void brender_inject::draw_sky(IDirect3DDevice9* dev)
 	{
-		// Remix Plus renders its own physical sky (time_of_day.hpp) and skips sky draws.
-		if (!shared::common::config::get().sky.synthesize || shared::common::remix_api::has_atmosphere()) {
+		// Remix Plus's physical sky (time_of_day.hpp) replaces this one and skips sky draws.
+		if (!shared::common::config::get().sky.synthesize || time_of_day::physical_sky()) {
 			return;
 		}
 

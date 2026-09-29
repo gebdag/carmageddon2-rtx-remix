@@ -69,6 +69,11 @@ namespace comp
 
 		static const char* mood_name(mood m);
 
+		// Whether the runtime's physical sky is the sky ([Sky] PhysicalSky on Remix Plus).
+		// False on stock Remix, and on Remix Plus set to the game's own sky: the proxy then
+		// draws the rasterized sky and places its own sun light.
+		static bool physical_sky();
+
 		// One shipped sky: its mood and weather (time_of_day.cpp).
 		struct sky_entry;
 
@@ -81,7 +86,7 @@ namespace comp
 		std::string m_sky;
 
 		// What was last pushed to Remix Plus's sky, so it is set once per change.
-		bool m_sky_mode_set = false;
+		int m_sky_mode = -1;   // rtx.skyMode last set; -1 before the first push
 		bool m_clouds_enabled = false;
 		std::optional<sky_weather> m_pushed;
 	};

@@ -190,6 +190,7 @@ namespace shared::common
 		// [Sky]
 		sky.synthesize = get_bool("Sky", "Synthesize", true);
 		sky.dynamic_brightness = get_bool("Sky", "DynamicBrightness", true);
+		sky.physical = get_bool("Sky", "PhysicalSky", true);
 
 		log("Config", std::format("Loaded from: {}", ini_path_));
 		log("Config", std::format("FFP={} AlbedoStage={}", ffp.enabled ? 1 : 0, ffp.albedo_stage));

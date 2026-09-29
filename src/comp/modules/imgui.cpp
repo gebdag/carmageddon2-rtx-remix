@@ -8,6 +8,7 @@
 #include "diagnostics.hpp"
 #include "headlights.hpp"
 #include "sun.hpp"
+#include "time_of_day.hpp"
 #include "street_lights.hpp"
 #include "lens_lights.hpp"
 #include "brender_inject.hpp"
@@ -310,13 +311,25 @@ namespace comp
 		auto& config = shared::common::config::get();
 		auto& sky = config.sky;
 
+		if (shared::common::remix_api::has_atmosphere())
+		{
+			int choice = sky.physical ? 0 : 1;
+			ImGui::RadioButton("Physical sky (Numos)", &choice, 0); ImGui::SameLine();
+			ImGui::RadioButton("Game's own sky", &choice, 1);
+			sky.physical = choice == 0;
+			ImGui::TextWrapped("Remix Plus: the runtime's physical sky with its own sun, clouds and haze, or the "
+				"track's original sky as on stock Remix. Switch here rather than in Remix's own menu, so the "
+				"proxy draws the game's sky and places the sun to match. [Sky] PhysicalSky.");
+			ImGui::Spacing();
+		}
+
 		ImGui::Checkbox("Dynamic sky brightness", &sky.dynamic_brightness);
 		ImGui::TextWrapped("Sets RTX Remix's sky brightness per track from how much light its sky throws on "
 			"the ground, so bright skies do not flood the track and dark ones do not leave it dim. "
 			"Night skies are left dark. Off, rtx.conf's sky brightness applies to every track.");
 
-		if (shared::common::remix_api::has_atmosphere()) {
-			ImGui::TextDisabled("Remix Plus draws its own physical sky; this applies to the rasterized sky only.");
+		if (time_of_day::physical_sky()) {
+			ImGui::TextDisabled("The physical sky is lit by its own sun; this applies to the game's sky only.");
 		}
 		else if (const auto inject = brender_inject::get(); inject)
 		{
@@ -330,17 +343,22 @@ namespace comp
 			}
 		}
 
-		save_row(sky.dynamic_brightness != m_saved_dynamic_sky,
+		save_row(sky.dynamic_brightness != m_saved_dynamic_sky || sky.physical != m_saved_physical_sky,
 			[&] {
 				config.set_bool("Sky", "DynamicBrightness", sky.dynamic_brightness);
+				config.set_bool("Sky", "PhysicalSky", sky.physical);
 				m_saved_dynamic_sky = sky.dynamic_brightness;
+				m_saved_physical_sky = sky.physical;
 			},
 			[&] {
 				sky.dynamic_brightness = config.get_bool("Sky", "DynamicBrightness", true);
+				sky.physical = config.get_bool("Sky", "PhysicalSky", true);
 				m_saved_dynamic_sky = sky.dynamic_brightness;
+				m_saved_physical_sky = sky.physical;
 			},
 			[&] {
 				sky.dynamic_brightness = true;
+				sky.physical = true;
 			});
 	}
 
@@ -1079,6 +1097,7 @@ namespace comp
 		m_saved_effects = { effects.cull_closed_meshes, effects.additive_car_flames };
 		m_saved_fog = fog_now();
 		m_saved_dynamic_sky = shared::common::config::get().sky.dynamic_brightness;
+		m_saved_physical_sky = shared::common::config::get().sky.physical;
 
 		IMGUI_CHECKVERSION();
 		ImGui::CreateContext();

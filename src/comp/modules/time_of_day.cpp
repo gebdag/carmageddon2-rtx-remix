@@ -2,6 +2,7 @@
 #include "time_of_day.hpp"
 #include "headlights.hpp"
 
+#include "shared/common/config.hpp"
 #include "shared/common/remix_api.hpp"
 
 namespace comp
@@ -153,7 +154,15 @@ namespace comp
 	 * the sun's angle on either runtime. The weather presets are left alone: they also drive
 	 * the volumetric fog, which the proxy sets from the track's depth cue. Pushed once per
 	 * change: these are global options crossing the bridge.
+	 *
+	 * [Sky] PhysicalSky off puts Remix Plus back on rtx.skyMode 0, the rasterized sky the
+	 * proxy draws on stock Remix.
 	 */
+	bool time_of_day::physical_sky()
+	{
+		return shared::common::remix_api::has_atmosphere() && shared::common::config::get().sky.physical;
+	}
+
 	void time_of_day::apply_atmosphere()
 	{
 		using shared::common::remix_api;
@@ -161,12 +170,23 @@ namespace comp
 			return;
 		}
 
-		if (!m_sky_mode_set)
+		const int mode = physical_sky() ? 1 : 0;
+		if (m_sky_mode != mode)
 		{
-			m_sky_mode_set = remix_api::set_config("rtx.skyMode", "1");
-			shared::common::log("TimeOfDay", std::format("rtx.skyMode = 1 (physical sky) {}",
-				m_sky_mode_set ? "set" : "refused"), shared::common::LOG_TYPE::LOG_TYPE_DEFAULT, true);
+			const bool set = remix_api::set_config("rtx.skyMode", mode ? "1" : "0");
+			if (set) {
+				m_sky_mode = mode;
+			}
+			shared::common::log("TimeOfDay", std::format("rtx.skyMode = {} ({}) {}", mode,
+				mode ? "physical sky" : "the game's sky", set ? "set" : "refused"),
+				shared::common::LOG_TYPE::LOG_TYPE_DEFAULT, true);
 		}
+		if (!mode)
+		{
+			m_pushed.reset();   // the clouds follow the race again when the physical sky returns
+			return;
+		}
+
 		if (!m_clouds_enabled) {
 			m_clouds_enabled = remix_api::set_config("rtx.atmosphere.cloudEnabled", "True");
 		}

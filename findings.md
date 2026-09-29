@@ -5527,3 +5527,25 @@ the lifted light ended up in or behind neighbouring bodywork.
 - Headlight lens lights are unchanged: they are unshaped spheres and use the lens normal only
   for the lift.
 
+## 72. The game's own sky on Remix Plus (2026-09-29)
+
+In game, switching Remix Plus's sky away from the physical sky left the sky black.
+
+**Cause.** The proxy decided "Remix Plus" from `remix_api::has_atmosphere()` alone, in three
+places:
+- `brender_inject::draw_sky` returned before drawing the rasterized panorama;
+- `sun::on_race_frame` aimed the physical sky's sun and destroyed its own sun light;
+- `time_of_day` forced `rtx.skyMode 1` once.
+
+Switching Remix's own sky menu to the raster sky therefore had no sky to show, and no sun.
+
+**Change.** `[Sky] PhysicalSky` (default 1) chooses the sky, and all three places now ask
+`time_of_day::physical_sky()` (`has_atmosphere() && sky.physical`).
+- **Off:** time_of_day pushes `rtx.skyMode 0` and stops pushing clouds. It forgets the last
+  weather it pushed, so the clouds follow the race again when the physical sky returns. The
+  proxy draws the panorama with dynamic sky brightness, and the sun module places its own sun
+  light, as on stock Remix.
+- **On:** everything is as before.
+
+The choice is in the F4 Sun tab and appears only on Remix Plus. It takes effect on the next race
+frame, and it is saved with the other sky settings.

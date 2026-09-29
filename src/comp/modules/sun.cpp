@@ -181,7 +181,7 @@ namespace comp
 
 		const settings s = effective();
 
-		if (shared::common::remix_api::has_atmosphere())
+		if (time_of_day::physical_sky())
 		{
 			destroy();
 			aim_physical_sky(s);
@@ -278,7 +278,7 @@ namespace comp
 			ImGui::TextDisabled("This race: sky '%s', %s", tod->sky_name().empty() ? "none" : tod->sky_name().c_str(),
 				time_of_day::mood_name(tod->current()));
 		}
-		if (shared::common::remix_api::has_atmosphere()) {
+		if (time_of_day::physical_sky()) {
 			ImGui::TextDisabled("Remix Plus: its physical sky draws the sun; these settings aim it.");
 		}
 

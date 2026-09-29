@@ -336,6 +336,11 @@ namespace shared::common
 			// value in rtx.conf / user.conf applies to every sky. The rasterized sky only:
 			// Remix Plus's physical sky is lit by its own sun.
 			bool dynamic_brightness = true;
+
+			// Remix Plus only: use the runtime's physical sky (rtx.skyMode 1, Numos) with its
+			// sun, clouds and haze. Off, Remix Plus shows the game's own sky the way stock
+			// Remix does: rtx.skyMode 0, the rasterized panorama and the proxy's sun light.
+			bool physical = true;
 		} sky;
 
 	private:

@@ -213,6 +213,7 @@ namespace comp
 
 		void sky_section();
 		bool m_saved_dynamic_sky = true;
+		bool m_saved_physical_sky = true;
 		void tab_conversion();
 		
 		bool m_im_window_focused = false;
