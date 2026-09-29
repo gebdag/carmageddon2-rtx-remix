@@ -328,7 +328,21 @@ namespace comp
 		}
 
 		m_lamps.clear();
+		m_lit_masters.clear();
 		m_lit_cars = 0;
+	}
+
+	bool headlights::lights_actor(const game::br_actor* actor) const
+	{
+		// A car is a handful of levels deep: master, the loaded .ACT, its parts.
+		constexpr int MAX_DEPTH = 16;
+		for (int depth = 0; actor && depth < MAX_DEPTH; ++depth, actor = actor->parent)
+		{
+			if (m_lit_masters.contains(actor)) {
+				return true;
+			}
+		}
+		return false;
 	}
 
 	const headlights::car_bounds* headlights::measure(const game::race_car& car)
@@ -444,6 +458,7 @@ namespace comp
 	void headlights::on_race_frame(const float camera_pos[3])
 	{
 		++m_frame;
+		m_lit_masters.clear();
 
 		if (m_mode == mode::off)
 		{
@@ -528,6 +543,7 @@ namespace comp
 
 			describe_lamp(car, *bounds, 0, brightness);
 			describe_lamp(car, *bounds, 1, brightness);
+			m_lit_masters.insert(car.master);
 			++m_lit_cars;
 		}
 

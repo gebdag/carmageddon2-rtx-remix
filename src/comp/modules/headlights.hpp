@@ -73,6 +73,9 @@ namespace comp
 		// A frame that is not a race frame shows no headlights.
 		void on_frame_without_race();
 
+		// Whether `actor` is part of a car whose headlights were on at the last race frame.
+		bool lights_actor(const game::br_actor* actor) const;
+
 		// A night race turns every car's lights on; the mode from before comes back when it
 		// ends, unless the player changed it in between.
 		void set_night(bool night);
@@ -118,6 +121,7 @@ namespace comp
 
 		std::unordered_map<const void*, car_bounds> m_bounds;
 		std::unordered_map<uint64_t, lamp> m_lamps;
+		std::unordered_set<const game::br_actor*> m_lit_masters;   // master actors of the lit cars
 		std::vector<game::race_car> m_cars;
 
 		uint32_t m_frame = 0;

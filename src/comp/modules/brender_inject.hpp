@@ -514,7 +514,8 @@ namespace comp
 		// Resolves how each part of a model looks for the draw being captured -- the
 		// material it inherits, the pixelmap behind it, its opacity and UV transform --
 		// into this scene's draw_state pool, and records where in the queued entry.
-		void resolve_draw_state(IDirect3DDevice9* dev, const model_geometry& geometry,
+		// `lit`: the draw belongs to a car with its headlights on (lit_texture_for).
+		void resolve_draw_state(IDirect3DDevice9* dev, const model_geometry& geometry, bool lit,
 		                        game::br_material* fallback_material, queued_model& queued);
 
 		// Chunks only ever hold solid geometry -- anything the game re-places or deletes
@@ -833,6 +834,13 @@ std::vector<static_chunk> m_chunks;
 		// split, or no frame texels". m_no_frame_texture is a 1x1 fully clear stand-in for
 		// a frame run whose material has since been given a texture that is not split.
 		std::unordered_map<const game::br_pixelmap*, cached_texture> m_glass_frames;
+
+		// Lit copies of the headlight textures ([Lights] HeadlightTextures), and a null
+		// entry for every other texture asked about.
+		std::unordered_map<const game::br_pixelmap*, cached_texture> m_lit_textures;
+		IDirect3DTexture9* lit_texture_for(IDirect3DDevice9* dev, const game::br_material* material);
+		IDirect3DTexture9* upload_argb(IDirect3DDevice9* dev, uint32_t width, uint32_t height,
+			const std::vector<uint32_t>& argb);
 		IDirect3DTexture9* m_no_frame_texture = nullptr;
 		std::set<uint32_t> m_unsupported_types;
 		std::set<uint32_t> m_unsupported_styles;

@@ -4813,3 +4813,23 @@ archives, 41 are distinct cars plus 11 Eagle colour variants.
   would need a masked lit copy.
 - **Coverage of a plain material swap:** 39% of distinct cars (up to 49%); 52 to 60% counting
   the Eagle variants.
+
+## 61. Lit headlight lenses by texture swap (2026-09-29)
+
+**Lit copies.** A car whose headlights are on (`headlights::lights_actor`: the draw's actor or
+an ancestor is the master actor of a lit car at the last race frame) draws every texture
+listed in `[Lights] HeadlightTextures` with a lit copy (`lit_texture_for`).
+- **The copy:** the decoded image with bit 0 of texel 0 flipped (the blue LSB of A8R8G8B8, the
+  top-left texel), uploaded the same way as the original (`upload_argb`, one level).
+- **Hashes:** Remix hashes mip 0 of the upload, so the copy has its own hash and the original
+  keeps its own.
+- **Export:** the unlit and lit hashes of the 32 shipped names are in
+  `rtx-remix\captures\textures\headlights\index.csv` and `headlights\lit\index.csv` (lit
+  copies named by their hashes). The offline hash of every original matched before the bit
+  was flipped.
+- **Existing layers:** none of the 32 unlit hashes appears in the rtxmod emissive layers, so
+  nothing glows while the lights are off.
+- **Scope:** only cars drawn as moving models get the swap. A car baked into the static world
+  (standing still for three frames, e.g. on the grid) keeps the texture it was baked with
+  until it moves and is taken back out.
+- Not verified in game yet.

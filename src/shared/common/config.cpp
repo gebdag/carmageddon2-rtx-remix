@@ -169,6 +169,9 @@ namespace shared::common
 			"conwin,r50gl,glass,glass1,glass2,glass4,glasspro,r25gl1,rollglas,wind,mswindow,barnwind");
 		glass.frame_offset = get_float("Glass", "FrameOffset", 0.004f);
 
+		// [Lights]
+		lights.headlight_textures = get_list("Lights", "HeadlightTextures", "eheadlig,eheadligv,eheadligb,eheadligz,eheadligc,eheadligg,eheadligx,eheadligl,eheadligi,eheadligp,eheadligw,eheadligy,frlite,bghlite,mehlite,dfhlite,fahlte,rzhlte,slhlte,smhlite,zehlte,wbhlite,mbhlit,tbflit,clightsh,fordligh,cerlight,bdlit,hlights,hindicat,vlights,volight");
+
 		// [Sky]
 		sky.synthesize = get_bool("Sky", "Synthesize", true);
 		sky.dynamic_brightness = get_bool("Sky", "DynamicBrightness", true);

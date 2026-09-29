@@ -142,6 +142,15 @@ namespace shared::common
 			float frame_offset = 0.004f;
 		} glass;
 
+		struct lights_settings
+		{
+			// Pixelmap names (case-insensitive) of car headlight lenses. On a car whose
+			// headlights are on, each is drawn with a lit copy instead: the same image with
+			// the lowest blue bit of its first texel flipped, which gives it a hash of its
+			// own for a mod to replace with a glowing version. Unlit, the original draws.
+			std::vector<std::string> headlight_textures = { "eheadlig", "eheadligv", "eheadligb", "eheadligz", "eheadligc", "eheadligg", "eheadligx", "eheadligl", "eheadligi", "eheadligp", "eheadligw", "eheadligy", "frlite", "bghlite", "mehlite", "dfhlite", "fahlte", "rzhlte", "slhlte", "smhlite", "zehlte", "wbhlite", "mbhlit", "tbflit", "clightsh", "fordligh", "cerlight", "bdlit", "hlights", "hindicat", "vlights", "volight" };
+		} lights;
+
 		struct controls_settings
 		{
 			// Steer, accelerate and brake on the arrow keys, and move the external camera the

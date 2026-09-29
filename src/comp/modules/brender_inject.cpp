@@ -1136,6 +1136,9 @@ namespace comp
 		for (auto& [pm, cached] : m_glass_frames) {
 			if (cached.texture) { cached.texture->Release(); }
 		}
+		for (auto& [pm, cached] : m_lit_textures) {
+			if (cached.texture) { cached.texture->Release(); }
+		}
 		if (m_no_frame_texture) { m_no_frame_texture->Release(); }
 
 		for (auto& [rgb, texture] : m_spark_textures) {
@@ -1453,7 +1456,7 @@ namespace comp
 	 * Runs inside BrZbModelRender, where every material involved is necessarily alive.
 	 * Submit works off the records left behind and never touches the game's memory.
 	 */
-	void brender_inject::resolve_draw_state(IDirect3DDevice9* dev, const model_geometry& geometry,
+	void brender_inject::resolve_draw_state(IDirect3DDevice9* dev, const model_geometry& geometry, const bool lit,
 		game::br_material* fallback_material, queued_model& queued)
 	{
 		const auto& effects = shared::common::config::get().effects;
@@ -1485,7 +1488,10 @@ namespace comp
 				}
 				else
 				{
-					IDirect3DTexture9* texture = texture_for(dev, material);
+					IDirect3DTexture9* texture = lit ? lit_texture_for(dev, material) : nullptr;
+					if (!texture) {
+						texture = texture_for(dev, material);
+					}
 					state.texture = texture && texture != m_white_texture
 						? texture
 						: solid_colour_texture(dev, material->colour & 0x00FFFFFFu);
@@ -2483,6 +2489,12 @@ namespace comp
 		}
 		m_glass_frames.clear();
 
+		for (auto& [pixelmap, cached] : m_lit_textures)
+		{
+			if (cached.texture) { cached.texture->Release(); }
+		}
+		m_lit_textures.clear();
+
 		// m_materials keeps what it has: the loader taught it this track's stored tokens on
 		// the way in, and nothing re-teaches them once the race is running. The flat and
 		// spark swatches are keyed on colour rather than a game pointer, so they stay valid.
@@ -2880,7 +2892,9 @@ namespace comp
 			return false;
 		}
 
-		resolve_draw_state(dev, *geometry, fallback_material, queued);
+		const auto lights = headlights::get();
+		const bool lit = race_scene && actor && lights && lights->lights_actor(actor);
+		resolve_draw_state(dev, *geometry, lit, fallback_material, queued);
 		geometry->queued_scene = m_scene_walks;
 		queued.geometry = geometry;
 		m_queue.push_back(queued);
@@ -4201,16 +4215,65 @@ namespace comp
 		return texture ? texture : m_white_texture;
 	}
 
+	/*
+	 * A headlight lens's lit copy, when the material's texture is on the list.
+	 *
+	 * The copy is the game's image with the lowest blue bit of its first texel flipped: no
+	 * visible change, but Remix hashes the upload, so it gets a hash of its own. A mod
+	 * gives that hash the glowing texture and emission, and leaves the original -- the lens
+	 * with the lights off -- as it is.
+	 */
+	IDirect3DTexture9* brender_inject::lit_texture_for(IDirect3DDevice9* dev, const game::br_material* material)
+	{
+		if (!material || !material->colour_map) {
+			return nullptr;
+		}
+
+		const auto pm = static_cast<const game::br_pixelmap*>(material->colour_map);
+		if (!readable(pm, sizeof(*pm))) {
+			return nullptr;
+		}
+
+		const pixelmap_identity identity = identify(pm);
+		if (const auto it = m_lit_textures.find(pm); it != m_lit_textures.end())
+		{
+			if (it->second.identity == identity) {
+				return it->second.texture;
+			}
+			if (it->second.texture) { it->second.texture->Release(); }
+			m_lit_textures.erase(it);
+		}
+
+		const auto& names = shared::common::config::get().lights.headlight_textures;
+		const bool listed = pm->identifier && readable(pm->identifier, 1)
+			&& std::any_of(names.begin(), names.end(), [pm](const std::string& name) {
+				return _stricmp(name.c_str(), pm->identifier) == 0;
+			});
+
+		IDirect3DTexture9* texture = nullptr;
+		std::vector<uint32_t> argb;
+		if (listed && decode_pixelmap(pm, argb) && !argb.empty())
+		{
+			argb[0] ^= 1u;
+			texture = upload_argb(dev, pm->width, pm->height, argb);
+		}
+
+		m_lit_textures[pm] = { texture, identity };
+		return texture;
+	}
+
 	IDirect3DTexture9* brender_inject::upload_pixelmap(IDirect3DDevice9* dev, const game::br_pixelmap* pm)
 	{
 		std::vector<uint32_t> argb;
 		if (!decode_pixelmap(pm, argb)) {
 			return nullptr;
 		}
+		return upload_argb(dev, pm->width, pm->height, argb);
+	}
 
-		const uint32_t w = pm->width;
-		const uint32_t h = pm->height;
-
+	IDirect3DTexture9* brender_inject::upload_argb(IDirect3DDevice9* dev, const uint32_t w, const uint32_t h,
+		const std::vector<uint32_t>& argb)
+	{
 		IDirect3DTexture9* tex = nullptr;
 		if (FAILED(dev->CreateTexture(w, h, 1, 0, D3DFMT_A8R8G8B8, D3DPOOL_MANAGED, &tex, nullptr)) || !tex) {
 			return nullptr;
