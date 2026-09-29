@@ -415,22 +415,34 @@ namespace comp
 			"explosions. Off: they stay solid cut-outs lit by the mod's emissive masks. "
 			"Takes effect at once. [Effects] AdditiveCarFlames.");
 
+		ImGui::Separator();
+
+		ImGui::SliderFloat("Decal lift", &effects.decal_offset, 0.0f, 0.03f, "%.4f units");
+		ImGui::TextWrapped(
+			"How far tyre tracks, smears and blood and oil slicks sit above the road. Too little and they "
+			"flicker against it, too much and they float; one unit is about 6.9 m. Takes effect at once. "
+			"[Effects] DecalOffset.");
+
 		const bool dirty = effects.cull_closed_meshes != m_saved_effects.cull_closed_meshes
-			|| effects.additive_car_flames != m_saved_effects.additive_car_flames;
+			|| effects.additive_car_flames != m_saved_effects.additive_car_flames
+			|| effects.decal_offset != m_saved_effects.decal_offset;
 		save_row(dirty,
 			[&] {
 				config.set_bool("Effects", "CullClosedMeshes", effects.cull_closed_meshes);
 				config.set_bool("Effects", "AdditiveCarFlames", effects.additive_car_flames);
-				m_saved_effects = { effects.cull_closed_meshes, effects.additive_car_flames };
+				config.set_float("Effects", "DecalOffset", effects.decal_offset);
+				m_saved_effects = { effects.cull_closed_meshes, effects.additive_car_flames, effects.decal_offset };
 			},
 			[&] {
 				effects.cull_closed_meshes = config.get_bool("Effects", "CullClosedMeshes", true);
 				effects.additive_car_flames = config.get_bool("Effects", "AdditiveCarFlames", true);
-				m_saved_effects = { effects.cull_closed_meshes, effects.additive_car_flames };
+				effects.decal_offset = std::clamp(config.get_float("Effects", "DecalOffset", 0.006f), 0.0f, 0.1f);
+				m_saved_effects = { effects.cull_closed_meshes, effects.additive_car_flames, effects.decal_offset };
 			},
 			[&] {
 				effects.cull_closed_meshes = true;
 				effects.additive_car_flames = true;
+				effects.decal_offset = 0.006f;
 			});
 	}
 
@@ -1094,7 +1106,7 @@ namespace comp
 		p_this = this;
 
 		const auto& effects = shared::common::config::get().effects;
-		m_saved_effects = { effects.cull_closed_meshes, effects.additive_car_flames };
+		m_saved_effects = { effects.cull_closed_meshes, effects.additive_car_flames, effects.decal_offset };
 		m_saved_fog = fog_now();
 		m_saved_dynamic_sky = shared::common::config::get().sky.dynamic_brightness;
 		m_saved_physical_sky = shared::common::config::get().sky.physical;

@@ -272,11 +272,12 @@ namespace shared::common
 			// distance linearly, so 2 sees twice as far through the same fog.
 			float fog_distance = 1.0f;
 
-			// Distance translucent surfaces are lifted along their normals. BRender kept
-			// tyre tracks, shadows and impact smears out of the road by drawing them in
-			// depth-sorted order; a path tracer has no draw order, so co-planar decals
-			// have to be separated geometrically instead. World units. 0 disables it.
-			float decal_offset = 0.02f;
+			// Distance the game's ground decals (tyre tracks, blood and oil smears, blood and
+			// oil slicks) are lifted along their normals, in world units. Remix's own decal
+			// offset is too small at this game's scale, so without a lift they fight the
+			// road; too much and they float (one unit is about 6.9 m). The decal tags in
+			// rtx.conf still blend them onto the surface below.
+			float decal_offset = 0.006f;
 
 			// Largest angle, in degrees, between two faces meeting at a vertex that still
 			// share a smooth shading normal. BRender averages every face at a vertex, so a

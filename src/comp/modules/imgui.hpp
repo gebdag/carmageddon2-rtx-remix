@@ -196,6 +196,7 @@ namespace comp
 		{
 			bool cull_closed_meshes;
 			bool additive_car_flames;
+			float decal_offset;
 		};
 		effects_settings m_saved_effects{};
 

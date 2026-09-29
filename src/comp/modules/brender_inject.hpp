@@ -334,6 +334,10 @@ namespace comp
 			// Every edge borders exactly two faces, so it never needs drawing two-sided.
 			bool closed;
 
+			// How far a ground decal's quad was lifted off its surface ([Effects]
+			// DecalOffset); 0 for everything else. A changed setting rebuilds the quad.
+			float lift;
+
 			// BrModelUpdate can fire mid-scene, after this geometry is already queued for
 			// submission. Marking instead of erasing keeps queued pointers valid; the
 			// rebuild happens the next time the model is captured.

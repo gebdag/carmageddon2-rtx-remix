@@ -156,7 +156,7 @@ namespace shared::common
 		effects.fog_tint = get_float("Effects", "FogTint", 0.08f);
 		effects.fog_level_edge = get_bool("Effects", "FogLevelEdge", true);
 		effects.fog_distance = get_float("Effects", "FogDistance", 1.0f);
-		effects.decal_offset = get_float("Effects", "DecalOffset", 0.02f);
+		effects.decal_offset = std::clamp(get_float("Effects", "DecalOffset", 0.006f), 0.0f, 0.1f);
 		effects.crease_angle = get_float("Effects", "CreaseAngle", 45.0f);
 		effects.spark_width = get_float("Effects", "SparkWidth", 0.004f);
 		effects.emissive_sprites = get_bool("Effects", "EmissiveSprites", true);

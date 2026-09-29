@@ -676,6 +676,21 @@ namespace comp
 		}
 
 		/*
+		 * How far a model's vertices are lifted along their normals.
+		 *
+		 * Tyre tracks, smears and slicks are quads laid flat on the surface they mark. BRender
+		 * kept them out of it by depth-sorting them into a bucket drawn after the road; path
+		 * tracing has no draw order, and Remix's own decal offset is too small at this game's
+		 * scale, so they are lifted clear of the surface instead. Only the game's decal quads
+		 * move: displacing a mesh along its own normals deforms it, which on a closed shell
+		 * like a windscreen shrinks the glass out of the frame it is supposed to fill.
+		 */
+		float decal_lift(const game::br_model* model)
+		{
+			return is_decal_model(model) ? shared::common::config::get().effects.decal_offset : 0.0f;
+		}
+
+		/*
 		 * The smash mode of an actor that is destructible scenery, or 0 for any other actor.
 		 *
 		 * Only the modes that change geometry count: remove, which hides the actor, and
@@ -1281,7 +1296,7 @@ namespace comp
 
 			// The pointer is the same but the mesh behind it is not, so whatever this entry
 			// holds belongs to a model the game has since freed.
-			if (!(cached.identity == identify(model))) {
+			if (!(cached.identity == identify(model)) || cached.lift != decal_lift(model)) {
 				cached.dirty = true;
 			}
 
@@ -1321,6 +1336,7 @@ namespace comp
 		geometry.smoke = is_smoke_model(model);
 		geometry.flame = is_flame_model(model);
 		geometry.closed = model->prepared && mesh_is_closed(*model->prepared);
+		geometry.lift = decal_lift(model);
 
 		// 16-bit indices are enough for any single model this game ships; anything larger is
 		// corrupt data rather than a real mesh.
@@ -1765,15 +1781,7 @@ namespace comp
 		}
 		const auto normals = crease_normals(sources, shared::common::config::get().effects.crease_angle);
 
-		// Tyre tracks, shadows and impact smears are quads laid flat on the surface they mark.
-		// BRender kept them out of it by depth-sorting them into a bucket drawn after the
-		// road; path tracing has no draw order to lean on, so they are lifted clear of the
-		// surface instead. Only the game's own decal quads are moved: displacing a mesh along
-		// its own normals deforms it, which on a closed shell like a windscreen shrinks the
-		// glass out of the frame it is supposed to fill.
-		const float lift = is_decal_model(model)
-			? shared::common::config::get().effects.decal_offset
-			: 0.0f;
+		const float lift = decal_lift(model);
 
 		for (size_t g = 0; g < groups.size(); ++g)
 		{
