@@ -1449,3 +1449,32 @@ $ 0x00694280 br_actor* g_rendered_bodies[30]    /* spine actors drawn this frame
 $ 0x00677260 void*  g_personalities[50]
 $ 0x00677238 void*  g_remaps[10]
 $ 0x0058f2d8 unsigned g_bone_bits[32]           /* 1 << i */
+
+/* --- Checkpoints (findings.md section 75). Arches are track grid-model faces with material
+ * "checkpoint" (Junkyard: "post*"), not actors; world-space vertices (identity grid transforms). --- */
+struct tCheckpoint {                /* stride 0x114, gCurrent_race + 0x21C */
+    int time_value[3];              /* 0x000  per skill */
+    int quad_count;                 /* 0x00C  <= 4; all shipped races use 1 */
+    struct br_vector3 vertices[4][4]; /* 0x010  v0/v1 one end (y +100/-100), v2/v3 the other */
+    struct br_vector3 normal[4];    /* 0x0D0  (v1-v0) x (v2-v0), NOT normalised */
+    struct br_vector3 centre;       /* 0x100  mean of all corners (y ~0 when quads span +-100) */
+    float map_x;                    /* 0x10C  map pixel, rewritten by 0x004968F0 / 0x00496940 */
+    float map_y;                    /* 0x110 */
+};
+@ 0x0048fe30 void __fastcall GetThreeInts(void *file /*ecx*/, int *a /*edx*/, int *b, int *c); /* name inferred */
+@ 0x005034b0 void CheckCheckpoints(void);            /* per frame from MainGameLoop 0x004930A8: old pos (car+0x40) -> new (actor +0x50) vs tris (v0,v1,v2),(v0,v2,v3) */
+@ 0x005032a0 void IncrementCheckpoint(void);         /* gCheckpoint++, or wrap to 1 and gLap++; past last lap -> RaceCompleted */
+@ 0x005033e0 void __fastcall WrongCheckpoint(int index /*ecx*/); /* "wrong checkpoint" headup, 2 s / 20 s throttle (C1 name) */
+@ 0x005030b0 void __fastcall RaceCompleted(int reason /*ecx*/); /* returns if g_race_over; reason -> 0x006B781C (C1 name) */
+@ 0x00495ba0 void __fastcall ForEachCheckpoint(void *ctx /*ecx*/, void *arg /*edx*/, void (__fastcall *cb)(void*, int index, void*, int is_next), int show_all); /* next = gCheckpoint-1 first (is_next 1), then the rest (0); cb DrawMapMarker 0x004969E0 blits the CPNUMB.PIX number, is_next only while BlinkToggle is on (the next one blinks) */
+@ 0x00514db0 unsigned __fastcall BlinkToggle(unsigned period_ms /*ecx*/, int *last_ms /*edx*/, unsigned *state); /* flips *state every period (name inferred) */
+$ 0x007623a0 void*  gCurrent_race          /* tRace_info: +0x04 laps, +0x08 checkpoint count, +0x98 RACES.TXT entry*, +0x21C tCheckpoint[] */
+$ 0x007623a8 int    g_checkpoint_count_race /* gCurrent_race.num_checkpoints */
+$ 0x007625bc void*  g_checkpoints          /* tCheckpoint[], stride 0x114 */
+$ 0x00762438 void*  g_current_race_spec    /* +0x210 race type: 0 Carma1, 1 Cars, 2 Peds, 3 Checkpoints, 4 Smash (5 Carrier_mission); checkpoints live only in 0/3 */
+$ 0x00761eec int    gCheckpoint            /* 1-BASED index of the next checkpoint; 1 at race start (0x00481CC7) */
+$ 0x00761ce8 int    gCheckpoint_count
+$ 0x0075b944 int    gLap                   /* 1 at race start */
+$ 0x0075ba50 int    gTotal_laps
+$ 0x0074d62c int    g_race_over            /* 0 while racing; 10000 once the race ends (C1 gRace_finished) */
+$ 0x0068d6e4 void*  g_cpnumb_pixelmap      /* CPNUMB.PIX, map checkpoint number icons; frame height [0x0068C860] */

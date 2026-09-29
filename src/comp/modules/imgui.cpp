@@ -11,6 +11,7 @@
 #include "time_of_day.hpp"
 #include "street_lights.hpp"
 #include "lens_lights.hpp"
+#include "checkpoint_lights.hpp"
 #include "brender_inject.hpp"
 #include "shared/common/imgui_helper.hpp"
 #include "shared/common/config.hpp"
@@ -291,6 +292,13 @@ namespace comp
 			ImGui::Separator();
 			ImGui::Spacing();
 			lamps->draw_menu();
+		}
+		if (const auto arches = checkpoint_lights::get(); arches)
+		{
+			ImGui::Spacing();
+			ImGui::Separator();
+			ImGui::Spacing();
+			arches->draw_menu();
 		}
 	}
 

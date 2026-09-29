@@ -96,10 +96,12 @@ Keys
   Alt+X    RTX Remix's own menu
 
 Headlight and lamp light settings are adjusted in the F4 menu and saved to
-carma2-headlights.ini in the game folder with "Save to ini". The sun works the same way and saves to carma2-sun.ini.
-It starts at the angle the game gives its own light: 60 degrees up, the same on every
-track. The street lamps of the night races are set in the Lights tab and saved to
-carma2-streetlights.ini.
+carma2-headlights.ini in the game folder with "Save to ini". The sun works the same way
+and saves to carma2-sun.ini. It starts at the angle the game gives its own light: 60
+degrees up, the same on every track. The street lamps of the night races and the faint
+lights under the checkpoint arches are set in the Lights tab and saved to
+carma2-streetlights.ini. There the checkpoint to cross next can also be switched to glow
+green.
 
 
 Troubleshooting

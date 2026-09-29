@@ -624,6 +624,9 @@ namespace comp
 		// Finds the lamps in a car model's lens runs, once per build.
 		void find_lamps(std::vector<geometry_part>& parts, const std::vector<ffp_vertex>& vertices,
 			const std::vector<uint32_t>& indices, game::br_material* fallback_material) const;
+		// The world-space vertices of a model's checkpoint arch faces (checkpoint_lights.hpp).
+		std::vector<std::array<float, 3>> arch_points(const game::br_model* model,
+			const game::br_matrix34& model_to_world) const;
 		void report_lamps(const game::br_actor* master, const game::br_model* model,
 			const model_geometry& geometry, const game::br_matrix34& model_to_world) const;
 		uint8_t intact_lamp_roles(const geometry_part& part) const;

@@ -8,6 +8,7 @@
 #include "time_of_day.hpp"
 #include "street_lights.hpp"
 #include "lens_lights.hpp"
+#include "checkpoint_lights.hpp"
 #include "shared/common/config.hpp"
 #include "shared/common/ffp_state.hpp"
 #include "shared/common/remix_api.hpp"
@@ -2192,6 +2193,49 @@ namespace comp
 		return intact;
 	}
 
+	/*
+	 * The checkpoint arches are faces of the track's ground models, told apart only by
+	 * their material. The authored face array is gone once the model is prepared, so the
+	 * prepared groups are read, each through the material its stored token names.
+	 */
+	std::vector<std::array<float, 3>> brender_inject::arch_points(const game::br_model* model,
+		const game::br_matrix34& model_to_world) const
+	{
+		std::vector<std::array<float, 3>> points;
+		const auto prepared = model->prepared;
+		if (!prepared || !readable(prepared, sizeof(*prepared)) || !prepared->groups
+			|| !readable(prepared->groups, sizeof(game::v1_group) * prepared->ngroups))
+		{
+			return points;
+		}
+
+		for (uint16_t g = 0; g < prepared->ngroups; ++g)
+		{
+			const game::v1_group& group = prepared->groups[g];
+			const auto it = m_materials.find(group.material_token);
+			if (group.material_token == 0 || it == m_materials.end() || !group.vertices
+				|| !readable(it->second, sizeof(game::br_material)) || !readable(it->second->identifier, 1)
+				|| !checkpoint_lights::is_arch_material(it->second->identifier)
+				|| !readable(group.vertices, sizeof(game::v1_online_vertex) * group.nvertices))
+			{
+				continue;
+			}
+
+			for (uint16_t v = 0; v < group.nvertices; ++v)
+			{
+				const auto& src = group.vertices[v];
+				const float p[3] = { src.px + model->pivot.v[0], src.py + model->pivot.v[1], src.pz + model->pivot.v[2] };
+				std::array<float, 3> world{};
+				for (int c = 0; c < 3; ++c) {
+					world[c] = p[0] * model_to_world.m[0][c] + p[1] * model_to_world.m[1][c]
+						+ p[2] * model_to_world.m[2][c] + model_to_world.m[3][c];
+				}
+				points.push_back(world);
+			}
+		}
+		return points;
+	}
+
 	void brender_inject::report_lamps(const game::br_actor* master, const game::br_model* model,
 		const model_geometry& geometry, const game::br_matrix34& model_to_world) const
 	{
@@ -2675,6 +2719,9 @@ namespace comp
 		if (const auto lens = lens_lights::get(); lens) {
 			lens->on_frame_without_race();
 		}
+		if (const auto arches = checkpoint_lights::get(); arches) {
+			arches->on_frame_without_race();
+		}
 
 		// Whatever camera the race was measured against is finished with. Keeping it would
 		// let a recycled camera pointer in the next track pass for the race view, and the
@@ -3105,6 +3152,9 @@ namespace comp
 			if (const auto lamps = street_lights::get(); lamps) {
 				lamps->on_model_drawn(actor, model, model_to_world);
 			}
+			if (const auto arches = checkpoint_lights::get(); arches && arches->wants_model(model)) {
+				arches->note_model(model, arch_points(model, model_to_world));
+			}
 		}
 
 		/*
@@ -3390,6 +3440,9 @@ namespace comp
 		}
 		if (const auto lens = lens_lights::get(); lens) {
 			lens->on_race_frame(m_view_inverse.m[3]);
+		}
+		if (const auto arches = checkpoint_lights::get(); arches) {
+			arches->on_race_frame();
 		}
 
 		if (m_in_frontend) {

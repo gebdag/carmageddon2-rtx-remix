@@ -362,6 +362,25 @@ namespace comp::game
 	 * draws the car arrows onto the back buffer after the scene.
 	 */
 	constexpr int MAP_MODE_SHOWN = 2;
+
+	/*
+	 * The race's checkpoints (findings 75). gCurrent_race holds the gates the race TXT
+	 * defines: a vertical quad per gate (corners 0 and 1 one end, 2 and 3 the other, y
+	 * spanning +-100). The arches are not actors -- they are faces of the track's ground
+	 * models, with material "checkpoint" (Junkyard: "post*") -- so a gate is matched to its
+	 * arch by position. gCheckpoint is the gate to cross next, 1-based; CheckCheckpoints
+	 * (0x005034B0) enforces the order only in a single-player normal or checkpoint race.
+	 */
+	constexpr uint32_t ADDR_g_checkpoint_count = 0x007623A8u;    // int, gCurrent_race + 0x08
+	constexpr uint32_t ADDR_g_checkpoints = 0x007625BCu;         // tCheckpoint[], gCurrent_race + 0x21C
+	constexpr uint32_t CHECKPOINT_STRIDE = 0x114u;
+	constexpr uint32_t CHECKPOINT_QUAD_CORNERS = 0x10u;          // br_vector3[4] of quad 0
+	constexpr uint32_t MAX_CHECKPOINTS = 64u;
+	constexpr uint32_t ADDR_g_next_checkpoint = 0x00761EECu;     // int, 1-based
+	constexpr uint32_t ADDR_g_race_entry = 0x00762438u;          // RACES.TXT entry*, gCurrent_race + 0x98
+	constexpr uint32_t RACE_ENTRY_TYPE = 0x210u;                 // int: 0 normal, 3 checkpoints, else none
+	constexpr uint32_t ADDR_g_race_over = 0x0074D62Cu;           // int, non-zero once finished
+	constexpr uint32_t ADDR_g_net_mode = 0x0068B918u;            // int, 0 in single player
 	inline bool map_shown() { return *reinterpret_cast<const int*>(rebase(ADDR_g_map_mode)) == MAP_MODE_SHOWN; }
 
 	// ---

@@ -5748,3 +5748,173 @@ decal offset is too small at this scene scale.
 
 The textures are `assets/generated/<hash>_slick.{a,n}.dds`. Blood gets roughness 0.12 and
 metallic 0.2; the oil keeps its thin film.
+
+## 75. Checkpoint arches and the next checkpoint (2026-09-29)
+
+Static work only: the EXE in Ghidra, and the race TWTs parsed offline. Nothing here has been
+checked in game yet.
+
+**The arches are track geometry, not actors.** No `.ACT` or actor for a checkpoint exists in
+any race. Each arch is about 70 faces inside the track's grid models (the `"X Y"` models such
+as `"10 4"`). All 161 grid actors that carry arch faces have an identity transform, so the
+vertices are already in world space. The code never creates or touches an arch: the EXE has
+no `checkpoint` string, and no race TXT funk or groove names an arch material.
+`DATA\ACTORS\CPOINT.ACT` / `MODELS\CPOINT.DAT` (model `DIRECT.DAT`, material `SILVER.MAT`,
+dated 1996) is a leftover 0.45-unit arrow. The actor loader skips it by name at 0x0045A849.
+
+**Arch materials and textures:**
+
+| Races | Materials | Pixelmaps (in the environment TWT's pixies) |
+|---|---|---|
+| Airport, Carrier, Desert, Funfair, Newcity, Quarry (incl. quarry_mission), Silo, Skitrack, Timber | `checkpoint` | `CHECKPOINT`, 64x64 RGB565 (AIRP, CARR, DESE, FUNF, NEWC, QUAR, SILO, SKIT, TIMB) |
+| Junkyard 1-3 | `post`, `postb`, `postC`, `postd`, `poste`, `postei`, `postf`, `postfb`, `postg`, `posth` | `POST*`, 64x64 (JUNK) |
+
+- `checkpoint` is an ordinary lit material: ka 0.1, kd 0.7, flags 0x21, no fullbright bits.
+- The arch is two-faced geometry, so both sides show.
+- Only arches use these materials. The one exception is 14 stray `checkpoint` faces in each
+  Timber race, 17-40 units from any checkpoint.
+- `CHECK1..3` (32x32, JUNK/CARR) are not referenced by any material.
+- One texture is shared by every arch in a race. A texture tag (emissive) can light them all,
+  but it cannot mark the next one differently.
+
+**Geometry.** Every arch stands in the vertical plane of its checkpoint quad:
+- 139 of the 142 `checkpoint` arches lie within +-0.3 of the plane;
+- funfair3 cp5, quarry2 cp1 and silo3 cp2 reach about 1 across;
+- Junkyard3 cp0 sits 0.44 behind its plane.
+
+Its shape is a thin (0.06) frame:
+- two posts at the ends;
+- a top beam, underside at ground + 1.26, top at ground + 1.32;
+- a "CHECKPOINT" sign panel (0.9 x 0.24) hung from the beam at one end.
+
+The standard arch is 3.92 wide (along -1.96..+1.96) and 1.32 high. Larger ones scale
+together, with height about 0.34 x width: 4.7 x 1.58, 5.6 x 1.90, and 8.1 x 2.74 (newcity3
+cp3). The posts' bottom is the ground under the arch. The ground ranges from -13.4 to 51 over
+the races, so it has to be read per arch. Quad vertex y usually runs from -100 to +100 and
+gives no ground height.
+
+The arch centre is the quad midpoint `(v0+v2)/2` in xz to within 0.02 on most arches. It is
+off by up to 1.4 where the quad is narrower than the arch: Carrier1 cp2 (quad 1.16 wide),
+Airport3 cp7, Quarry1 cp0/cp2, Timber2 cp5. For an exact centre, use the midpoint of the
+arch faces' along-extent.
+
+**Every race type 0 track has an arch at every checkpoint**, Junkyard included. The missions
+differ:
+- `quarry_mission` (type 3) has them.
+- `newcity_mission` (type 4) and `timber_mission` (type 2) list checkpoints but have no
+  arches. The game ignores their checkpoints anyway (below).
+- Arenas and net-only tracks have 0 checkpoints.
+
+**Race info** `gCurrent_race` = 0x007623A0. This is the 3rd argument of the race-TXT loader
+0x00504BF0, called from InitRace at 0x004819D8.
+- +0x04 laps
+- +0x08 checkpoint count, read at 0x007623A8
+- +0x21C `tCheckpoint checkpoints[]`, stride 0x114, starting at 0x007625BC
+
+The loader's checkpoint loop is 0x0050516F..0x00505391. The layout below is from the pointers
+it passes. It uses the 3-value reader 0x0048FE30 (ecx file, edx first) and the vector reader
+0x004901C0.
+
+| Offset | Field |
+|---|---|
+| +0x000 | `int time_value[3]` (per skill) |
+| +0x00C | `int quad_count` (at most 4) |
+| +0x010 | `br_vector3 vertices[4][4]`: quad q, corner k at +0x10 + q*0x30 + k*0xC. v0/v1 share one end (y +100/-100), v2/v3 the other. |
+| +0x0D0 | `br_vector3 normal[4]` = (v1-v0) x (v2-v0), **not normalised**, horizontal |
+| +0x100 | `br_vector3 centre` = mean of all quad corners. Its y is ~0 when the quads span +-100. |
+| +0x10C | `float map_x, map_y`: the icon's map pixel, rewritten by the map callbacks 0x004968F0 / 0x00496940 |
+
+All shipped checkpoints have 1 quad.
+
+**The next checkpoint** is not in the car spec. It lives in globals:
+
+| Address | C1 name | Meaning |
+|---|---|---|
+| 0x00761EEC | `gCheckpoint` | **1-based** index of the checkpoint to hit next: `checkpoints[gCheckpoint-1]` |
+| 0x00761CE8 | `gCheckpoint_count` | copy of +0x08 |
+| 0x0075B944 | `gLap` | |
+| 0x0075BA50 | `gTotal_laps` | |
+| 0x0074D62C | race over | non-zero once the race is over; set to 10000 on finishing |
+
+- InitRace sets `gLap` and `gCheckpoint` to 1 (EBP = 1) at 0x00481C7A / 0x00481CC7, and
+  `gCheckpoint_count` at 0x00481CCD.
+- The HUD prints `gCheckpoint/gCheckpoint_count` and `gLap/gTotal_laps` at 0x004936A0..0x004936DC.
+  The format is 0x00658944, the labels are misc strings 0x15 and 0x14.
+
+**Order is enforced (single player).** `CheckCheckpoints` 0x005034B0 is called once per frame
+from MainGameLoop at 0x004930A8. For each car it takes the segment from the old position
+(`car+0x40`, the saved last matrix `car+0x1C..0x4B`) to the actor's current translation
+(+0x50). It tests that segment against the triangles (v0,v1,v2) and (v0,v2,v3) of every quad
+(0x0045ECC0), using the stored normal.
+- A hit on index i where `i+1 == gCheckpoint` calls `IncrementCheckpoint` 0x005032A0.
+  - Otherwise `gCheckpoint++`.
+  - After the last checkpoint: `gCheckpoint = 1` and `gLap++`, with a "final lap" message
+    when `gLap` reaches the total.
+  - Past the last lap it calls RaceCompleted 0x005030B0 and leaves `gCheckpoint = count`.
+- Any other checkpoint shows the "wrong checkpoint" headup, throttled to 2 s, or 20 s for
+  the same one (same code as 0x005033E0).
+- All of this runs only when the race type `*(int*)([0x00762438] + 0x210)` is 0 or 3.
+  0x00762438 is `gCurrent_race + 0x98`, a pointer to the RACES.TXT entry. Its "Race type"
+  is 0 Carma1, 1 Cars, 2 Peds, 3 Checkpoints, 4 Smash (5 on Carrier_mission).
+- The same 0/3 gate hides the HUD counter and the map icons.
+
+**Net games** use other state (0x0068B918 != 0).
+- Game type `[0x0074B784]+0x74 == 3` ("checkpoint stampede", any order): a bitmask of
+  checkpoints still to hit, at net-player `+0x64` (0x004A69B0). A hit clears its bit.
+- Types 4/5: a counter, where the next index is `counter % count`.
+- The map mirrors this from `0x0074BD24[player*0x35]`.
+
+**What the game shows.** In the world, nothing changes: arches are static and never
+hidden, recoloured or animated. On the map, `ForEachCheckpoint` 0x00495BA0 calls
+`cb(ecx, edx=index, arg, is_next)`:
+- single player: `is_next = 1` for `gCheckpoint-1` first;
+- with `show_all`: `is_next = 0` for the rest.
+
+The icon blitter 0x004969E0 (0x00495D00 for the HUD minimap) draws the checkpoint's number
+from `CPNUMB.PIX` (`[0x0068D6E4]`, loaded at 0x004971BC, row = index x `[0x0068C860]`).
+- For `is_next` it draws only while the blink toggle 0x00514DB0 is on, so **the next
+  checkpoint blinks on the map**.
+- The others are drawn steadily.
+
+Callers: `DrawMapBlips` 0x00495E10 (with 0x004968F0/0x00496940 first computing map_x/map_y),
+and the minimap 0x004950B0 (callbacks 0x00496B10, 0x00495D00).
+
+**Placing a light under arch i (for the proxy):**
+1. Gate on race type 0 or 3, net mode 0, and race-over == 0. Read the count at 0x007623A8
+   and the quad at `0x007625BC + i*0x114 + 0x10`.
+2. Axis `a = normalize((v2-v0).xz)`; midpoint `m = (v0+v2)/2`.
+3. Take the ground and the exact centre from the arch faces. Two ways:
+   - In the loaded track models, `br_face.material->identifier` is `checkpoint` or `post*`.
+     Keep faces within about 4.5 of m in xz and within 1.0 of the quad plane. ground = min y,
+     top = max y, centre = mid of the along-extent. `brender_inject::learn_materials`
+     already reads `model->faces[f].material` at run time.
+   - Or bake a per-race table offline from the TWTs (same filter).
+4. Put the light at `centre + (0, ground + 1.15, 0)`, aimed down (-Y) and just under the
+   beam. Or put a small sphere at ground + 0.6. Scale the height by (top-ground)/1.32 for the
+   bigger arches.
+5. Green for `i == gCheckpoint-1`, the other colour or off for the rest. After the last lap
+   `gCheckpoint` stays at the count, so gate on race-over.
+
+**Confirm live:**
+1. `gCheckpoint` goes 1 -> 2 on the first arch, and wraps to 1 with `gLap++`.
+2. `[0x007623A8]` and the quad corners match the TXT.
+3. `[[0x00762438]+0x210]` is 0 in a normal race.
+4. The grid models' `faces[].material->identifier` really reads `checkpoint` at run time (the
+   faces array must still be allocated).
+5. Arch world coordinates equal the file's, with an identity grid transform and root.
+
+**Implemented (same day), confirmed in game:** `checkpoint_lights` (`src/comp/modules/checkpoint_lights.*`).
+- **Finding the arches:** the faces array is freed after BrModelUpdate, so check 4 above was not
+  needed. The capture reads each race-scene model's prepared groups once per track, through the
+  stored material tokens (`brender_inject::arch_points`). It hands over the world vertices of
+  `checkpoint` / `post*` groups.
+- **Matching an arch to its gate:** each gate takes the vertices within 1.0 of its plane and
+  within half its length + 2.5 of its midpoint along it. Their lowest and highest y are the
+  ground and the beam, and their extent along the gate gives the centre.
+- **The light:** a sphere at 0.85 of the arch height, cone 75 degrees straight down, warm white
+  at 0.35.
+- **Next checkpoint:** optional (`[Checkpoints] GreenNext`, off by default). When on, it glows
+  green at 0.6, gated on race type 0/3, net mode 0 and race-over 0.
+- **Track change:** a changed checkpoint table (count and gate corners) clears the scan. The
+  pause round trip keeps it.
+- **Settings:** in `carma2-streetlights.ini` `[Checkpoints]` and the Lights tab.
