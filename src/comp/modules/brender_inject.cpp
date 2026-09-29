@@ -838,7 +838,7 @@ namespace comp
 			const auto& culling = shared::common::config::get().culling;
 			const auto inject = brender_inject::get();
 
-			if (inject && !inject->conversion_enabled()) {
+			if (inject && (!inject->conversion_enabled() || game::map_shown())) {
 				return result;
 			}
 			if (culling.cull_pickups && inject && inject->is_pickup_model_bounds(bounds)) {
@@ -907,7 +907,8 @@ namespace comp
 			const auto self = brender_inject::get();
 			const bool converting = self && self->conversion_enabled();
 
-			apply_far_plane(camera, converting);
+			// A map frame keeps the game's draw distance for its small race window.
+			apply_far_plane(camera, converting && !game::map_shown());
 
 			if (converting) {
 				self->begin_scene(world, camera, static_cast<game::br_pixelmap*>(colour));
@@ -1029,8 +1030,10 @@ namespace comp
 				return;
 			}
 
+			// A map frame is still captured, so the static world keeps seeing what moves and
+			// breaks, but the game draws it itself: nothing of it goes to Remix (end_scene).
 			uint32_t forwarded_style = style;
-			if (capture_timed(self, actor, model, material, style)) {
+			if (capture_timed(self, actor, model, material, style) && !game::map_shown()) {
 				forwarded_style = (style & ~0xFFu) | game::BR_RSTYLE_NONE;
 			}
 
@@ -3339,6 +3342,13 @@ namespace comp
 		// geometry goes to the static batches and would otherwise make a race look like a
 		// one-model widget scene.
 		if (m_scene_models < MIN_WORLD_SCENE_MODELS) {
+			return;
+		}
+
+		// The map image is written into the back buffer before this scene, and a path-traced
+		// frame would cover it: with nothing submitted, Remix shows the game's own picture --
+		// map, race window and car arrows -- as it does with the conversion switched off.
+		if (game::map_shown()) {
 			return;
 		}
 

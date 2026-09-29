@@ -1315,7 +1315,7 @@ $ 0x0079f40c br_actor** g_enabled_lights        /* v1db.enabled_lights; count at
 @ 0x00444270 void PackCameraKeys(void);                 /* from MainGameLoop 0x00493073: no raw Shift/Alt -> slots 31..34 to g_camera_keys bits 1..4, raw Ctrl bit 0; Shift -> MoveHeadupMap */
 @ 0x00497620 void __fastcall MoveHeadupMap(int shift /*ecx*/); /* Shift+slots 31..34 move the HUD mini-map (HeadupMapX/Y), then SaveOptions */
 @ 0x00442e90 void __fastcall CheckToggles(int in_race /*ecx*/); /* walks g_toggles; ends with 0x00442F90 */
-@ 0x00442f90 void CheckMapRenderMoveEtc(void);          /* first block: map mode (0x0075B9A4 == 2) slots 31..34 pan the map (0x00659B30 y, 0x00659B2C x); rest is unrelated race-state code */
+@ 0x00442f90 void CheckMapRenderMoveEtc(void);          /* first block: map mode (0x0075B9A4 == 2) slots 31..34 move the small 3D WINDOW over the map (0x00659B30 y, 0x00659B2C x; not a map pan), clamp to the screen, then MapWindowFromPos 0x004948B0; rest is unrelated race-state code (findings 73) */
 @ 0x0040ea30 void UpdateCamera(void);                   /* switch g_camera_mode: 0/4/7 (and 5/6) -> 0x00410C60, 3 -> 0x0040EF90, 8 -> 0x0040F590 (name inferred) */
 @ 0x00410c60 void __fastcall PositionExternalCamera(tCar_spec *car /*ecx*/, br_matrix34 *car_mat /*edx*/, br_vector3 *pos, float speed, float speedo_speed, br_vector3 *direction, void *old_frame_mat, unsigned dt_ms); /* C1 NormalPositionExternalCamera with PollCameraControls inlined (bit1/2 zoom, bit3/4 orbit, both = reset). Height: g_camera_height lags pos.y (0.2 s implicit Euler), uphill floor at 0x00411833..0x0041186D from direction.y (velocity dir) -- the slope-jitter cause (findings 70); then CollideCamera2, PointCameraAtCar */
 @ 0x004940e0 void __fastcall UpdateCameras(unsigned dt_ms /*ecx*/); /* from MainGameLoop 0x00493083 (dt = [0x0074ABF0]): UpdateCamera(&g_player_car, dt), then camera matrices (0x0051E7D0) */
@@ -1358,8 +1358,37 @@ $ 0x0079efb0 unsigned g_last_frame_time         /* GetTotalTime = this + g_frame
 $ 0x0074a5ec unsigned g_last_mechanics_time     /* physics clock, 40 ms steps */
 $ 0x00679390 br_vector3 g_viewed_car_prev_v     /* viewed car's v before the last physics step (0x004158DA) */
 $ 0x00761f48 int    g_countdown                 /* race-start countdown; enables the camera swoop */
-$ 0x0075b9a4 int    g_map_mode                  /* 2 = map shown (inferred from CheckMapRenderMove) */
+$ 0x0075b9a4 int    g_map_mode                  /* 1 = normal race view, 2 = full-screen map (TAB, ToggleMap 0x00444610) */
 $ 0x00676914 int    g_action_replay_mode        /* inferred */
+
+/* --- The race map, TAB (findings.md section 73). C1 graphics.c map-mode block, restructured --- */
+@ 0x00444610 void  ToggleMap(void);                 /* g_map_mode 1<->2; entering zeroes g_letterbox_enabled (saved in 0x0067C458), stamps 0x00761EDC; then SetRaceViewport 0x004E4B40 */
+@ 0x004e4b40 void  SetRaceViewport(void);           /* g_pmRaceView base/size: map mode -> (0x0074ABC0, 0x0074ABBC, 0x0074ABE8, 0x0074ABC8) = the 128x80 window; else the letterboxed race rect */
+@ 0x004948b0 void  MapWindowFromPos(void);          /* 0x0074ABC0 = (int)[0x00659B2C] & ~3, 0x0074ABBC = (int)[0x00659B30] & ~1, w 128, h 80 */
+@ 0x00496be0 void  MapFrameBegin(void);             /* RenderAFrame 0x004E4EFD, BEFORE the 3D view: in map mode saves+zeroes back-buffer origin/base, copies the map image full screen, dims a frame round the window */
+@ 0x00496d80 void  MapFrameEnd(void);               /* RenderAFrame 0x004E5447, after TintPoly: map mode -> DrawMapBlips 0x00495E10 on the back buffer, restores back-buffer origin/base; mode 1 -> DrawHudMiniMap 0x004950B0 */
+@ 0x00495e10 void  DrawMapBlips(void);              /* cars (0x00496270 -> arrow 0x00495A00), peds (0x004967C0), 0x004DF1E0 list, markers (0x00495BA0 callbacks 0x004968F0 / 0x004969E0) */
+@ 0x00496270 void  DrawCarBlip(void);               /* fastcall, args not typed; arrow via DrawMapArrow, BrPixelmapLine boxes (stub on Glide) */
+@ 0x00495a00 void  DrawMapArrow(void);              /* fastcall; per-pixel BrPixelmapPixelSet from the offset table at 0x006593A0, two colour passes */
+@ 0x004967c0 void  DrawMapDot(void);                /* one pixel written straight into the locked back buffer (BrPixelmapDirectLock) */
+@ 0x004969e0 void  DrawMapMarker(void);             /* BlitSprite16 of strip [0x0068D6E4] under DirectLock, at 0x007626C8 + i*0x114 */
+@ 0x004950b0 void  DrawHudMiniMap(void);            /* map mode 1: crops the map image into memory pixelmap [0x0068D8D8] (a HUD texture) */
+@ 0x0047cce0 void  DimRectangle(void);              /* fastcall (pm, x0, y0, x1, y1, border); on HW ([0x0074CF60]) -> DrawOverlayQuad */
+@ 0x00516c10 void  BackBufferLock(void);            /* BrPixelmapDirectLock(g_pmBackBuffer) if pixels == NULL */
+@ 0x00516c30 int   BackBufferUnlock(void);          /* BrPixelmapDirectUnlock(g_pmBackBuffer) if locked */
+@ 0x00517d90 void  __fastcall MapCopyIndexed(br_pixelmap *dst /*ecx*/, br_pixelmap *src /*edx*/); /* 320x200 mode: 8-bit map -> 15/16-bit back buffer through a built palette */
+@ 0x005191b0 void  __fastcall PDRectangleCopy(void);/* thin wrapper of BrPixelmapRectangleCopy */
+@ 0x00538800 void  BrPixelmapPixelSet(br_pixelmap *pm, int x, int y, unsigned int colour); /* dispatch +0xA0 -> grLfbLock/grLfbUnlock per pixel */
+@ 0x00538430 void  BrPixelmapRectangleCopyP(br_pixelmap *dst, void *point, br_pixelmap *src, void *rect); /* same device -> +0x84; memory src -> dst +0x88 (_rectangleCopyTo = grLfbWriteRegion) */
+$ 0x00763274 br_matrix34 g_map_transformation   /* world -> map-image pixels (C1 tRace_info.map_transformation) */
+$ 0x007632a4 br_pixelmap* g_map_image           /* the race map picture, copied 640x480 to the back buffer each map frame; loader not located */
+$ 0x0074d630 int    g_graf_data_index           /* 0 = 320x200, 1 = 640x480 (C1 gReal_graf_data_index) */
+$ 0x00659b2c float  g_map_window_x              /* 3D window position on the map, moved by slots 33/34 */
+$ 0x00659b30 float  g_map_window_y              /* moved by slots 31/32 */
+$ 0x0074abc0 int    g_map_window_left
+$ 0x0074abbc int    g_map_window_top
+$ 0x0074abe8 int    g_map_window_w              /* 128 */
+$ 0x0074abc8 int    g_map_window_h              /* 80 */
 
 /* --- Heads-up text messages (findings.md section 58); C1 displays.c names --- */
 @ 0x00449fd0 int   __fastcall NewTextHeadupSlot2(int slot /*ecx*/, int flash_rate /*edx*/, int lifetime_ms, int neg_font, const char *text, int queue_it); /* ret 0x10; text strcpy'd (< 252 bytes); returns headup index or -1 */

@@ -341,7 +341,7 @@ namespace comp::game
 	bool show_headup_message(const char* text, const int lifetime_ms)
 	{
 		if (*reinterpret_cast<const int*>(rebase(ADDR_g_racing)) != 1
-			|| *reinterpret_cast<const int*>(rebase(ADDR_g_map_mode)) == 2) {
+			|| map_shown()) {
 			return false;
 		}
 

@@ -356,6 +356,14 @@ namespace comp::game
 	// (a Present hook is right). Returns false when the game is not showing messages.
 	bool show_headup_message(const char* text, int lifetime_ms);
 
+	/*
+	 * Whether the race map (TAB) is up (findings 73). A map frame starts with the map image
+	 * copied into the back buffer, shrinks the race view to a 128x80 window over it, and
+	 * draws the car arrows onto the back buffer after the scene.
+	 */
+	constexpr int MAP_MODE_SHOWN = 2;
+	inline bool map_shown() { return *reinterpret_cast<const int*>(rebase(ADDR_g_map_mode)) == MAP_MODE_SHOWN; }
+
 	// ---
 
 	extern void init_game_addresses();

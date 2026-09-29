@@ -5549,3 +5549,202 @@ Switching Remix's own sky menu to the raster sky therefore had no sky to show, a
 
 The choice is in the F4 Sun tab and appears only on Remix Plus. It takes effect on the next race
 frame, and it is saved with the other sky settings.
+
+## 73. The race map (TAB) under Remix (2026-09-29)
+
+Static only (Ghidra, `CARMA2_HW.EXE`; proxy source; dxvk-remix source). **[C]** confirmed
+from disassembly, **[H]** inference. Reported symptom: with TAB the map never shows; the
+player sees a full-screen 3D view with only the cars' arrows on top.
+
+### 73.1 How the game draws a map frame
+
+`g_map_mode` (0x0075B9A4): 1 = race view, 2 = map. `ToggleMap` 0x00444610 flips it. On the
+way in, it saves and zeroes `g_letterbox_enabled`, then calls `SetRaceViewport` 0x004E4B40.
+**[C]** In map mode that function shrinks the race-view pixelmap `[0x00762128]` to a
+**128x80 window**:
+- position `(0x0074ABC0, 0x0074ABBC)`, size `(0x0074ABE8 = 128, 0x0074ABC8 = 80)`;
+- set by `MapWindowFromPos` 0x004948B0 from the floats `0x00659B2C` (x) and `0x00659B30` (y).
+
+**Correction:** `CheckMapRenderMoveEtc`'s keys 31..34 move this 3D window over the map, clamped
+to the screen. They don't pan the map. This is C1's movable map window.
+
+`RenderAFrame` 0x004E4E40 in map mode, in order:
+
+| # | site | what | reaches nGlide as |
+|---|---|---|---|
+| 1 | 0x004E4EFD `MapFrameBegin` 0x00496BE0 | saves and zeroes the back buffer's origin/base. If `g_map_image` `[0x007632A4]` is set and `g_graf_data_index` `[0x0074D630]` != 0 (640x480): `BackBufferUnlock`, then `BrPixelmapRectangleCopy(back, 0, 0, map_image, map.origin, 640, 480)` @ 0x00496D1E. That is a memory-to-device copy, so dispatch +0x88 `_rectangleCopyTo` -> **`grLfbWriteRegion`**. Then `DimRectangle` 0x0047CCE0 round the window (margins `graf[0x3E8/0x3EC]`) -> `DrawOverlayQuad` -> `BrZbSceneRender` | one LFB write of the whole screen, plus overlay triangles |
+| 2 | (letterbox) | skipped in map mode | -- |
+| 3 | 0x004E5371 `RenderView` | **the 3D race scene is still rendered**, same camera `[0x0074D35C]`, into the 128x80 sub-pixelmap | `grDrawTriangle` |
+| 4 | 0x004E53CD | `TintPolySceneRender` | triangles |
+| 5 | -- | the whole HUD block is skipped (`g_map_mode != 2`) | -- |
+| 6 | 0x004E5447 `MapFrameEnd` 0x00496D80 | `DrawMapBlips` 0x00495E10 straight onto the back buffer (list below), then restores the back buffer's origin/base | LFB lock/write |
+| 7 | 0x004E548B / 0x004E54D1 | `HudFlush`, swap | |
+
+What `DrawMapBlips` draws, all mapped world -> map pixels through `g_map_transformation`
+(0x00763274):
+- **Car arrows:** `DrawCarBlip` 0x00496270 -> `DrawMapArrow` 0x00495A00. The arrow is one
+  `BrPixelmapPixelSet` (0x00538800, dispatch +0xA0 -> `grLfbLock`/`grLfbUnlock`) **per pixel**,
+  taken from the offset table at 0x006593A0 in two colour passes.
+- **Boxes:** `BrPixelmapLine` (0x00538990). It is a stub on this device, so they were never
+  visible under Glide.
+- **Pedestrians:** `DrawMapDot` 0x004967C0 writes single pixels into the back buffer while
+  it is held with `BrPixelmapDirectLock`.
+- **Markers:** callbacks 0x004968F0 / 0x004969E0 blit `[0x0068D6E4]` sprites with
+  `BlitSprite16` under DirectLock.
+
+Map mode 1 (the normal race) instead crops the map into the HUD minimap texture `[0x0068D8D8]`
+(0x004950B0).
+
+The map image is the race's map picture; C1 `tRace_info` has `map_image` and
+`map_transformation` side by side, and here the matrix sits at 0x00763274 with the pointer
+right after it at 0x007632A4.
+- **[H]** At 640x480 it must already be in the back buffer's 16-bit format, since the copy
+  goes out with no conversion. The 320x200 path, `MapCopyIndexed` 0x00517D90, converts 8-bit
+  through a palette.
+- The loader was not located: the pointer is written through a struct base.
+
+### 73.2 Why the map is missing under the proxy
+
+**[C] Everything depends on order relative to the Remix injection point.**
+
+1. The map copy (step 1) happens **before** `RenderView`.
+2. In `RenderView` the proxy sees a normal race scene: the same race camera, more than 8
+   models. It captures and suppresses the game's raster as usual. `end_scene` -> `submit`
+   draws the path-traced world with a full-screen projection (`build_projection` knows
+   nothing of the 128x80 viewport). It ends with `trigger_injection`.
+3. Remix then composites the path-traced frame over the **whole** render target. This
+   erases the LFB-written map, the dim frame and the game's (mostly suppressed) 128x80 raster.
+4. Everything in step 6 lands **after** injection, so it survives. That is exactly "only the
+   arrows": the car arrows, dots and markers are LFB writes made after injection.
+
+So this is neither "Remix never shows LFB writes" nor a missing blit. The arrows prove that
+LFB writes reach the screen. The map's single write is simply made before injection.
+
+The full-screen view the user sees is the proxy's path-traced race view at the full camera
+field of view.
+- The game's own view is only 128x80 in this mode.
+- **[H]** If it really looks rasterized, check whether nGlide's `SetViewport`/scissor for the
+  128x80 clip window is still bound at submit. `submit` captures and restores `D3DSBT_ALL`
+  but never sets a viewport itself.
+
+### 73.3 What Remix needs to show a 2D full-screen image
+
+(`d3d9_rtx.cpp` `makeDrawCallType` / `internalPrepareDraw`)
+- A draw after `m_rtxInjectTriggered` is always passed through as raster. This is why the
+  arrows show.
+- Before injection, a draw is treated as UI (raster, and it triggers injection) when either:
+  - FFP with an orthographic projection (`proj[3][3] == 1`) and z-writes off; or
+  - a bound texture is in `rtx.uiTextures`.
+- `rtx.preTransformedVerticesIsUI` defaults to false and package/rtx.conf does not set it.
+  nGlide's POSITIONT draws are therefore "Rasterized, no trigger": drawn, then overwritten
+  by the composite.
+- If no draw touches the Remix camera in a frame, `injectRTX` does nothing
+  (`isCameraValid` = camera touched this frame, `rtx_context.cpp:543`, `rtx_camera.h:291`),
+  and the back buffer is presented as rasterized. This is the §50 "conversion off" case,
+  which is reported working.
+
+### 73.4 Fix options
+
+**A. Pass the map frame through (recommended).** While `g_map_mode == 2`:
+- submit nothing;
+- suppress nothing;
+- do not trigger injection.
+
+Remix then has no camera that frame and presents nGlide's raster: the map, the dim frame,
+the game's own 128x80 3D window, and the arrows. This is the original game's picture, and
+Remix path-tracing a full frame nobody sees is wasted work anyway.
+
+It fits the existing design, because §50's conversion switch already gives exactly this
+behaviour. A try with no code change: F4 -> Conversion off, then TAB. The map should appear.
+
+Calling `set_conversion(false/true)` on each toggle would work, but switching back runs
+`reset_static_world`, which rebuilds the chunks on every TAB release. Cleaner is a per-frame
+pass-through flag, read in `hk_scene_begin` (the map mode only changes between frames, in
+key handling before `RenderAFrame`):
+- `hk_model_render`: keep calling `capture_timed` so the static-world tracking stays current
+  while cars move. Ignore its suppress verdict and forward the game's own style, so the chunked
+  world, dynamics and horizon rasterize into the window.
+- `end_scene`: return before `submit` (no draws, no API lights, no `trigger_injection`).
+  `m_queue` is cleared at the next `begin_scene`.
+- `hk_bounds_test`: return the game's own verdict, otherwise BRender software-T&Ls the whole
+  level for a 128x80 window. `hk_scene_begin`: put `yon_z` back (`g_game_yon`), as §50 does.
+- No static-world reset is needed on exit. The first frame back is a camera cut for Remix's
+  history.
+- `game::show_headup_message` already refuses in map mode.
+
+**B. Draw the map ourselves as UI after injection.**
+- In `submit`, after `trigger_injection`, draw `g_map_image` (`[0x007632A4]`, 640x480,
+  pixels at +0x08, row_bytes +0x28, type +0x2C: expected 5 = RGB_565 -> `D3DFMT_R5G6B5`;
+  re-upload only when the pointer changes) as a textured quad.
+- Use an orthographic/identity projection, z-writes off, and the back-buffer size for the
+  quad. After injection it is raster anyway.
+- The arrows then land on top by themselves.
+
+The catch is the 3D window. Remix renders one full-screen camera, so a hole cut at
+`(0x0074ABC0, 0x0074ABBC, 128, 80)` would show a crop of the full-field-of-view
+path-traced frame, not the game's framing. Without a hole the window is simply gone. The
+dim frame would also need redoing. This costs a full path-traced frame to show a picture that
+is 2D.
+
+**C. Hook the blit** (`MapFrameBegin` 0x00496BE0 or `BrPixelmapRectangleCopy` with
+`src == g_map_image`) and defer it until after `submit`. It has the same 3D-window problem as
+B, plus ordering against nGlide's LFB path. It is not worth it.
+
+### 73.5 To confirm live
+
+1. F4 -> Conversion off, TAB: map, window and arrows visible (confirms 73.2 and option A).
+2. With conversion on, TAB: does the full-screen view move with the car and look
+   path-traced? This tells whether nGlide's 128x80 viewport leaks into `submit`.
+3. After option A: TAB in and out several times, and check that the chunks do not rebuild
+   and the log shows no "static world reset".
+4. Optional: log `g_map_image->type/width/height` once. Only option B needs them.
+
+**Applied (same day), confirmed in game.** Map frames pass through, as recommended:
+- `game::map_shown()` reads `g_map_mode` == 2.
+- `hk_bounds_test` returns the game's own culling verdict.
+- `hk_scene_begin` keeps the game's own far plane.
+- `hk_model_render` still captures the model (the static world keeps tracking), but forwards
+  the game's own style.
+- `end_scene` returns before `submit`.
+
+With nothing submitted, Remix shows nGlide's picture: the map, the 128x80 race window and the
+car arrows. Path tracing resumes on the first frame after the map closes, and the static world
+is not reset.
+
+## 74. Ground decals: tags, a smaller lift, new slicks (2026-09-29)
+
+**Floating.** `[Effects] DecalOffset` 0.02 lifted every ground-decal quad about 14 cm (one unit
+is about 6.9 m), so tyre marks and blood visibly floated.
+
+**Tags.** The ground decals' textures are now in `rtx.decalTextures`, so Remix blends them onto
+the surface below. The hashes come from the loose PIX16 files:
+
+| Texture | Hash | Used for |
+|---|---|---|
+| `SKIDMARK` | `79916BAB93C1E215` | tyre marks |
+| `MUD1` | `8463BB286228B92D` | tyre marks on mud |
+| `snowskid` | `DEBE9C8202D57BFC` | tyre marks on snow |
+| `GIBSMEAR` | `587AA7EB3F72B3D2` | blood smears |
+| `GIBSLICK` | `4BFBFB2D5C0FCAC1` | the blood slick, `PEDS\GIBLETS\PIX16`, in the oil-spill pool |
+| `OILSMEAR` | `7FF529EA8568DA95` | already tagged |
+| `OIL` | `7A7F97E979F35B95` | already tagged |
+
+The race TXTs name the skid materials per surface: `SKIDMARK.MAT`, `DESKID.MAT`, `MUD1.MAT`,
+`ROAD1.MAT` and `snowskid`. `DESKID` and `ROBSMEAR` have no loaded pixelmap.
+
+**Remix's offset is not enough.** With tags and no lift, blood z-fought in game: Remix's own
+decal offset is too small at this scene scale.
+
+**The lift stays, smaller.** The default is now 0.006, about 4 cm, and it is confirmed in game.
+- `decal_lift()` is the single source of it.
+- `model_geometry::lift` records what a quad was built with. A changed setting marks the quad
+  dirty, so the F4 Effects slider ("Decal lift") applies at once to marks already laid.
+
+**Slicks (mod, `rtxmod/materials_surfaces.usda`).** OIL and GIBSLICK are replaced at 512x512:
+- the game's silhouette, smoothed;
+- a meniscus height ramp over 14 px, with faint ripples, as a BC5 normal map in Remix's
+  octahedral encoding;
+- BC7 albedo with alpha.
+
+The textures are `assets/generated/<hash>_slick.{a,n}.dds`. Blood gets roughness 0.12 and
+metallic 0.2; the oil keeps its thin film.
