@@ -322,6 +322,16 @@ namespace shared::common
 			// Scale on the additive copy's alpha, 0..1: how brightly the unlit sprites show
 			// their own colour. rtx.emissiveBlendOverrideEmissiveIntensity scales it too.
 			float unlit_sprite_brightness = 1.0f;
+
+			// Keep the game's per-frame physics restore off walking pedestrians' root bones.
+			// Above 25 fps it snaps the torso back to the last 40 ms physics step while the
+			// limbs stay where the animation put them, and loses most of their walking.
+			bool ped_motion_fix = true;
+
+			// Draw pedestrians between their animation keyframes (30 Hz and slower) instead of
+			// snapping from one to the next, and the limbs of flung ones and bodies on the torso's
+			// position every frame instead of every 40 ms physics step.
+			bool ped_interpolation = true;
 		} effects;
 
 		struct sky_settings

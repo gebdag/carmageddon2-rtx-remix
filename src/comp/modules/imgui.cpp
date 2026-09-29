@@ -450,26 +450,52 @@ namespace comp
 			"flicker against it, too much and they float; one unit is about 6.9 m. Takes effect at once. "
 			"[Effects] DecalOffset.");
 
+		ImGui::Separator();
+
+		ImGui::Checkbox("Pedestrian motion fix", &effects.ped_motion_fix);
+		ImGui::TextWrapped(
+			"Above 25 fps the game snaps a walking pedestrian's torso back to its last physics step on most "
+			"frames: the chest lags the limbs, they jitter, and they walk at a fraction of their speed. On, "
+			"the physics leaves walking pedestrians where their animation puts them. Takes effect at once. "
+			"[Effects] PedMotionFix.");
+
+		ImGui::Checkbox("Pedestrian animation interpolation", &effects.ped_interpolation);
+		ImGui::TextWrapped(
+			"The game poses a pedestrian only at its animation keyframes, 30 a second or fewer, and the limbs "
+			"of a flung pedestrian or body follow its torso only on 25 Hz physics steps, so limbs step at a "
+			"higher frame rate. On, each frame draws pedestrians between their current and next keyframe, "
+			"with flung limbs on the torso's position that frame. In action replay, flung pedestrians and "
+			"severed parts are drawn between their recorded physics steps. Takes effect at once. "
+			"[Effects] PedInterpolation.");
+
 		const bool dirty = effects.cull_closed_meshes != m_saved_effects.cull_closed_meshes
 			|| effects.additive_car_flames != m_saved_effects.additive_car_flames
-			|| effects.decal_offset != m_saved_effects.decal_offset;
+			|| effects.decal_offset != m_saved_effects.decal_offset
+			|| effects.ped_motion_fix != m_saved_effects.ped_motion_fix
+			|| effects.ped_interpolation != m_saved_effects.ped_interpolation;
 		save_row(dirty,
 			[&] {
 				config.set_bool("Effects", "CullClosedMeshes", effects.cull_closed_meshes);
 				config.set_bool("Effects", "AdditiveCarFlames", effects.additive_car_flames);
 				config.set_float("Effects", "DecalOffset", effects.decal_offset);
-				m_saved_effects = { effects.cull_closed_meshes, effects.additive_car_flames, effects.decal_offset };
+				config.set_bool("Effects", "PedMotionFix", effects.ped_motion_fix);
+				config.set_bool("Effects", "PedInterpolation", effects.ped_interpolation);
+				m_saved_effects = { effects.cull_closed_meshes, effects.additive_car_flames, effects.decal_offset, effects.ped_motion_fix, effects.ped_interpolation };
 			},
 			[&] {
 				effects.cull_closed_meshes = config.get_bool("Effects", "CullClosedMeshes", true);
 				effects.additive_car_flames = config.get_bool("Effects", "AdditiveCarFlames", true);
 				effects.decal_offset = std::clamp(config.get_float("Effects", "DecalOffset", 0.006f), 0.0f, 0.1f);
-				m_saved_effects = { effects.cull_closed_meshes, effects.additive_car_flames, effects.decal_offset };
+				effects.ped_motion_fix = config.get_bool("Effects", "PedMotionFix", true);
+				effects.ped_interpolation = config.get_bool("Effects", "PedInterpolation", true);
+				m_saved_effects = { effects.cull_closed_meshes, effects.additive_car_flames, effects.decal_offset, effects.ped_motion_fix, effects.ped_interpolation };
 			},
 			[&] {
 				effects.cull_closed_meshes = true;
 				effects.additive_car_flames = true;
 				effects.decal_offset = 0.006f;
+				effects.ped_motion_fix = true;
+				effects.ped_interpolation = true;
 			});
 	}
 
@@ -1133,7 +1159,7 @@ namespace comp
 		p_this = this;
 
 		const auto& effects = shared::common::config::get().effects;
-		m_saved_effects = { effects.cull_closed_meshes, effects.additive_car_flames, effects.decal_offset };
+		m_saved_effects = { effects.cull_closed_meshes, effects.additive_car_flames, effects.decal_offset, effects.ped_motion_fix, effects.ped_interpolation };
 		m_saved_fog = fog_now();
 		m_saved_dynamic_sky = shared::common::config::get().sky.dynamic_brightness;
 		m_saved_physical_sky = shared::common::config::get().sky.physical;

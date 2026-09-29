@@ -197,6 +197,8 @@ namespace comp
 			bool cull_closed_meshes;
 			bool additive_car_flames;
 			float decal_offset;
+			bool ped_motion_fix;
+			bool ped_interpolation;
 		};
 		effects_settings m_saved_effects{};
 

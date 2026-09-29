@@ -5919,6 +5919,632 @@ and the minimap 0x004950B0 (callbacks 0x00496B10, 0x00495D00).
   pause round trip keeps it.
 - **Settings:** in `carma2-streetlights.ini` `[Checkpoints]` and the Lights tab.
 
+## 76. Pedestrian animation timing and jitter (2026-09-29)
+
+Static only (Ghidra project Carmageddon2, program `CARMA2_HW.EXE`, plus capstone on
+`CARMA2_HW0.EXE`). Nothing checked in game. **[C]** read from the code, **[H]** an inference,
+**[?]** open. Names are ours; kb.h has the signatures.
+
+### 76.1 How a ped's animation advances
+
+**The data** **[C]**:
+- A form's moves are at `form+0x40`, stride 8: `{int id; move *m}`. `inst+0x07` indexes this
+  table, not the id.
+- The move:
+  - `+0x28` s16 frame count;
+  - `+0x2A` u8 "no root motion";
+  - `+0x2B` u8 loop-reset axes (1 X, 2 Y, 4 Z; walk uses Y);
+  - `+0x2C` u32 default period in ms. LoadForm computes it as `1000 / "Default frame rate"`,
+    and every BIPED1 move says 30, so 33 ms;
+  - `+0x4C` the frames, stride 0x34.
+- A frame:
+  - `+0x00` 3x3 float rotation of the root bone (Spine) in body space;
+  - `+0x24` the root's displacement from the previous frame;
+  - `+0x30` a `u8*` to 3 Euler bytes per bone.
+- The bytes are the high byte of a br_angle, so a bone angle has 256 steps per turn (1.41
+  degrees). 0x004080D0 builds R from them with the 256-entry sin/cos tables at 0x00676E30 and
+  0x00677328.
+- The root alone keeps a full float matrix.
+- Per-move settings sit at `personality+0x30`, stride 0xC: `{int grounding mode, float
+  grounding offset, float scale}`, from DEFBIP1.TXT (scale 0.35, offset 0.154).
+
+**The clock: AnimateCharacter 0x00409CA0** **[C]**
+- Signature: `__fastcall (inst ecx, now_ms edx, int unused)`, `ret 4`.
+- It is time-based:
+  - `x = clamp((now - inst+0x24) / inst+0x1E, -10, 10) + inst+0x18 + frame`;
+  - the fraction `inst+0x18 = x - floor(x)`;
+  - whole frames to step `n = floor(x) - frame`;
+  - `inst+0x24 = now`.
+- Fields:
+  - `+0x1C` s16 current frame;
+  - `+0x18` float fraction, which carries the sub-frame time from one call to the next;
+  - `+0x1E` s16 period in ms (0 freezes the animation).
+- For each whole frame it does `frame++` (with wrap or next-move handling) and then calls
+  `PoseCharacterActors(inst, mode, move_root=1)`. The mode is 2 (root translation only) on
+  every step but the last, and 0 (everything) on the last.
+- It then stores the root velocity `inst+0xD8 = (moved) / (period * n * 0.001)` in units/s.
+- **Summary:** the animation is driven by game time at a fixed keyframe rate, not by distance
+  walked.
+
+**Keyframe rate:**
+- 33 ms (30 Hz) by default.
+- SetMove 0x0040A050 (`period >= 0` in ms, `< 0` = a factor times the move default) changes
+  it. Munge ramps it between 30 and 100 ms (`/ [0x007447E0]`, via 0x004D1C60) to speed up or
+  slow down a running ped.
+- So peds step at 10 to 33 Hz.
+
+**PoseCharacterActors does not interpolate** **[C]**:
+- It poses exactly frame `inst+0x1C`.
+- Root: `t = frame.R x inst+0x8C`. Its translation is `old t + frame.delta * scale` carried
+  through `inst+0x5C`. Children use the byte angles of the same frame.
+- The fraction `inst+0x18` is never used for posing.
+- With no whole-frame step (n == 0) nothing is re-posed.
+- Modes: 0 all, 1 root only, 2 root translation only, 3 children only (OrientCharacter uses
+  3). It also clears `inst+9` bit 0.
+
+### 76.2 How often peds are processed
+
+**[C]**
+- The race loop 0x00492950 calls, in this order:
+  1. FrameTiming;
+  2. MungePedestrians (0x00492DA7);
+  3. ApplyPhysicsToCars -> DoPhysics;
+  4. RenderAFrame.
+- MungePedestrians runs once per frame over the whole array. Every ped with active bit 0 gets
+  `AnimateCharacter(inst, GetTotalTime())` at 0x004D4DF4. There is no round robin and no every
+  N frames.
+- Its call is `mov ecx,[rec]; push 0; mov edx,now; call`.
+- Pose and root translation are advanced in the same call, at the same time.
+- Turning is separate. The facing lerp (0x004CC2C0 sets up `phys+0x54..0x70`) runs every
+  render frame through OrientCharacter 0x0040A730, which rewrites `inst+0x8C`, `inst+0x5C` and
+  the root rotation and re-poses the children (mode 3). So orientation moves every frame while
+  pose and position move only at keyframes.
+
+### 76.3 Why the chest leaves the limbs: the physics restore overwrites the root bone
+
+**What the ped registers** **[C]**:
+- On activation, Munge calls StartCharacterPhysics 0x00408C30 (via 0x00409030) with
+  boned = 0.
+- That registers one "simple physics" body per ped. The pool is `form+0x38`, slot `inst+5`,
+  and the flag is `inst+0x14` bit 0.
+- 0x004085F0 fills the body:
+  - `body+0x00` = the **root bone actor** (Spine);
+  - `body+0x8C` = a copy of its t;
+  - `body+0x238` = 2 (a ped);
+  - `body+0x23C` = the instance;
+  - `+0xEC` = 1 (asleep).
+- It then adds the body to the physics world list `[0x0074A5F0]` (0x004B62B0 ->
+  0x004B5D40, params `+8` = 1 = not simulated).
+- If the body cannot be added, Munge drops the ped's actor set, so **every visible ped has one**.
+
+**What DoPhysics 0x004B6630 does to it** **[C]**:
+- **Step frames:**
+  - The pre-step loop sets `body+0xF0 = 2` on params-type-1 bodies.
+  - 0x004B99E0 then treats the actor as authoritative. It only compares it with `+0x8C`, and
+    wakes the body if it moved.
+  - FinishPhysicsStep 0x004BAA00 ends each 40 ms step with `body+0x8C = actor t` for **every**
+    body and resets `+0xF0` to 0.
+- **Frames with no step** (`[0x0074A5EC] >= frame end`):
+  - RestoreSteppedPoses 0x004C2600 (call at 0x004B66A2) runs over **every** body in the list
+    and sets `actor t = orthonormalised(body+0x8C)` (0x00532F60; `+0xBC` if `+0xF0` == 1).
+  - It exists to undo last frame's rewind (0x004C2830), but the rewind applies only to params
+    type 2. Walking peds are type 1, so the restore undoes nothing for them. It overwrites.
+- Only type 2 bodies get the post-physics callback 0x00416300 -> 0x0040B770, which re-poses
+  the children from the root. Walking peds do not.
+
+**The effect** (above 25 fps, most frames have no physics step):
+1. Munge advances the root to keyframe i and poses the limbs from it.
+2. DoPhysics then snaps **only the root** (the Spine model: chest and pelvis) back to its t
+   from the last 40 ms step, both translation and rotation. The limbs stay at keyframe i.
+3. The torso is drawn one or more keyframes behind the limbs. It catches up only when a
+   keyframe lands in a frame that also runs a physics step.
+- **That is the chest desync** **[C]** for the code path, **[H]** that it is what you see.
+- **It also loses motion** **[H]**:
+  - The next AnimateCharacter adds the next delta to the reverted translation.
+  - Only keyframes that land in a physics-step frame keep their displacement, so the walking
+    speed falls to roughly `min(1, 25 / fps)`: about 42 % at 60 fps.
+  - The ped record's `+0x1C` (copied from the root right after AnimateCharacter) disagrees
+    with the drawn root in no-step frames, so it jumps back and forth.
+- At 25 fps or less every frame steps, so the bug did not show on 1998 hardware.
+- **[?]** The orthonormalising copy would also strip any scale from the root (ped-size
+  powerup, 0x004D69B0).
+
+**The jitter** has two causes:
+1. The restore above: a back and forth at the physics rate.
+2. Pose and position snapping at the keyframe rate (10 to 33 Hz). The cadence is uneven at
+   60 Hz or more, while cars are interpolated (0x004C2830) and the camera is smooth.
+
+**Minor [H]:** limbs use 8-bit Euler angles while the Spine uses a float matrix. That is up to
+0.7 degrees of relative noise per axis, which is small next to the above.
+
+**Ruled out** **[C]**:
+- Limbs are drawn in the same frame from the same t. Limbs_actor comes later in the same
+  RenderScene.
+- `+0xE8` is only set for dismembered or physics bodies.
+- The mode 2 intermediate steps are followed by a full mode 0 pose.
+- OrientCharacter re-poses the children.
+
+### 76.4 Fixes, ranked
+
+1. **Keep the physics restore off walking peds' root bones** (the root cause; low risk, about
+   20 lines).
+   - **Where:** redirect the `call 0x004C2600` at **0x004B66A2** (E8 rel32; `ecx` = body list,
+     plain `ret`, no stack args) to a proxy thunk.
+   - **Before calling the original:** for each ped record (`[0x00744808]`, count
+     `[0x007447D4]`, stride 0x54) with active bit 0, take `inst = *rec`. Require
+     `(s8)inst[4] >= 0` and `(inst+0x14 & 5) == 1`.
+   - Then take `body = *(void**)(*(int*)(form+0x38) + 4 + (s8)inst[5]*8)`, with
+     `form = *(personality+0x28)`.
+   - If `*(int*)(*(void**)(body+0x240) + 8) == 1`, save the 0x30 bytes at
+     `(*(br_actor**)body)+0x2C`.
+   - **After calling the original:** write those saved bytes back.
+   - The limbs then stay attached, and every keyframe keeps its displacement.
+   - The pre-step "moved -> wake" test and the step-end snapshot are untouched.
+   - **Expect:** peds walk at their design speed above 25 fps, about 2.4 times faster than now
+     at 60 fps.
+   - **Alternative (rank 3):** sync `body+0x8C = root t` after AnimateCharacter, as
+     SetCharacterPosition 0x0040B0A0 does. That is simpler, but the pre-step no longer sees a
+     walking ped move, which changes when its body wakes for collisions.
+2. **Interpolate keyframes at render time** (removes the 10 to 33 Hz stepping; moderate
+   effort, low risk because game state is restored).
+   - **Where:** detour RenderAFrame **0x004E4E40** (`void`, plain `ret`; `ecx` is not read
+     before it is overwritten; 15 call sites, including replay).
+   - **Before render**, for each active ped:
+     - Skip it if any of these holds: `inst+0x14 & 4`, `inst+0xBC`, `inst+0xE8`,
+       `(s8)inst+7 < 0`, `inst+0x1E == 0`, health `rec+4 <= 0`, replay `[0x00676914]`.
+     - Otherwise let `f = inst+0x1C` and `a = inst+0x18`.
+     - `g = f + 1`. If `g >= m+0x28`, then `g = 0` when `(s8)inst+8 < 0`; otherwise skip.
+     - Save every attached bone's `t` (pose f).
+     - Set `inst+0x1C = g`, call `PoseCharacterActors(inst, 0, 1)`, and read pose g.
+     - Restore `inst+0x1C` and `inst+9`.
+     - Write `blend(f, g, a)` per bone: slerp or nlerp of the rotation, lerp of the translation.
+   - **After render:** write pose f back.
+   - Reusing the game's own pose call avoids re-implementing the Euler order.
+   - Skip dead peds: PoseChildBone calls the RNG (0x004D6C10) when `[0x007447A4] != 0`.
+3. **Translation-only smoothing** (a subset of 2): add `a * frames[g].delta * scale x
+   inst+0x5C` to every attached bone's translation. Cheaper, but the limbs still pose at 30 Hz.
+
+Not recommended: changing how often peds are processed (they already run every frame), or a
+25 fps cap (it hides fix 1's bug but not the stepping).
+
+### 76.5 Confirm live
+
+1. In a frame with no step, the root bone's t translation (`actor+0x50`) matches after
+   MungePedestrians returns and jumps back after ApplyPhysicsToCars returns.
+2. 0x004C2600 is called in about `1 - 25/fps` of the frames.
+3. A walking ped's body has params `+8` == 1, `+0x238` == 2, and `+0xEC` == 1 between steps.
+4. A ped's `+0x1C` speed at 60 fps against 25 fps (expect about 0.42 of it).
+5. `inst+0x1E` is 33 when walking and 30 to 100 when running. PoseCharacterActors is called
+   about 30 times a second per ped.
+6. After fix 1: the drift is gone, peds are faster, and car hits still wake and fling peds.
+
+### 76.6 Hit, dying and physics-driven peds
+
+Static only (Ghidra MCP on `CARMA2_HW0.EXE`, plus capstone). Nothing checked in game.
+
+**Two corrections to 59 and 76.**
+- `inst+0x14` is a bit set, filled by SetCharacterPhysicsMode 0x00409570 **[C]**:
+  - bit 0: the simple body (one per ped, the root bone) is registered;
+  - bit 1: boned bodies (one per bone, form `+0x34` pool) are registered;
+  - bit 2: **physics-driven**. The body is simulated (params `+8` = 2) and
+    PoseCharacterActors no longer poses the root.
+- The ped code only ever asks for mode 5 (simple + driven) or mode 0 (off). All nine call sites
+  of 0x004CC860 and the one direct call of 0x00409570 were checked **[C]**. So bit 1 (a
+  per-bone ragdoll) is never set for peds, and `inst+0x14 & 4` means "flung", not "boned".
+- `inst+0xBC` is the **move-transition slot**, not boned-physics state **[C]**:
+  - SetMove 0x0040A050 takes it from a pool of 20 at 0x00677730 (stride 0x15C) when its queue
+    and last arguments are both non-zero.
+  - BlendMoveTransition 0x004097B0 then blends the byte Euler angles from the old pose into the
+    new move by `progress += rate * dt`.
+  - AnimateCharacter calls it with `dt = now - inst+0x24`, and PoseCharacterActors calls it with
+    `dt = 0`. It frees the slot at progress >= 1.
+  - It is time-based and runs every frame, so transitions are already smooth.
+- `inst+0xE8`: no store to it was found in 0x00401000..0x0040E000 or 0x004C8000..0x004E8000
+  **[C]**. It is probably always NULL for peds **[H]**.
+
+**1. `[0x007447A4]` is a powerup, not a "someone is dying" flag** **[C]**
+- It is a float. There are three writers:
+  - 0x004DECAA, in the POWERUP.TXT apply handler 0x004DECA0 (handler table entry 0x0065E994):
+    `= *(float*)powerup->params[0]`;
+  - 0x004DECD0, the matching remove handler (entry 0x0065EA74): `= 0`;
+  - 0x004D5C9A, in the ped-globals reset 0x004D5BD0: `= 0`.
+- Nothing in the hit, kill or dismember paths writes it. The global skip in the proxy therefore
+  only engages while that powerup is running.
+- What it does (the "twitching corpses" effect; the name is ours **[H]**):
+  - In MungePedestrians, a corpse (health `rec+4 <= 0`, state `rec+0x10 == 6`, move id != 0x71)
+    gets `period = -[0x007447A4]` (a factor of the move default) through SetMoveRecorded
+    0x004D1C60. Without the powerup, the period is 0, which freezes the corpse.
+  - Every 300 ms or more it may also spawn a blood burst at 0x004D5051 (0x004CCFF0).
+- **In PoseChildBone** 0x00407E70: `if ([0x007447A4] != 0.0f) JitterCorpseBoneAngles(inst, &rx, &ry, &rz)`
+  (0x004D6C10).
+  - That function jitters only when `rec = inst+0xE4` has health <= 0, `rec+0x10 == 6`, and
+    `[0x0069BCE0] == 0`. That flag is set by Munge when GetTotalTime has not moved since the
+    last Munge, `[0x00694130]`.
+  - It then adds `IRandomPosNeg(30)` (0x00513580) to each of the three angle bytes. That is up
+    to ±30/256 of a turn (±42°) per axis per bone, on every pose call.
+- **The RNG** is the MSVC CRT `rand()` at 0x00576970:
+  `holdrand = holdrand*214013 + 2531011; return (holdrand >> 16) & 0x7FFF`.
+  - Its whole state is **one u32 at 0x00673750**.
+  - 0x00513580(n) is `rand()*(2n+1) >> 15 - n`.
+  - The other wrappers (0x00513520, 0x00513550, 0x00513650, 0x005135B0) use the same state.
+- **Consequence:** a live ped can never reach the RNG from a pose call. The global skip can
+  become a per-ped test: skip a ped only when `[0x007447A4] != 0 && health <= 0 &&
+  rec+0x10 == 6`, which the health skip already covers. Saving and restoring the 4 bytes at
+  0x00673750 around the extra pose call is cheap insurance.
+- Interpolating a twitching corpse makes no sense in any case: every pose is freshly random.
+
+**2. What a car hit does** **[C]** unless marked
+- **The hit.** The ped-versus-car collision callback 0x004CE280 registers PedHitByCar
+  0x004CE330 (`ecx` ped, `edx` car). It runs inside a physics step and:
+  1. stores the car in the AI block (`rec+0xC`) at `+0xC0`;
+  2. calls `DamagePed(ped, IRandomBetween(75, 200), 0x5B, 0x5B, sever = 0)`. The sever flag is
+     0, so **a car hit never severs through this path**;
+  3. if `!(inst+0x14 & 4)`, calls SetPedPhysicsMode 0x004CC860(inst, 5);
+  4. applies the impulse from the car.
+- **FlingPed** 0x004CC6E0 (explosions and other flings) does the same state change, then gives
+  random linear velocity (`* 0.7`) and angular velocity (`* 4`) and wakes the body.
+- **DamagePed** 0x004CD640 (`ecx` ped, `edx` damage, three stack arguments):
+  - If sever is set, it severs up to 5 random bones.
+  - It lowers `rec+4` (s8), or zeroes it for >= 100 damage.
+  - Still alive: PedSetMoveKind 0x004CBCD0 with new state 5 ("hit").
+  - Dead: PedSetMoveKind (state 5), then KillPed 0x004CCE70 (death sounds recorded for replay,
+    blood 0x004CCFF0, 0x004CD160 kill count and race end), then SetPedDead 0x004CD260
+    (`rec+4 = 0`, `rec+0x10 = 6`, time of death at `rec+0x30`, credits and combo).
+- **Mode 5** (0x00409570 -> StartCharacterPhysics, then the bit 2 block at 0x004095E5) acts on
+  the ped's **simple** body:
+  - `+0xEC = 0` (awake);
+  - `v = inst+0xD8` (the walking velocity);
+  - 0x004B6090 sets params `+8 = 2` (simulated);
+  - `+0xED = 1`, and `inst+0x14 |= 4`, so `inst+0x14` = 5.
+  - Replay records the change as event 0x28 (0x004C8A90).
+- **Ped state `rec+0x10`:** 0 and 1 normal, 3 physics because of the terrain (Munge 0x004D41B0,
+  "turned on physics due..."), 5 hit, 6 dead.
+
+**Which proxy skip fires:**
+
+| Ped | Skips that fire |
+|---|---|
+| (a) hit, flung, alive | `inst+0x14 & 4`. Possibly also `inst+0xBC` if the hit move was set with a transition **[?]** |
+| (b) dead, lying | health `rec+4 == 0`, `inst+0x14 & 4` (when killed by a hit), and the period, once Munge has set it to 0 |
+| (c) dismembered | the torso is case (a) or (b). Each severed piece is its own actor and body; see 4 |
+
+Neither `inst+0x14 & 2` nor `inst+0xE8` is involved.
+
+**3. How a flung ped (simple body, params type 2) is drawn between 40 ms steps**
+- DoPhysics 0x004B6630 **[C]**:
+  - **Frames with a step:** it runs steps 1..5, then **rewinds every type-2 body** by
+    `dt = clamp(mech_time - frame_end, 0, 0.04 s)` (0x004C2830: `t += v*(-dt)`, rotation
+    0x004C2670, recursing into `+0x224` child bodies).
+  - Then 0x004B6BE0 (`ecx` world list, `edx` callbacks) calls, for each awake type-2 body,
+    `callbacks+0xC` = 0x00416300. For `body+0x238 == 2` that calls RederiveFromPhysicsRoot
+    0x0040B770:
+    - `inst+0x8C = LPInverse(frame f) x root t`, with its translation zeroed;
+    - `PoseCharacterActors(inst, 3, 0)` (`edx = 3`, `push 0`), which poses the children only;
+    - `inst+0xD8 = body v`;
+    - the client callback `+8` = PedPostPhysicsStep 0x004D2930.
+  - 0x004B6BE0 also puts asleep bodies back to type 1 through the sleep test `callbacks+0x10`.
+    The race callback table is at 0x0058F6E0: `+4` 0x00415890, `+8` 0x00416070,
+    `+0xC` 0x00416300, `+0x10` 0x00416270.
+  - **Frames with no step:** RestoreSteppedPoses 0x004C2600, **then the same rewind loop**
+    over type-2 bodies. The order is restore, then rewind, and the rewind runs **every frame**.
+    The per-body callback is **not** called.
+- **The root is therefore already smooth** **[C]**. It is the latest stepped state
+  extrapolated back to frame_end with the step's own v and ω. It is continuous between steps,
+  and only jumps at a step where v changes abruptly (a bounce or a hit) **[H]**.
+- **The limbs are not smooth. That is the stutter** **[C]** for the code, **[H]** that it is
+  what is seen. The children only follow the root at these points:
+  1. **On step frames**, 0x0040B770 poses them from the rewound root. They are in sync.
+  2. **In Munge, before DoPhysics:** AnimateCharacter calls PoseCharacterActors(0) each frame
+     for a driven ped with period != 0 (0x00409CA0: `n == 0 && (inst+0x14 & 4)`). That poses
+     them from **last frame's** root. On no-step frames the limbs trail the torso by one
+     frame's motion.
+  3. **A corpse** (period 0) gets no AnimateCharacter pose at all. Its limbs move **only on
+     step frames** and trail the torso by up to 40 ms of flight. The error is zero on a step
+     frame and grows until the next one: a 25 Hz snap.
+  4. **The body orientation `W = inst+0x8C`** that PoseChildBone post-multiplies is only
+     re-derived at steps. A tumbling ped (FlingPed gives spin) rotates its torso smoothly,
+     while the limbs' orientation moves at 25 Hz.
+- **The flail keyframes also step:** PedPostPhysicsStep sets the period of the flying moves
+  (ids 0x5D, 0x5E, 0x61) each step to `clamp(k * rand(0.6..1.4) / |v|, 20, 150)` ms through
+  0x004D1C60, so the limbs change pose at 7 to 50 Hz.
+- It also copies the root position to `rec+0x1C`.
+
+**4. Severed pieces and "boned" physics**
+- There is no per-bone ragdoll for peds (see above). Nothing is updated at 40 ms beyond
+  point 3.
+- Each severed bone is a single actor with its own body:
+  - DetachBone 0x0040B860 takes the form `+0x34` pool (slot `inst+6`) and 0x004085F0 with
+    kind 3, so `+0x238 = 5` and params flag 6 (recorded per step for replay, event 0x30).
+  - It is made simulated only when the ped is already driven.
+- As a type-2 body the piece is restored and rewound every frame like any other, so severed
+  pieces are **already smooth** **[C]** for the path, **[H]** for the look.
+- Attached bones whose parent is severed are not posed (the mask test in
+  PoseCharacterActors).
+
+**5. Does the animation keep running?**
+- **Flung and alive:** yes. AnimateCharacter still runs: the entry test only bails when bits 2
+  **and** 1 are set. Keyframes advance at the speed-driven period above, and the root is never
+  posed.
+- **Corpses:** after AnimateCharacter, Munge sets period 0 when `health <= 0`, `state == 6`,
+  the move is not 0x71 and the powerup is off. PedPostPhysicsStep can raise it again for a
+  flying move at the next step. So a corpse in flight moves its pose irregularly, and a
+  corpse at rest is frozen **[C]** for the code, **[H]** for the net effect.
+- **Resting corpse:** its body falls asleep and returns to type 1 (0x004B6BE0). It has period 0
+  and `inst+0x14` still 5. RestoreSteppedPoses rewrites the same root each frame. Nothing
+  moves, so there is nothing to smooth.
+
+**6. Action replay** (`[0x00676914]`)
+- Munge skips all AI and physics setup in replay but still calls AnimateCharacter with replay
+  time **[C]**.
+- PoseCharacterActors **subtracts** the frame's root delta when the replay rate
+  (0x00402390) is negative **[C]**. An extra pose call for frame f+1 would move a ped in
+  reverse playback the wrong way.
+- Replay drives the rest from recorded events. The handler table is at about 0x0065D0D0,
+  stride 0x18 **[H]**:
+  - 0x28 physics and actor-set change (sets `inst+0x14` directly, 0x004CA680);
+  - 0x29 ped position;
+  - 0x2A move change;
+  - 0x30 body matrix per physics step (0x004B7220: `body+0x8C` and actor t), recorded only for
+    params flag 6, that is severed pieces.
+- **[?]** How a flung ped's root is reproduced in replay was not resolved. Keep the replay skip.
+
+**Recommendation** (from the RenderAFrame detour; restore everything after the render)
+
+1. **Walking peds:** drop the global `[0x007447A4]` skip. The health skip already excludes every
+   ped the jitter can touch. Save and restore the u32 at **0x00673750** around the extra
+   PoseCharacterActors call anyway.
+2. **Driven peds, alive or dead** (`(inst+0x14 & 6) == 4`, `(s8)inst[4] >= 0`,
+   `(s8)inst[7] >= 0`, not replay, not a twitching corpse). Smallest fix: **re-pose the
+   children from this frame's root at render time.**
+   1. Save every bone actor's t, `inst+0x8C..0xBB` (W), `inst+0x1C` and `inst+9`.
+   2. `W = LPInverse(frame f) x root_t` (0x00532EB0 into a temporary, then BrMatrix34Mul
+      0x00532620 into `inst+0x8C`), and zero `inst+0xB0..0xB8`. This is exactly 0x0040B770
+      without its side effects.
+      - Both calls are cdecl, `(dst, src)` and `(dst, a, b)`, and the caller pops.
+      - The frame is `*(move+0x4C) + f*0x34`, read as a br_matrix34: rotation plus the root
+        delta as the translation.
+      - The root is `actors[0]+0x2C`, that is `br_actor.t.t.mat`. If `inst+0xE8` is set, the
+        root is that pointer instead, and if the set index `(s8)inst[4] < 0` it is `inst+0x2C`.
+   3. Call `PoseCharacterActors(inst, 3, 0)`. Mode 3 poses the children only, and bit 2 keeps
+      it off the root anyway.
+   4. Optionally, when `inst+0x1E != 0` and `g = f + 1` is valid, repeat with `inst+0x1C = g`
+      and W re-derived from frame g, then blend the children by `inst+0x18` as for walkers.
+      The root stays the physics root.
+   5. Do **not** call 0x0040B770 itself. It writes `inst+0xD8` and runs PedPostPhysicsStep,
+      which calls the RNG, changes the period and records replay events.
+   - A ped with `inst+0xBC` set can take step 3 too: PoseCharacterActors then calls
+     BlendMoveTransition with `dt = 0`, which only poses. Skip the keyframe blend for it.
+   - This removes the 25 Hz limb snapping (points 3.2 to 3.4). It needs no state history.
+3. **Severed pieces and resting corpses:** nothing to do.
+4. **Optional, only if bounces still pop:** keep a per-body history of the two last stepped
+   poses (keyed by body, reset when params `+8` changes), and render
+   `lerp(prev, cur, 1 - (mech_time - frame_end)/40)`. That removes the jumps at collision
+   steps but adds 40 ms of latency, and it must run before the child re-pose.
+5. **Replay:** keep skipping.
+
+**Risks:**
+- Step 2 relies on the root bone t being final when RenderAFrame runs. Nothing between
+  DoPhysics and RenderAFrame re-poses peds **[H]**: 76.2 gives the loop order.
+- PoseChildBone reads the parent's t from the actors, so the root must not be touched.
+- `inst+9` bit 0 is cleared by every pose call. Restore it.
+- Other users of the boner system (animals) have no `inst+0xE4`. Only iterate the ped array.
+
+**To confirm live:**
+1. On a flung ped, `inst+0x14 == 5` and the simple body has params `+8 == 2`.
+2. In a no-step frame, a limb's t translation minus the root's t translation differs between
+   just before and just after DoPhysics.
+3. 0x0040B770 is hit only in about `25/fps` of the frames.
+4. Walking peds never reach 0x004D6C10 (write-watch 0x00673750 across the proxy's pose call).
+
+### 76.7 Peds in action replay
+
+Static only (Ghidra MCP and capstone on `CARMA2_HW0.EXE`). Nothing checked in game. The proxy
+code in question is `src/comp/game/peds.cpp` (`smooth_ped`, which skips everything while
+`[0x00676914] != 0`).
+
+**1. The replay clock** **[C]**
+- GetTotalTime 0x00514C30 returns `[0x0079EFB4]` while `[0x00676914]` is set.
+- ReplayPlayFrames 0x00403260(n, ...) walks the recorded buffer n **recorded frames** forward or
+  back. For each frame it sets `[0x0079EFB4]` to that frame's timestamp (`chunk[3]`, at 0x00403306
+  and 0x0040335C).
+  - It is called by ReplayTick 0x00403CC0 with `n = trunc(rate)`, and only when `rate != 0`.
+  - ReplayTick is called from the replay frame 0x004E68E0.
+  - So replay time is **the recorded frame timestamps**, stepped once per recorded frame. It is
+    not a continuous clock.
+- **Per recorded frame, in order:**
+  1. the before-events callback 0x004E6950: FrameTiming, then MungePedestrians **if rate < 0**;
+  2. the events of that frame: forward handlers, or the undo handlers when going back;
+  3. the after-events callback 0x004E6980: 0x004A6E50, MungePedestrians **if rate >= 0**,
+     then 0x004DB880.
+  - So AnimateCharacter runs once per recorded frame, `trunc(|rate|)` times per rendered frame,
+    with `now` = that frame's timestamp.
+- **The rate** is a float at `[0x00676900]`, read by 0x00402390 and written by 0x004023A0. The
+  replay key handler 0x004E69B0 sets it:
+
+  | Mode | Rate |
+  |---|---|
+  | Play (0x54, 0x3A) | +1.0 |
+  | Play reverse (0x52, 0x3B) | -1.0 |
+  | Paused (`[0x006768FC]` set) | 0 |
+  | Fast forward (0x57, 0x45) | starts at ±1.2, grows by 0.002 per ms while held, up to ±8 |
+  | Fast reverse (0x55, 0x44) | same, negative |
+
+  - A change of sign is forced through **one frame of rate 0** (`[0x006A2378]`).
+  - **There is no slow motion:** `trunc` of anything in (-1, 1) is 0, which plays nothing.
+  - `[0x006768C0]` is the play direction (±1).
+- **Time jumps:**
+  - Jump to start (0x58, 0x42): 0x00403C70 with rate -100.
+  - Jump to end (0x5A, 0x43): 0x00403210 with rate +100.
+  - Both run ReplayPlayFrames across the whole buffer, then leave the replay paused (rate 0).
+  - RenderAFrame is called twice before each jump.
+  - Entering the replay sets `[0x0079EFB4] = GetTotalTime()` (0x00403D60). Leaving it
+    (0x00403D40) sets it to the real clock 0x0051D410.
+- **0x004E6900** is only the progress callback of a long scrub (`|n| > 10000`). Every 50 ms or
+  more it draws the replay panel (0x004E6280) and flips. It does not call RenderAFrame.
+- **Whether peds are munged during a jump** is **[?]**: which callbacks 0x00403C70 and
+  0x00403210 pass through was not resolved.
+
+**2. AnimateCharacter 0x00409CA0 with dt of any sign** **[C]** (0x00409D8C..0x00409F85)
+- **The step count:**
+  - `x = clamp((now - inst+0x24) / period, -10, +10) + inst+0x18 + frame`
+    (limits at 0x00589398 and 0x0058939C);
+  - `inst+0x18 = x - floor(x)`, always in [0, 1);
+  - `n = trunc(floor(x) - frame)`;
+  - `inst+0x24 = now`.
+  - So `frame + frac` is always the time position, and `frame = floor(position)` in both
+    directions. **Blending f to f+1 by frac is correct forward and backward.**
+- **n > 0**, repeated n times:
+  1. `frame++`;
+  2. at the end of the move: in replay, `frame = count - 1` and stop if `move+0x30 & 1`,
+     otherwise `frame = 0`. Queued moves are ignored in replay; live play uses the queued move
+     (`inst+8`);
+  3. `PoseCharacterActors(inst, last ? 0 : 2, move_root = 1)` at the **new** frame.
+- **n < 0**, repeated |n| times:
+  1. `PoseCharacterActors(inst, last ? 0 : 2, 1)` at the **current** frame, **before** stepping;
+  2. `frame--`;
+  3. below 0: with `move+0x30 & 1`, `frame = 0`, then PoseCharacterActors(inst, 3, 1) and stop;
+     otherwise `frame = count - 1`.
+  - After a reverse step, the limbs on screen are those of **f+1**, while `inst+0x1C` is f.
+- **n == 0:** if the ped is driven or in replay, `PoseCharacterActors(inst, 0, 0)` at f.
+- **Other cases:**
+  - `inst+0x24 == 0`, just after SetMove: `PoseCharacterActors(inst, 0, 0)` and no advance.
+  - Period 0: nothing.
+  - A big time jump advances at most 10 keyframes. The phase is then off, which is harmless.
+
+**3. The root of a walking ped in replay**
+- **Translation.** PoseCharacterActors with `move_root = 1` adds `frame.delta * scale` rotated by
+  `inst+0x5C` when the replay rate is >= 0, and **subtracts** it when the rate is < 0
+  (0x00407DA1..0x00407E19).
+  - The scale is `*(float*)(personality+0x30 + move*0xC + 8)`.
+  - Forward, going f-1 to f adds `delta(f)`.
+  - Backward, the pose at the current frame c comes before `c--` and subtracts `delta(c)`.
+  - Either way, after AnimateCharacter **the root translation is `pos(inst+0x1C)`**, with
+    `pos(f) = pos(f-1) + D(f)` **[C]**.
+- **What else writes the root:**
+  - A move change (event 0x2A) calls SetCharacterPosition with the recorded position, only for
+    peds that are not driven.
+  - Event 0x29, recorded each live Munge while a walking ped turns (0x004C8B10, before
+    OrientCharacter), replays as `OrientCharacter(inst, dir, 0x00655DF0)` (0x004CA4D0). It
+    changes rotation, W and the children, not the translation.
+  - Walking peds have no per-frame position record.
+- **Correct pose at `f + frac`, in both directions:**
+  - The root translation is `pos(f) + frac * D(g)`, with `g = f + 1` and
+    `D(g) = (frame_g.delta * scale) · rot(inst+0x5C)` (0x00533520).
+  - Rotation and children: blend pose f with pose g by frac.
+- **What to call:**
+  - **Pose f:** `PoseCharacterActors(inst, 0, move_root = 0)` at f. With move_root 0 the root
+    translation stays as it is. Do not take pose f from the current bones: after a reverse step
+    they hold f+1.
+  - **Pose g:** `PoseCharacterActors(inst, 0, 1)` at g, with `[0x00676900]` temporarily forced
+    to +1.0 so the delta is added. Or use move_root 0 and add `frac * D(g)` yourself.
+  - Blend as live play does. Restore the rate, `inst+0x1C`, `inst+9`, the RNG and the bones.
+  - Skip the blend if `[0x00676978]` (no root motion) is set, or blend with move_root 0.
+
+**4. Move changes in replay (event 0x2A)** **[C]**
+- 0x2A is a type-5 event: an apply handler and an undo handler.
+- **Forward**, 0x004C9AE0 -> 0x004CA500:
+  - restores `inst+0x8C` from the record;
+  - calls SetMove with the recorded move and period. That sets frame 0, frac 0 and
+    `inst+0x24 = 0`;
+  - if the ped is not driven, SetCharacterPosition with the recorded new position;
+  - if the move changed, `inst+0x1C` = the recorded frame and `PoseCharacterActors(inst, 0, 0)`;
+  - `rec+0x10` = the recorded state.
+- **Undo**, 0x004CA1E0 -> 0x004CA5A0 (skipped when the record's `+0x14` is set, a queued move):
+  the same with the old move, period, frame and position, and `inst+0x24 = GetTotalTime()`.
+- **Next-frame rule in replay:** the game never follows `inst+8` (the queued move) in replay. At
+  the end of a move it wraps to 0, or clamps when `move+0x30 & 1`.
+  - So in replay, `next = f+1 < count ? f+1 : (move+0x30 & 1 ? none : 0)`.
+  - The proxy's `next_frame` returns -1 when `inst+8 >= 0`, which only loses a blend. Using
+    `inst+8 < 0 ? 0 : -1` could **wrap wrongly** on a clamped move.
+  - Near a move change, the 0x2A event resets the pose in the frame it lands in, so a
+    one-frame error is possible at the boundary **[H]**.
+- Keep skipping `inst+0xBC`: the replay's SetMove passes the recorded queue and flag arguments,
+  so a transition slot may be allocated **[?]**.
+
+**5. Flung (driven) peds in replay**
+- **No physics runs in replay.** Neither replay callback calls ApplyPhysicsToCars or DoPhysics
+  **[C]** for the callbacks, **[H]** that nothing else does. So there is no restore and no
+  rewind.
+- **`inst+0x14`:** event 0x28 (type 5, apply 0x004C9AA0 -> 0x004CA680, undo 0x004CA1B0) stores
+  the recorded flags directly (stores at 0x004CA6B9, 0x004CA72B, 0x004CA79B, 0x004CA7B1). So
+  `inst+0x14 == 5` does happen in replay **[C]**.
+- **The root** comes only from **event 0x2B** **[C]**:
+  - It is recorded by PedPostPhysicsStep 0x004D2930 (at 0x004D2C24 -> 0x004C8BD0), once per
+    physics step, while not in replay.
+  - The record is the root actor matrix **after** the rewind, that is the root as drawn on that
+    step frame.
+  - The key is `ped index | (s16)rec+6 << 16`.
+- **Applying 0x2B** (0x004C9B10 -> 0x004CA7D0):
+  - copies the 0x30-byte matrix into the root actor t (0x00407AA0);
+  - sets `rec+0x1C..0x24` to its translation;
+  - calls DeriveBodyOrientation 0x00409340;
+  - calls `PoseCharacterActors(inst, 3, 0)`.
+  - DeriveBodyOrientation is exactly the W half of 0x0040B770: `inst+0x8C = LPInverse(frame f)
+    x root`, zeroes `+0xB0..0xB8`, and has no other side effects **[C]**.
+  - 0x2B is a type-2 (state) event. Going back, the replay re-applies the previous record of the
+    same key (0x00403800 searches back) **[H]**.
+- **Result:** in replay a flung ped's root **steps at the original physics rate (25 Hz of
+  recorded time) and is never interpolated.**
+  - Between records, each Munge re-poses the limbs from the held root
+    (`n == 0 && replay -> PoseCharacterActors(0, 0)`), and keyframes advance at the recorded
+    period.
+  - Period changes arrive through SetMoveRecorded records (0x004C8C30).
+
+**6. Severed pieces in replay** **[C]**
+- Event 0x30 (type 2, 0x004C9B80 -> SetBodyMatrix 0x004B7220: `body+0x8C` = actor t = m) is
+  recorded by PostStepBodies 0x004B6BE0 only on step frames, after the rewind, for awake type-2
+  bodies with params flag 6.
+- So the pieces also **step at 25 Hz** in replay, and stop being recorded once asleep.
+
+**7. Paused replay** **[C]**
+- With rate 0, ReplayTick does nothing: no ReplayPlayFrames, no Munge, no AnimateCharacter.
+  Time, frame, frac and every matrix stay the same.
+- A render-time blend that restores after drawing is therefore stable.
+- The single rate-0 frame at each change of direction behaves the same.
+
+**Recommendation** (RenderAFrame detour, replay only; everything restored after the frame)
+
+1. **Walking** (`(inst+0x14 & 6) == 0`, alive, `inst+0xBC == 0`, period != 0):
+   1. Compute `g` with the replay rule from point 4.
+   2. Pose f: `pose_at(f, 0, move_root = 0)`. This rebuilds pose f even after a reverse step.
+   3. Pose g: `pose_at(g, 0, 1)` with `[0x00676900]` forced to +1.0f for the call, or
+      move_root 0 plus `frac * D(g)`.
+   4. Blend by `inst+0x18`.
+   - This is continuous forward, backward and at any integer fast rate. Paused, it is constant.
+2. **Driven** (`inst+0x14 == 5`) and **severed pieces:**
+   - Keep a per-actor history in the proxy: the last two distinct root matrices (or piece
+     matrices) with the `[0x0079EFB4]` time at which each appeared.
+   - Draw `lerp(prev, cur, clamp((t - t_cur) / (t_cur - t_prev), 0, 1))`. The formula has the
+     same sign forward and backward. It adds one step (about 40 ms of replay time) of lag.
+   - Reset the history when `[0x00676914]` toggles, when the sign of `t - t_last` flips, or on a
+     jump (`|t - t_last| > 200 ms`).
+   - For a driven ped, write the blended root, then call **DeriveBodyOrientation 0x00409340** (or
+     the existing `pose_children_on_root`) and `PoseCharacterActors(inst, 3, 0)` at f and g,
+     then blend the children by frac.
+   - A lag-free version would read the next 0x2B/0x30 record from the replay buffer. That is
+     not worth it yet.
+3. **Keep skipping:** twitching corpses, `inst+0xBC`, peds with no actor set, and the two
+   RenderAFrame calls made just before a jump (or simply reset the histories there).
+
+### 76.8 What the proxy does (peds.cpp)
+
+- **Motion fix** (`[Effects] PedMotionFix`): the `call 0x004C2600` at 0x004B66A2 goes through the
+  proxy, which saves the root t of every walking ped (simple body, params `+8` == 1), lets the
+  game restore every body, and writes the saved roots back. Confirmed in game: the chest desync
+  and the slow walk are gone.
+- **Interpolation** (`[Effects] PedInterpolation`), a RenderAFrame detour. Everything it writes is
+  put back after the frame:
+  - walking peds: pose f, then `PoseCharacterActors(inst, 0, 1)` at g, blended by `inst+0x18`;
+  - driven peds (`inst+0x14 & 7` == 5): the children re-posed from this frame's root (the W of
+    0x0040B770, then mode 3) at f and, while animating, at g, blended;
+  - the RNG seed 0x00673750 is saved and restored around each extra pose call; only corpses
+    (`health 0`, state 6) under the twitch powerup are skipped.
+- **Replay:** health is not rewound (a ped that dies later reads 0 all through the replay), so
+  the corpse test also needs state 6. Walking peds re-pose f with `move_root 0` and pose g with
+  the rate forced to +1. Flung roots and severed pieces are drawn between the last two matrices
+  replay gave them (history keyed by matrix, reset on a turn, a jump over 250 ms, or leaving
+  replay). Logged live with `tools/replay_ped_log.py`: the proxy poses every ped twice a frame.
+
 
 ## 77. Headlight beams: smashed lamps and crushed lamps (2026-09-30)
 

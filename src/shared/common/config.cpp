@@ -163,6 +163,8 @@ namespace shared::common
 		effects.additive_car_flames = get_bool("Effects", "AdditiveCarFlames", true);
 		effects.unlit_sprites = get_bool("Effects", "UnlitSprites", true);
 		effects.unlit_sprite_brightness = get_float("Effects", "UnlitSpriteBrightness", 1.0f);
+		effects.ped_motion_fix = get_bool("Effects", "PedMotionFix", true);
+		effects.ped_interpolation = get_bool("Effects", "PedInterpolation", true);
 
 		effects.emissive_sprite_exclude = get_list("Effects", "EmissiveSpriteExclude", "BIGBL");
 

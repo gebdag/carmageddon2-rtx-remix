@@ -1427,7 +1427,7 @@ $ 0x0075bbcc int    g_cockpit_on
 @ 0x004083b0 int   __fastcall AcquireActorSet(void *inst /*ecx*/);          /* 0 ok, 1 none free, 2 already has one */
 @ 0x00408200 int   __fastcall AssignActorSet(void *inst /*ecx*/, int set /*edx*/); /* actor+0x5C = inst, model, style 0; root -> [0x007634B8] */
 @ 0x00408400 int   __fastcall ReleaseActorSet(void *inst /*ecx*/);          /* stores severed matrices, removes all bone actors, set = -1 */
-@ 0x00407b30 void  __fastcall PoseCharacterActors(void *inst /*ecx*/, int mode /*edx*/, int move_root); /* root t = frame x inst+0x8C; children via PoseChildBone */
+@ 0x00407b30 void  __fastcall PoseCharacterActors(void *inst /*ecx*/, int mode /*edx*/, int move_root); /* ret 4; snaps to frame inst+0x1C, no keyframe interpolation. mode 0 all, 1 root only, 2 root translation only, 3 children only. Root t = frame x inst+0x8C, translation = old + frame.delta*scale*inst+0x5C when move_root && ![0x00676978]; clears inst+9 bit 0 (findings 76) */
 @ 0x00407e70 void  PoseChildBone(br_matrix34 *parent_t, br_matrix34 *body_rot, int rx, int ry, int rz, br_vector3 *pivot, br_vector3 *parent_joint); /* edx = child t: T(-pivot)*R, Post(body_rot), + parent_joint*parent_t */
 @ 0x0040b860 int   __fastcall DetachBone(void *inst /*ecx*/, int bone /*edx*/); /* boned-physics slot + velocity for a severed piece (stack args not recovered) */
 @ 0x0040ca40 void  ReparentActorKeepWorld(br_actor *parent, br_actor *actor); /* cdecl; relinks keeping the world transform */
@@ -1435,11 +1435,84 @@ $ 0x0075bbcc int    g_cockpit_on
 @ 0x004cbca0 void  __fastcall RemoveBoneActor(br_actor *a /*ecx*/);
 @ 0x004ca900 void  __fastcall SeverBone(void *ped /*ecx*/, int bone /*edx*/, int slot); /* replay path: mask |= 1<<bone, physics, add to world */
 @ 0x004cd9e0 int   __fastcall SeverBoneRecursive(void *ped /*ecx*/, int bone /*edx*/); /* children first, then DetachBone */
-@ 0x004cd640 int   __fastcall DamagePed(void *ped /*ecx*/, int a, int b, int c); /* health at ped+4; severs up to 5 pieces; 0x004CCE70 kills */
+@ 0x004cd640 int   __fastcall DamagePed(void *ped /*ecx*/, int damage /*edx*/, int alive_move_kind, int dead_move_kind, int sever); /* health s8 at ped+4 (>= 100 dmg -> 0); sever != 0 severs up to 5 pieces; alive -> PedSetMoveKind state 5; dead -> KillPed 0x004CCE70 (findings 76.6) */
 @ 0x004d34e0 void  SpineModelCustom(br_actor *a, br_model *m, br_material *mat, void *rd, int style, int on_screen); /* br_model custom cb on spine models: records body in g_rendered_bodies, then renders */
 @ 0x004d2cc0 void  SpawnPedsOnFace(void);           /* creates ped records + instances; installs SpineModelCustom (args not recovered) */
 @ 0x004d3520 void  FinalisePedArray(void);          /* reallocs g_ped_array, sets inst+0xE4 back-pointers */
 @ 0x004d3740 void  MungePedestrians(void);          /* per-frame: active flag by camera distance, Acquire/ReleaseActorSet */
+/* Ped animation timing (findings.md section 76). Move = *(form+0x40 + move*8 + 4): +0x28 s16 frame count,
+ * +0x2A u8 no-root-motion, +0x2B u8 loop-reset axes (1 X, 2 Y, 4 Z), +0x2C u32 default period ms (1000 / "Default
+ * frame rate", 30 -> 33), +0x30 flags, +0x4C frames[] stride 0x34: 3x3 float root (Spine) rotation, +0x24 root delta
+ * from the previous frame, +0x30 u8* per-bone Euler bytes (3 per bone, 256 steps per turn, sin/cos tables 0x00676E30 /
+ * 0x00677328). Personality+0x30: per-move {int grounding mode, float grounding offset, float scale} stride 0xC.
+ * Instance: +0x08 s8 queued move, +0x09 flags, +0x18 float frame fraction, +0x1C s16 frame, +0x1E s16 period ms,
+ * +0x20 s16 queued period, +0x24 last update ms, +0x5C displacement frame, +0xD8 root velocity (units/s). */
+@ 0x00409ca0 void  __fastcall AnimateCharacter(void *inst /*ecx*/, unsigned now_ms /*edx*/, int unused); /* ret 4; n = floor((now-last)/period + frac + frame) - frame (clamped +-10 frames), one PoseCharacterActors(mode 2 then 0 on the last, move_root 1) per whole frame; called only from MungePedestrians 0x004D4DF4 */
+@ 0x0040a050 int   __fastcall SetMove(void *inst /*ecx*/, int move_id /*edx*/, float period, int queue, int flag, int arg5); /* ret 0x10; period >= 0 ms, < 0 = -factor x move default; queue < 0 queues into +0x08/+0x20 */
+@ 0x0040a730 void  __fastcall OrientCharacter(void *inst /*ecx*/, br_vector3 *dir /*edx*/, br_vector3 *up); /* ret 4; rewrites inst+0x8C, +0x5C and the root t rotation; dir != NULL re-poses children (PoseCharacterActors mode 3) */
+@ 0x0040b0a0 void  __fastcall SetCharacterPosition(void *inst /*ecx*/, br_vector3 *pos /*edx*/, int mode); /* sets root translation, syncs the simple body +0x8C, re-poses */
+@ 0x0040b770 void  __fastcall RederiveFromPhysicsRoot(void *inst /*ecx*/, void *body /*edx*/); /* physics callback via 0x00416300 for active (type 2) ped bodies: W(inst+0x8C) = LPInverse(frame f) x actors[0]+0x2C, zero +0xB0..0xB8, PoseCharacterActors(inst, 3, 0), inst+0xD8 = simple body v, then [0x0067697C]+8(inst, body); runs on physics-step frames only (after the rewind), then client callback +8 = PedPostPhysicsStep */
+@ 0x00408c30 int   __fastcall StartCharacterPhysics(void *inst /*ecx*/, int boned /*edx*/, int arg, int slot); /* simple (boned=0): one body per ped, actor = root bone, added to the physics world asleep (params+8 = 1) */
+@ 0x004c2600 void  __fastcall RestoreSteppedPoses(void *body_list /*ecx*/); /* DoPhysics no-step frames (call 0x004B66A2): EVERY world body's actor t := ortho(body+0x8C), incl. walking peds' root bones */
+@ 0x004baa00 unsigned char __fastcall FinishPhysicsStep(void *body_list /*ecx*/); /* end of each 40 ms step: every body +0x8C := actor t */
+/* Hit, dying and physics-driven peds (findings.md 76.6). inst+0x14 bits: 1 simple body registered, 2 boned bodies
+ * registered (never used by peds), 4 physics-driven (body params+8 = 2, root no longer posed by PoseCharacterActors).
+ * inst+0xBC = move-transition slot (pool 0x00677730), NOT boned-physics state. Ped rec+0x10 state: 0/1 normal,
+ * 3 terrain physics, 5 hit, 6 dead; rec+0x30 time of death. */
+@ 0x00409570 int   SetCharacterPhysicsMode(void *inst, unsigned mode, int arg); /* cdecl; mode bits 1 simple, 2 boned, 4 driven; < 1 -> StopCharacterPhysics, < 5 with bit 4 set -> StopDriven; driven: body awake, v = inst+0xD8, params+8 = 2, inst+0x14 |= 4 */
+@ 0x004cc860 void  SetPedPhysicsMode(void *inst, unsigned mode, int arg);      /* cdecl; wraps 0x00409570 and records replay event 0x28 when bit 4 changes; peds only pass 0 or 5 */
+@ 0x00409400 int   __fastcall StopDrivenPhysics(void *inst /*ecx*/);          /* W from frame, re-pose, clears inst+0x14 bit 4, body asleep; client callback +4 may veto */
+@ 0x00409090 int   __fastcall StopCharacterPhysics(void *inst /*ecx*/);       /* removes the simple/boned bodies, inst+0x14 = 0 */
+@ 0x00409040 void* __fastcall FirstBonedBody(void *inst /*ecx*/);             /* first body of the inst+5 boned set with +0x20 != 0 */
+@ 0x004097b0 int   __fastcall BlendMoveTransition(void *inst /*ecx*/, int dt_ms /*edx*/); /* inst+0xBC: progress += rate*dt, lerps byte Euler angles into the new move; 1 while running, frees the slot at >= 1. PoseCharacterActors calls it with dt 0 */
+@ 0x004085f0 int   InitPhysicsBody(void);                /* fastcall, args not fully recovered: body+0 = actor, +0x238 = kind+2 (2 simple ped, 5 severed piece), kind 3 sets params flag 6 (replay event 0x30 per step) */
+@ 0x004ce330 void  __fastcall PedHitByCar(void *ped /*ecx*/, void *car /*edx*/); /* registered by the collision callback 0x004CE280; DamagePed(rand 75..200, 0x5B, 0x5B, sever 0), mode 5 if not driven, impulse (stack args not recovered) */
+@ 0x004cc6e0 void  __fastcall FlingPed(void *ped /*ecx*/, unsigned now /*edx*/, float speed, float spin); /* state 5 move, mode 5, random v (speed*0.7) and w (spin*4), wakes the body */
+@ 0x004cce70 void  __fastcall KillPed(void *ped /*ecx*/, int arg /*edx*/); /* death sounds (replay 0x2F), blood 0x004CCFF0, then 0x004CD160 and SetPedDead */
+@ 0x004cd260 void  __thiscall SetPedDead(void *ped /*ecx*/, float arg); /* rec+4 = 0, rec+0x10 = 6, rec+0x30 = now, credits/combo */
+@ 0x004cd160 void  __fastcall CountPedKill(void *ped /*ecx*/);        /* rec+8 |= 0x100 once; race-end checks by race type */
+@ 0x004cbcd0 void  __fastcall PedSetMoveKind(void *ped /*ecx*/, int kind /*edx*/, int period, int queue, int arg4, int new_state); /* kind -> move id via the table at 0x0065D7F4 (7 variants), SetMove, replay 0x2A (arg order inferred) */
+@ 0x004d1c60 void  __fastcall SetMoveRecorded(void *inst /*ecx*/, int move /*edx*/, float period, int a, int b, int c); /* SetMove + replay record; move -1 = period change only */
+@ 0x004d2930 void  __fastcall PedPostPhysicsStep(void *inst /*ecx*/, void *body /*edx*/); /* client callback +8, step frames only: rec+0x1C = root pos, inst+0xD8 = body v; flying moves 0x5D/0x5E/0x61 get period clamp(k*rand(0.6..1.4)/|v|, 20, 150) ms */
+@ 0x004d6c10 void  __thiscall JitterCorpseBoneAngles(void *inst /*ecx*/, char *rx, char *ry, char *rz); /* from PoseChildBone when [0x007447A4] != 0: if rec health <= 0, rec+0x10 == 6, ![0x0069BCE0]: each byte += IRandomPosNeg(30) */
+@ 0x00513580 int   __fastcall IRandomPosNeg(int n /*ecx*/);   /* rand()*(2n+1) >> 15 - n */
+@ 0x00576970 int   rand(void);                                /* MSVC CRT LCG, state g_rand_seed */
+@ 0x004b6be0 void  __fastcall PostStepBodies(void *body_list /*ecx*/, void *callbacks /*edx*/); /* DoPhysics step frames only, after the rewind: callbacks+0xC per awake type-2 body, replay 0x30 for params flag 6, asleep -> params+8 = 1 via callbacks+0x10 */
+@ 0x004b6090 int   __fastcall SetBodySimulated(void *body /*ecx*/, br_vector3 *v /*edx*/, br_vector3 *w, int flag); /* params+8 = 2 */
+@ 0x004b63b0 int   SetBodyParam(void *body, int which, double value); /* cdecl; 0 params+0x10, 1/6/7 params+4 flags, 3/4/5 body+0x19C bits, 8 params+0x14 */
+@ 0x004b7220 void  __fastcall SetBodyMatrix(void *body /*ecx*/, br_matrix34 *m /*edx*/); /* body+0x8C = m, actor t = m (replay event 0x30) */
+@ 0x004deca0 void  __thiscall CorpseTwitchApply(void *powerup /*ecx*/); /* POWERUP.TXT handler (table 0x0065E994): g_corpse_twitch = params[0] (name ours) */
+@ 0x004decd0 void  CorpseTwitchRemove(void);                     /* g_corpse_twitch = 0 (table 0x0065EA74) */
+@ 0x004d5bd0 void  ResetPedGlobals(void);                        /* ped counts and powerup flags, g_corpse_twitch = 0 */
+@ 0x00532eb0 void  BrMatrix34LPInverse(br_matrix34 *dest, br_matrix34 *src); /* name inferred; used for W = inv(frame) x root */
+@ 0x00409340 void  __fastcall DeriveBodyOrientation(void *inst /*ecx*/); /* inst+0x8C = LPInverse(frame inst+0x1C) x root t, zero +0xB0..0xB8; no other side effects (the W half of 0x0040B770) */
+/* Action replay and peds (findings.md 76.7). Replay time [0x0079EFB4] = timestamp of the last applied recorded frame;
+ * rate [0x00676900]: +-1 play, 0 paused, +-1.2..8 fast (no slow motion); trunc(rate) recorded frames per rendered frame,
+ * MungePedestrians once per recorded frame. Event table (runtime [0x006768E8], static 0x0065D0C8) stride 0x18:
+ * +4 size, +0xC apply, +0x10 kind (2 state: re-apply previous record in reverse, 4/5 undo at +0x14). Ped events:
+ * 0x28 physics/actor-set (sets inst+0x14), 0x29 facing (OrientCharacter), 0x2A move change, 0x2B driven-ped root matrix
+ * per physics step, 0x30 body matrix per physics step (severed pieces). */
+@ 0x00403260 void  __fastcall ReplayPlayFrames(int n /*ecx*/, void *between /*edx*/, void *before_events, void *after_events); /* walks |n| recorded frames, sets [0x0079EFB4] per frame */
+@ 0x00403cc0 void  __fastcall ReplayTick(void *a /*ecx*/, void *b /*edx*/, void *before_events, void *after_events); /* ret 8; rate != 0 -> ReplayPlayFrames(trunc(rate), ...) */
+@ 0x004e68e0 void  ReplayFrame(void);                 /* ReplayTick(0x004E6950, 0x004E6980) */
+@ 0x004e6950 void  __fastcall ReplayBeforeEvents(void *a /*ecx*/); /* FrameTiming; MungePedestrians if rate < 0 */
+@ 0x004e6980 void  __fastcall ReplayAfterEvents(void *a /*ecx*/);  /* 0x004A6E50; MungePedestrians if rate >= 0; 0x004DB880 */
+@ 0x004e6900 void  __fastcall ReplayScrubProgress(int n /*ecx*/); /* long scrubs only: replay panel + flip every 50 ms, no RenderAFrame */
+@ 0x004e6280 void  __fastcall DrawReplayPanel(int arg /*ecx*/);
+@ 0x00403d60 int   ToggleActionReplay(void);          /* fastcall, args not recovered; entering: rate 1, [0x0079EFB4] = GetTotalTime */
+@ 0x00403c70 void  ReplayJumpToStart(void);           /* rate -100 through ReplayPlayFrames (args not recovered) */
+@ 0x00403210 void  ReplayJumpToEnd(void);             /* rate +100 */
+@ 0x00402390 float ReplayRate(void);
+@ 0x004023a0 void  SetReplayRate(float rate);         /* ret 4 */
+@ 0x00402380 int   ReplayIsPausedFlag(void);          /* [0x006768FC] */
+@ 0x004c8b10 void  __fastcall RecordPedFacing(void *key /*ecx*/, br_vector3 *dir /*edx*/); /* event 0x29 */
+@ 0x004c8bd0 void  __fastcall RecordPedRootMatrix(int key /*ecx*/, br_matrix34 *m /*edx*/); /* event 0x2B, key = ped index | rec+6 << 16 */
+@ 0x004c8cc0 void  __fastcall RecordBodyMatrix(void *body /*ecx*/); /* event 0x30 */
+@ 0x004ca4d0 void  __fastcall ReplayPedFacing(int key /*ecx*/, br_vector3 *dir /*edx*/); /* OrientCharacter(inst, dir, 0x00655DF0) */
+@ 0x004ca7d0 void  __fastcall ReplayPedRootMatrix(int key /*ecx*/, br_matrix34 *m /*edx*/); /* root t = m, rec+0x1C = pos, DeriveBodyOrientation, PoseCharacterActors(3, 0) */
+@ 0x004ca500 void  __fastcall ReplayPedMoveChange(void *ped /*ecx*/, int move /*edx*/); /* ret 0x1C; inst+0x8C, SetMove, SetCharacterPosition if not driven, frame, pose(0, 0), state */
+@ 0x004ca5a0 void  __fastcall UndoPedMoveChange(void *ped /*ecx*/, int move /*edx*/);  /* ret 0x1C; same with the old values, inst+0x24 = GetTotalTime */
+@ 0x004ca680 void  ReplayPedPhysicsChange(void);      /* fastcall, ret 0x20; event 0x28: actor set and inst+0x14 from the record */
 
 $ 0x00744808 void*  g_ped_array                 /* 0x54-byte records: +0 inst, +4 u8 health, +8 u16 flags (bit0 active), +0x1C pos */
 $ 0x007447d4 int    g_ped_count                 /* max 2000 */
@@ -1449,6 +1522,18 @@ $ 0x00694280 br_actor* g_rendered_bodies[30]    /* spine actors drawn this frame
 $ 0x00677260 void*  g_personalities[50]
 $ 0x00677238 void*  g_remaps[10]
 $ 0x0058f2d8 unsigned g_bone_bits[32]           /* 1 << i */
+$ 0x007447a4 float  g_corpse_twitch             /* powerup factor; != 0 -> corpses animate at -factor x default period and PoseChildBone jitters their angles via rand (findings 76.6) */
+$ 0x00673750 unsigned g_rand_seed               /* CRT rand() holdrand: the game's whole RNG state (4 bytes) */
+$ 0x0069bce0 int    g_ped_time_frozen           /* Munge: GetTotalTime == g_ped_last_munge_time; suppresses corpse jitter */
+$ 0x00694130 unsigned g_ped_last_munge_time
+$ 0x0058f6e0 void*  g_race_physics_callbacks[6] /* DoPhysics ecx: +4 0x00415890 pre-step, +8 0x00416070 post-step, +0xC 0x00416300 per body, +0x10 0x00416270 sleep test */
+$ 0x0067697c void*  g_boner_client_callbacks    /* -> 0x0065D778: +4 0x004D1020 (stop driven), +8 0x004D2930 (post step), +0xC 0x004CBF20 (move end), +0x10 0x004CCAB0 (body created) */
+$ 0x0079efb4 unsigned g_replay_time            /* GetTotalTime in replay: timestamp of the last applied recorded frame */
+$ 0x00676900 float  g_replay_rate               /* +-1 play, 0 paused, +-1.2..8 fast; PoseCharacterActors subtracts root deltas when < 0 */
+$ 0x006768fc int    g_replay_paused
+$ 0x006768c0 int    g_replay_direction          /* +-1 */
+$ 0x006768e8 void*  g_replay_event_types        /* -> 0x0065D0C8, stride 0x18 */
+$ 0x00677730 void*  g_move_transitions         /* 20 slots x 0x15C for inst+0xBC; +0 float progress, +4 rate */
 
 /* --- Checkpoints (findings.md section 75). Arches are track grid-model faces with material
  * "checkpoint" (Junkyard: "post*"), not actors; world-space vertices (identity grid transforms). --- */

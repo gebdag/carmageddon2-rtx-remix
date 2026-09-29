@@ -341,6 +341,14 @@ namespace comp::game
 	// valid for part of a race go through this before they are followed.
 	bool can_read(const void* p, size_t bytes);
 
+	// Keeps the game's per-frame physics restore off walking pedestrians' root bones
+	// ([Effects] PedMotionFix, peds.cpp, findings 76).
+	void install_ped_motion_fix();
+
+	// Draws pedestrians between their animation keyframes, and the limbs of flung ones on this
+	// frame's torso ([Effects] PedInterpolation, peds.cpp, findings 76).
+	void install_ped_interpolation();
+
 	/*
 	 * Heads-up text: the centred message box the game uses for "Mirror On" (findings 58).
 	 * NewTextHeadupSlot2 is __fastcall (slot in ecx, flash rate in edx) and pops its four
