@@ -21,7 +21,7 @@ What is in this folder
                           and signs; car brake, reverse and head lights that light up
                           with the car; traffic lights that show red, amber and green;
                           animated city water, glass (with matching shards when it
-                          smashes) and a glossy oil slick
+                          smashes), and glossy blood and oil slicks
   carma2-rtx_README.txt   this file (named so it cannot replace the game's ReadMe.txt)
   LICENSE, THIRD_PARTY_NOTICES.md
   licenses\               licence texts of the libraries compiled into d3d9.dll
