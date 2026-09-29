@@ -1,6 +1,8 @@
 #include "std_include.hpp"
 #include "headlights.hpp"
+#include "lens_lights.hpp"
 
+#include "shared/common/config.hpp"
 #include "shared/common/remix_api.hpp"
 
 namespace comp
@@ -20,6 +22,13 @@ namespace comp
 
 		constexpr float DEG_TO_RAD = 3.14159265f / 180.0f;
 		constexpr float PI = 3.14159265f;
+
+		// A crushed lamp turns its beam by at most this much; a lens folded further than that
+		// no longer says where a lamp would point.
+		constexpr float MAX_LAMP_TURN = 60.0f * DEG_TO_RAD;
+
+		// A rotation needs three points off one line; a lamp lens has more.
+		constexpr size_t MIN_LAMP_POINTS = 3;
 
 		enum br_transform_type : uint16_t
 		{
@@ -157,6 +166,119 @@ namespace comp
 		{
 			return std::sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
 		}
+
+		using points = std::vector<std::array<float, 3>>;
+
+		std::array<double, 3> centroid(const points& p)
+		{
+			std::array<double, 3> c{};
+			for (const auto& v : p)
+			{
+				for (int i = 0; i < 3; ++i) {
+					c[i] += v[i];
+				}
+			}
+			for (double& x : c) {
+				x /= static_cast<double>(p.size());
+			}
+			return c;
+		}
+
+		// Eigenvalues (diagonal of `a` after) and eigenvectors (columns of `v`) of a symmetric 4x4.
+		void jacobi(double a[4][4], double v[4][4])
+		{
+			for (int i = 0; i < 4; ++i)
+			{
+				for (int j = 0; j < 4; ++j) {
+					v[i][j] = i == j ? 1.0 : 0.0;
+				}
+			}
+			for (int sweep = 0; sweep < 32; ++sweep)
+			{
+				double off = 0.0;
+				for (int p = 0; p < 4; ++p)
+				{
+					for (int q = p + 1; q < 4; ++q) {
+						off += std::abs(a[p][q]);
+					}
+				}
+				if (off < 1e-14) {
+					return;
+				}
+				for (int p = 0; p < 4; ++p)
+				{
+					for (int q = p + 1; q < 4; ++q)
+					{
+						if (std::abs(a[p][q]) < 1e-18) {
+							continue;
+						}
+						const double theta = (a[q][q] - a[p][p]) / (2.0 * a[p][q]);
+						const double t = (theta >= 0.0 ? 1.0 : -1.0) / (std::abs(theta) + std::sqrt(theta * theta + 1.0));
+						const double c = 1.0 / std::sqrt(t * t + 1.0);
+						const double s = t * c;
+						for (int k = 0; k < 4; ++k)
+						{
+							const double kp = a[k][p], kq = a[k][q];
+							a[k][p] = c * kp - s * kq;
+							a[k][q] = s * kp + c * kq;
+						}
+						for (int k = 0; k < 4; ++k)
+						{
+							const double pk = a[p][k], qk = a[q][k];
+							a[p][k] = c * pk - s * qk;
+							a[q][k] = s * pk + c * qk;
+						}
+						for (int k = 0; k < 4; ++k)
+						{
+							const double kp = v[k][p], kq = v[k][q];
+							v[k][p] = c * kp - s * kq;
+							v[k][q] = s * kp + c * kq;
+						}
+					}
+				}
+			}
+		}
+
+		// The rotation that best carries `from` onto `to` about their centres (Horn's
+		// quaternion method), as w, x, y, z with w >= 0.
+		std::array<double, 4> best_rotation(const points& from, const std::array<double, 3>& from_centre,
+			const points& to, const std::array<double, 3>& to_centre)
+		{
+			double m[3][3] = {};
+			for (size_t k = 0; k < from.size(); ++k)
+			{
+				for (int i = 0; i < 3; ++i)
+				{
+					for (int j = 0; j < 3; ++j) {
+						m[i][j] += (from[k][i] - from_centre[i]) * (to[k][j] - to_centre[j]);
+					}
+				}
+			}
+
+			double n[4][4] = {
+				{ m[0][0] + m[1][1] + m[2][2], m[1][2] - m[2][1], m[2][0] - m[0][2], m[0][1] - m[1][0] },
+				{ m[1][2] - m[2][1], m[0][0] - m[1][1] - m[2][2], m[0][1] + m[1][0], m[2][0] + m[0][2] },
+				{ m[2][0] - m[0][2], m[0][1] + m[1][0], -m[0][0] + m[1][1] - m[2][2], m[1][2] + m[2][1] },
+				{ m[0][1] - m[1][0], m[2][0] + m[0][2], m[1][2] + m[2][1], -m[0][0] - m[1][1] + m[2][2] },
+			};
+			double v[4][4];
+			jacobi(n, v);
+
+			int best = 0;
+			for (int i = 1; i < 4; ++i)
+			{
+				if (n[i][i] > n[best][best]) {
+					best = i;
+				}
+			}
+			std::array<double, 4> q = { v[0][best], v[1][best], v[2][best], v[3][best] };
+			const double length = std::sqrt(q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3]);
+			const double sign = q[0] < 0.0 ? -1.0 : 1.0;
+			for (double& x : q) {
+				x *= sign / length;
+			}
+			return q;
+		}
 	}
 
 	std::string headlights::ini_path()
@@ -206,6 +328,8 @@ namespace comp
 		read_float("ConeAngle", s.cone_angle, 1.0f, 90.0f);
 		read_float("ConeSoftness", s.cone_softness, 0.0f, 1.0f);
 		read_float("Focus", s.focus, 0.0f, 50.0f);
+		// Kept with the proxy's settings, so a release can ship its own default.
+		s.follow_damage = shared::common::config::get().get_bool("Lights", "HeadlightsFollowDamage", s.follow_damage);
 
 		read_float("ColourR", s.colour[0], 0.0f, 1.0f);
 		read_float("ColourG", s.colour[1], 0.0f, 1.0f);
@@ -254,6 +378,8 @@ namespace comp
 		ok &= write("WastedStayLit", s.wasted_stay_lit ? "1" : "0");
 		ok &= write("CivilianCarsBrightness", number(s.civilian_brightness));
 		ok &= write("CivilianCarsRange", number(s.civilian_range));
+
+		shared::common::config::get().set_bool("Lights", "HeadlightsFollowDamage", s.follow_damage);
 
 		if (ok)
 		{
@@ -409,16 +535,101 @@ namespace comp
 	 * and overwrites a matching entry, so describing the lamp again under the same hash is
 	 * the update -- destroying it first would blink it out for a frame.
 	 */
-	void headlights::describe_lamp(const game::race_car& car, const car_bounds& bounds, const int side,
-		const float brightness)
+	void headlights::remember_lamp_origins()
+	{
+		const auto lens = lens_lights::get();
+		if (!lens) {
+			return;
+		}
+		for (const auto& car : m_cars)
+		{
+			if (car.master->t_type > BR_TRANSFORM_MATRIX34_LP) {
+				continue;
+			}
+			const car_bounds* bounds = nullptr;
+			for (int side = 0; side < 2; ++side)
+			{
+				auto lamps = lens->head_lamps(car.master, side);
+				const auto key = std::make_tuple(static_cast<const void*>(car.spec), side, static_cast<const void*>(lamps.model));
+				if (!lamps.model || lamps.points.size() < MIN_LAMP_POINTS || m_lamp_origins.contains(key)) {
+					continue;
+				}
+				if (!bounds) {
+					bounds = measure(car);
+				}
+				if (!bounds) {
+					break;
+				}
+				lamp_origin& origin = m_lamp_origins[key];
+				origin.points = std::move(lamps.points);
+				origin.bounds = *bounds;
+				origin.last = { &origin.bounds, {}, { { 1.0f, 0.0f, 0.0f }, { 0.0f, 1.0f, 0.0f }, { 0.0f, 0.0f, 1.0f } }, 0.0f };
+			}
+		}
+	}
+
+	std::optional<headlights::lamp_damage> headlights::lamp_damage_on(const game::race_car& car, const int side,
+		const game::br_model* model, const std::vector<std::array<float, 3>>& now)
+	{
+		if (!m_settings.follow_damage || !model) {
+			return std::nullopt;
+		}
+		const auto it = m_lamp_origins.find({ car.spec, side, model });
+		if (it == m_lamp_origins.end()) {
+			return std::nullopt;
+		}
+		lamp_origin& origin = it->second;
+		if (now.size() != origin.points.size()) {
+			return origin.last;
+		}
+
+		const auto centre_then = centroid(origin.points);
+		const auto centre_now = centroid(now);
+		auto q = best_rotation(origin.points, centre_then, now, centre_now);
+
+		lamp_damage damage{ &origin.bounds };
+		for (int i = 0; i < 3; ++i) {
+			damage.moved[i] = static_cast<float>(centre_now[i] - centre_then[i]);
+		}
+
+		const double half = std::acos(std::clamp(q[0], -1.0, 1.0));
+		damage.angle = static_cast<float>(2.0 * half);
+		if (damage.angle > MAX_LAMP_TURN)
+		{
+			const double scale = std::sin(MAX_LAMP_TURN * 0.5) / std::sin(half);
+			q = { std::cos(MAX_LAMP_TURN * 0.5), q[1] * scale, q[2] * scale, q[3] * scale };
+		}
+
+		const double w = q[0], x = q[1], y = q[2], z = q[3];
+		const double r[3][3] = {
+			{ 1 - 2 * (y * y + z * z), 2 * (x * y - w * z), 2 * (x * z + w * y) },
+			{ 2 * (x * y + w * z), 1 - 2 * (x * x + z * z), 2 * (y * z - w * x) },
+			{ 2 * (x * z - w * y), 2 * (y * z + w * x), 1 - 2 * (x * x + y * y) },
+		};
+		for (int i = 0; i < 3; ++i)
+		{
+			for (int j = 0; j < 3; ++j) {
+				damage.rotation[i][j] = static_cast<float>(r[i][j]);
+			}
+		}
+		origin.last = damage;
+		return damage;
+	}
+
+	void headlights::describe_lamp(const game::race_car& car, const car_bounds& current_bounds, const int side,
+		const float brightness, const lamp_damage* damage)
 	{
 		const settings& s = m_settings;
 		const float sign = side == 0 ? -1.0f : 1.0f;
 
+		// A crushed car's box shrinks with it. A beam following its lamp is placed against the
+		// box from before, so the crush moves it once, through the lamp.
+		const car_bounds& bounds = damage ? *damage->bounds : current_bounds;
+
 		// A car faces down its local -Z, so the front face of the box is min z.
 		const float centre_x = 0.5f * (bounds.min[0] + bounds.max[0]);
 		const float half_width = 0.5f * (bounds.max[0] - bounds.min[0]);
-		const float local_pos[3] = {
+		float local_pos[3] = {
 			centre_x + sign * s.spacing * half_width,
 			bounds.min[1] + s.height * (bounds.max[1] - bounds.min[1]),
 			bounds.min[2] - s.forward,
@@ -426,11 +637,22 @@ namespace comp
 
 		const float pitch = s.pitch_down * DEG_TO_RAD;
 		const float yaw = sign * s.toe_out * DEG_TO_RAD;
-		const float local_dir[3] = {
+		float local_dir[3] = {
 			std::sin(yaw) * std::cos(pitch),
 			-std::sin(pitch),
 			-std::cos(yaw) * std::cos(pitch),
 		};
+
+		if (damage)
+		{
+			for (int i = 0; i < 3; ++i) {
+				local_pos[i] += damage->moved[i];
+			}
+			const float dir[3] = { local_dir[0], local_dir[1], local_dir[2] };
+			for (int i = 0; i < 3; ++i) {
+				local_dir[i] = damage->rotation[i][0] * dir[0] + damage->rotation[i][1] * dir[1] + damage->rotation[i][2] * dir[2];
+			}
+		}
 
 		const game::br_matrix34& car_to_world = car.master->t;
 
@@ -494,6 +716,9 @@ namespace comp
 		++m_frame;
 		m_lit_masters.clear();
 
+		game::collect_race_cars(m_cars);
+		remember_lamp_origins();
+
 		if (m_mode == mode::off)
 		{
 			destroy_all();
@@ -503,8 +728,6 @@ namespace comp
 		if (!remix_lights_available()) {
 			return;
 		}
-
-		game::collect_race_cars(m_cars);
 
 		for (auto& [key, l] : m_lamps) {
 			l.drawn_this_frame = false;
@@ -579,8 +802,25 @@ namespace comp
 					bounds->max[2] - bounds->min[2]);
 			}
 
-			describe_lamp(car, *bounds, 0, brightness);
-			describe_lamp(car, *bounds, 1, brightness);
+			// A smashed lamp casts no beam. The capture has reported this scene's lamps by now.
+			const auto lens = lens_lights::get();
+			for (int side = 0; side < 2; ++side)
+			{
+				const auto lamps = lens ? lens->head_lamps(car.master, side) : lens_lights::head_lamp_side{};
+				const auto damage = lamp_damage_on(car, side, lamps.model, lamps.points);
+				if (car.is_player)
+				{
+					m_player_status += std::format(", {} lamps {}/{} intact", side == 0 ? "left" : "right", lamps.intact, lamps.total);
+					if (damage)
+					{
+						m_player_status += std::format(" (moved {:.3f}, turned {:.0f} deg)", length(damage->moved),
+							damage->angle / DEG_TO_RAD);
+					}
+				}
+				if (lamps.total == 0 || lamps.intact > 0) {
+					describe_lamp(car, *bounds, side, brightness, damage ? &*damage : nullptr);
+				}
+			}
 			++m_lit_cars;
 		}
 
@@ -603,6 +843,7 @@ namespace comp
 		// one may be carried into it.
 		destroy_all();
 		m_bounds.clear();
+		m_lamp_origins.clear();
 	}
 
 	// ------
@@ -673,6 +914,9 @@ namespace comp
 			ImGui::SliderFloat("Cone angle", &s.cone_angle, 5.0f, 90.0f, "%.1f deg");
 			ImGui::SliderFloat("Cone softness", &s.cone_softness, 0.0f, 1.0f, "%.2f");
 			ImGui::SliderFloat("Focus", &s.focus, 0.0f, 20.0f, "%.1f");
+			ImGui::Checkbox("Follow lamp damage", &s.follow_damage);
+			ImGui::TextDisabled("Cars with their own headlight geometry: a crushed lamp moves and turns its beam.");
+			ImGui::TextDisabled("Saved to remix-comp-proxy.ini, [Lights] HeadlightsFollowDamage.");
 		}
 
 		if (ImGui::CollapsingHeader("Lamp", ImGuiTreeNodeFlags_DefaultOpen))

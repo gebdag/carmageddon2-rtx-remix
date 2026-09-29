@@ -78,7 +78,10 @@ The Sun tab's "Time of day per race" switch puts the standard sun back on every 
 
 Car lamps carry small lights of their own: the headlight lenses glow onto the bodywork
 while the headlights are on, and the brake and reverse lights light up behind the car
-while braking or reversing. A smashed lamp goes dark.
+while braking or reversing. A smashed lamp goes dark, and a smashed headlight puts its
+beam out too. On cars with their own headlight geometry, the beams move and turn with
+the lamps as the car is crushed and repaired ([Lights] HeadlightsFollowDamage in
+remix-comp-proxy.ini).
 
 
 Keys

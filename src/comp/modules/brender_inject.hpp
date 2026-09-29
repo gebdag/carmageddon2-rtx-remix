@@ -195,6 +195,10 @@ namespace comp
 			{
 				float position[3];   // model space, the piece's area-weighted centre
 				float facing[3];     // its area-weighted normal
+
+				// Its source vertices, model space, in source order. A crushed model keeps its
+				// sources, so they pair up with the lamp's undamaged shape.
+				std::vector<std::array<float, 3>> points;
 			};
 			std::vector<lamp_spot> lamps;
 		};
@@ -579,11 +583,14 @@ namespace comp
 		void release_transient();
 
 		// Walks a model's prepared groups into CPU-side vertices and per-texture index runs.
-		// Shared by the per-model buffers and the merged static batches.
+		// Shared by the per-model buffers and the merged static batches. `vertex_sources`
+		// names each emitted vertex's source, group << 16 | vertex: a crease splits a source
+		// vertex, and a crush changes the creases, but not the sources.
 		bool extract_geometry(IDirect3DDevice9* dev, game::br_model* model,
 		                      game::br_material* fallback_material,
 		                      bool closed_mesh,
 		                      std::vector<ffp_vertex>& vertices,
+		                      std::vector<uint32_t>& vertex_sources,
 		                      std::vector<geometry_part>& parts,
 		                      std::vector<uint32_t>& indices);
 
@@ -623,7 +630,8 @@ namespace comp
 
 		// Finds the lamps in a car model's lens runs, once per build.
 		void find_lamps(std::vector<geometry_part>& parts, const std::vector<ffp_vertex>& vertices,
-			const std::vector<uint32_t>& indices, game::br_material* fallback_material) const;
+			const std::vector<uint32_t>& vertex_sources, const std::vector<uint32_t>& indices,
+			game::br_material* fallback_material);
 		// The world-space vertices of a model's checkpoint arch faces (checkpoint_lights.hpp).
 		std::vector<std::array<float, 3>> arch_points(const game::br_model* model,
 			const game::br_matrix34& model_to_world) const;
@@ -684,6 +692,11 @@ namespace comp
 		bool m_in_frontend = false;
 		bool m_conversion = true;
 		std::unordered_set<game::br_model*> m_frontend_models;
+
+		// Materials seen showing a headlight texture this race. A smashed lamp shows its
+		// damage texture instead, and a dented car is rebuilt, so its lamp runs are known by
+		// material from then on.
+		std::unordered_set<const game::br_material*> m_head_lamp_materials;
 		void release_chunks();
 		void release_geometry(model_geometry& geometry);
 		void evict_stale_geometry();

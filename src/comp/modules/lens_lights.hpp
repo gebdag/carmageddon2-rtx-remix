@@ -67,8 +67,26 @@ namespace comp
 		//   id: the lamp, stable from frame to frame for as long as the car's model is.
 		//   intact: false for a smashed lamp. It stays dark, and it still stands for the car's
 		//     own lamp of that role, so the painted-lamp fallback does not light it instead.
-		void note(const game::br_actor* master, role r, uint64_t id, const float position[3], const float facing[3],
-			bool intact);
+		//   points: a head lamp's lens vertices, world space, in the model's source order.
+		void note(const game::br_actor* master, const game::br_model* model, role r, uint64_t id,
+			const float position[3], const float facing[3], bool intact,
+			std::vector<std::array<float, 3>> points = {});
+
+		// The car's own head lamps drawn this scene on `side` of its centre line (0 left,
+		// 1 right, as the beams are placed). Cars whose lamps are painted into the body have
+		// none. All of them smashed puts that side's beam out.
+		//
+		// `points` are the lens vertices of the side's lamps on one model (the first drawn
+		// with any there), in the car's own space and a fixed order. A crushed car's geometry
+		// is rebuilt, so they move with the damage.
+		struct head_lamp_side
+		{
+			int total = 0;
+			int intact = 0;
+			const game::br_model* model = nullptr;
+			std::vector<std::array<float, 3>> points;
+		};
+		head_lamp_side head_lamps(const game::br_actor* master, int side) const;
 
 		// At the start of every race scene, before the capture reports this scene's lamps.
 		void begin_scene() { m_spots.clear(); }
@@ -85,11 +103,13 @@ namespace comp
 		struct spot
 		{
 			const game::br_actor* master;
+			const game::br_model* model;
 			role r;
 			uint64_t id;
 			float position[3];
 			float facing[3];
 			bool intact;
+			std::vector<std::array<float, 3>> points;
 		};
 
 		struct lamp

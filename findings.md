@@ -5918,3 +5918,39 @@ and the minimap 0x004950B0 (callbacks 0x00496B10, 0x00495D00).
 - **Track change:** a changed checkpoint table (count and gate corners) clears the scan. The
   pause round trip keeps it.
 - **Settings:** in `carma2-streetlights.ini` `[Checkpoints]` and the Lights tab.
+
+
+## 77. Headlight beams: smashed lamps and crushed lamps (2026-09-30)
+
+In game, a smashed headlight kept its Remix beam. The lens lights (69) already went out; the
+beams (`headlights`) never looked at the lamps.
+
+**Smashed beams.**
+- `lens_lights::head_lamps(master, side)` counts the head lamps the capture reported this scene
+  on each side of the car's x axis, and how many are intact. A side whose lamps are all smashed
+  gets no beam; a side with none (lamps painted into the body) keeps the mounted beam.
+- **Why it first failed on the Delorean:** a smash swaps the lens material's pixelmap
+  (`dfhlitel`/`dfhliter`: `Dfhlite` -> `DfhliteB`, from `delorean.wam`), and denting the car
+  rebuilds its geometry. `find_lamps` recognised a head lamp by its texture at build time, so
+  after the first dent a smashed lamp was not a lamp at all, and the beam fell back to the
+  mounted one. Materials seen with a headlight texture are now remembered for the race
+  (`m_head_lamp_materials`, cleared at the front end).
+- Some cars have no smashable headlights: the Thunderbucket's `tblflit`/`tbrflit` are not in
+  `tbucket.wam`; only its screens and rear lights smash.
+
+**Beams follow crushed lamps** (`[Lights] HeadlightsFollowDamage` in remix-comp-proxy.ini).
+- Each side's lens vertices, in the car's own space, are recorded at the car's first sight in
+  the race (every car, whatever the headlight mode), with the car's box then.
+- Each frame the rigid motion that best carries them to their current positions is fitted
+  (Horn's quaternion method): the beam moves with the lenses' centre and turns with the
+  rotation, at most 60 degrees, placed against the recorded box.
+- **Vertex identity:** the proxy emits one vertex per source vertex and shading normal, so a
+  crush, which changes the creases, changes the emitted vertices. Lamp pieces and their points
+  are built from source vertices (`group << 16 | vertex`, `vertex_sources` from
+  `extract_geometry`), and folded-flat triangles still count, so a lamp has the same points at
+  any damage.
+- **Surface normals do not work** for this: the area-weighted normal of a pod-shaped lamp nearly
+  cancels, and crease smoothing lets a dented fender turn an untouched lamp.
+- Once a lamp has an origin its beam never falls back to the mounted placement: a frame whose
+  points do not match holds the last fit. The fallback placement uses a box cached for 120
+  frames, which made the beams drift and then snap during a repair.

@@ -1326,6 +1326,7 @@ namespace comp
 		game::br_material* fallback_material, model_geometry& into)
 	{
 		std::vector<ffp_vertex> vertices;
+		std::vector<uint32_t> vertex_sources;
 		std::vector<geometry_part> parts;
 		std::vector<uint32_t> indices;
 
@@ -1344,7 +1345,7 @@ namespace comp
 
 		// 16-bit indices are enough for any single model this game ships; anything larger is
 		// corrupt data rather than a real mesh.
-		if (!extract_geometry(dev, model, fallback_material, geometry.closed, vertices, parts, indices)
+		if (!extract_geometry(dev, model, fallback_material, geometry.closed, vertices, vertex_sources, parts, indices)
 			|| vertices.size() > 0xFFFF)
 		{
 			release_geometry(into);
@@ -1400,7 +1401,7 @@ namespace comp
 			geometry.index_buffer->Unlock();
 		}
 
-		find_lamps(parts, vertices, indices, fallback_material);
+		find_lamps(parts, vertices, vertex_sources, indices, fallback_material);
 		geometry.parts = std::move(parts);
 		geometry.vertex_count = static_cast<uint32_t>(vertices.size());
 
@@ -1702,7 +1703,7 @@ namespace comp
 
 	bool brender_inject::extract_geometry(IDirect3DDevice9* dev, game::br_model* model,
 		game::br_material* fallback_material, const bool closed_mesh, std::vector<ffp_vertex>& vertices,
-		std::vector<geometry_part>& parts, std::vector<uint32_t>& indices)
+		std::vector<uint32_t>& vertex_sources, std::vector<geometry_part>& parts, std::vector<uint32_t>& indices)
 	{
 		const auto prepared = model->prepared;
 		if (!prepared || !prepared->groups || !prepared->ngroups) {
@@ -1818,6 +1819,7 @@ namespace comp
 				}
 
 				const game::v1_online_vertex& src = ref.group->vertices[v];
+				vertex_sources.push_back(static_cast<uint32_t>(g << 16) | v);
 				ffp_vertex& dst = vertices.emplace_back();
 				// BrModelUpdate subtracts the pivot when it builds the prepared block;
 				// adding it back restores true model space.
@@ -2059,12 +2061,14 @@ namespace comp
 
 	/*
 	 * The lamps of a model's lens runs: runs drawn with a headlight texture ([Lights]
-	 * HeadlightTextures) or with a material the game shows the car's brake or reverse bit
-	 * through. A run usually carries both lamps of a pair, so its triangles are split into
-	 * connected pieces, one lamp each.
+	 * HeadlightTextures) or with a material that showed one earlier in the race, and runs
+	 * with a material the game shows the car's brake or reverse bit through. A run usually
+	 * carries both lamps of a pair, so its triangles are split into connected pieces, one
+	 * lamp each.
 	 */
 	void brender_inject::find_lamps(std::vector<geometry_part>& parts, const std::vector<ffp_vertex>& vertices,
-		const std::vector<uint32_t>& indices, game::br_material* fallback_material) const
+		const std::vector<uint32_t>& vertex_sources, const std::vector<uint32_t>& indices,
+		game::br_material* fallback_material)
 	{
 		constexpr size_t MAX_LAMPS_PER_RUN = 8;
 		const auto& heads = shared::common::config::get().lights.headlight_textures;
@@ -2085,6 +2089,9 @@ namespace comp
 				&& std::any_of(heads.begin(), heads.end(), [pm](const std::string& name) {
 					return _stricmp(name.c_str(), pm->identifier) == 0;
 				})) {
+				m_head_lamp_materials.insert(material);
+			}
+			if (m_head_lamp_materials.contains(material)) {
 				roles |= 1;
 			}
 			const uint8_t funk = game::funk_light_roles(material);
@@ -2094,28 +2101,42 @@ namespace comp
 				continue;
 			}
 
-			// Connected pieces, joined through shared vertices of the run.
+			// Connected pieces, joined through the source vertices the run's triangles share.
+			// Sources rather than emitted vertices: a crease splits a source vertex, and a crush
+			// changes the creases, so only the sources give a lamp the same pieces and the same
+			// vertices whatever its damage.
 			const uint32_t first = part.index_start;
 			const uint32_t count = part.triangle_count * 3;
+			const auto source = [&](const uint32_t corner) { return vertex_sources[indices[first + corner]]; };
 			std::unordered_map<uint32_t, uint32_t> parent;
 			const std::function<uint32_t(uint32_t)> root = [&](uint32_t v) {
 				while (parent[v] != v) { v = parent[v] = parent[parent[v]]; }
 				return v;
 			};
 			for (uint32_t i = 0; i < count; ++i) {
-				parent.try_emplace(indices[first + i], indices[first + i]);
+				parent.try_emplace(source(i), source(i));
 			}
 			for (uint32_t t = 0; t < count; t += 3)
 			{
-				const uint32_t a = root(indices[first + t]);
-				parent[root(indices[first + t + 1])] = a;
-				parent[root(indices[first + t + 2])] = a;
+				const uint32_t a = root(source(t));
+				parent[root(source(t + 1))] = a;
+				parent[root(source(t + 2))] = a;
 			}
 
-			struct accum { float area = 0, p[3] = {}, n[3] = {}; };
+			struct accum
+			{
+				float area = 0, p[3] = {}, n[3] = {};
+				std::map<uint32_t, uint32_t> sources;   // source -> an emitted vertex of it
+			};
 			std::unordered_map<uint32_t, accum> pieces;
 			for (uint32_t t = 0; t < count; t += 3)
 			{
+				// A crushed lens can fold a triangle flat. Its vertices still belong to the lamp.
+				accum& piece = pieces[root(source(t))];
+				for (uint32_t k = 0; k < 3; ++k) {
+					piece.sources.try_emplace(source(t + k), indices[first + t + k]);
+				}
+
 				const ffp_vertex& v0 = vertices[indices[first + t]];
 				const ffp_vertex& v1 = vertices[indices[first + t + 1]];
 				const ffp_vertex& v2 = vertices[indices[first + t + 2]];
@@ -2129,7 +2150,6 @@ namespace comp
 				}
 				// The facing comes from the vertex normals, which point out of the model whatever
 				// the winding; the cross product only measures the area.
-				accum& piece = pieces[root(indices[first + t])];
 				piece.area += area;
 				const float c[3] = { (v0.x + v1.x + v2.x) / 3, (v0.y + v1.y + v2.y) / 3, (v0.z + v1.z + v2.z) / 3 };
 				const float vn[3] = { v0.nx + v1.nx + v2.nx, v0.ny + v1.ny + v2.ny, v0.nz + v1.nz + v2.nz };
@@ -2140,22 +2160,36 @@ namespace comp
 				}
 			}
 
+			// Chosen and ordered by their sources, which no damage changes.
 			std::vector<accum> sorted;
-			for (auto& [key, piece] : pieces) { sorted.push_back(piece); }
-			std::sort(sorted.begin(), sorted.end(), [](const accum& a, const accum& b) { return a.area > b.area; });
+			for (auto& [key, piece] : pieces) { sorted.push_back(std::move(piece)); }
+			std::sort(sorted.begin(), sorted.end(), [](const accum& a, const accum& b) {
+				return a.sources.size() != b.sources.size() ? a.sources.size() > b.sources.size()
+					: a.sources.begin()->first < b.sources.begin()->first;
+			});
 			if (sorted.size() > MAX_LAMPS_PER_RUN) {
 				sorted.resize(MAX_LAMPS_PER_RUN);
 			}
+			std::sort(sorted.begin(), sorted.end(), [](const accum& a, const accum& b) {
+				return a.sources.begin()->first < b.sources.begin()->first;
+			});
 
 			for (const auto& piece : sorted)
 			{
 				geometry_part::lamp_spot spot{};
+				for (const auto& [src, v] : piece.sources) {
+					spot.points.push_back({ vertices[v].x, vertices[v].y, vertices[v].z });
+				}
 				for (int i = 0; i < 3; ++i)
 				{
-					spot.position[i] = piece.p[i] / piece.area;
+					float mean = 0.0f;
+					for (const auto& q : spot.points) {
+						mean += q[i];
+					}
+					spot.position[i] = piece.area > 0.0f ? piece.p[i] / piece.area : mean / static_cast<float>(spot.points.size());
 					spot.facing[i] = piece.n[i];
 				}
-				part.lamps.push_back(spot);
+				part.lamps.push_back(std::move(spot));
 			}
 			part.lamp_roles = roles;
 			part.lamp_material = material;
@@ -2264,9 +2298,22 @@ namespace comp
 				}
 				const uint64_t id = (static_cast<uint64_t>(reinterpret_cast<uintptr_t>(model)) << 16)
 					^ (static_cast<uint64_t>(p) << 4) ^ i;
-				if (part.lamp_roles & 1) { lens->note(master, lens_lights::role::head, id, position, facing, intact & 1); }
-				if (part.lamp_roles & 2) { lens->note(master, lens_lights::role::brake, id, position, facing, intact & 2); }
-				if (part.lamp_roles & 4) { lens->note(master, lens_lights::role::reverse, id, position, facing, intact & 4); }
+				if (part.lamp_roles & 1)
+				{
+					std::vector<std::array<float, 3>> points;
+					points.reserve(spot.points.size());
+					for (const auto& q : spot.points)
+					{
+						auto& w = points.emplace_back();
+						for (int c = 0; c < 3; ++c) {
+							w[c] = q[0] * model_to_world.m[0][c] + q[1] * model_to_world.m[1][c]
+								+ q[2] * model_to_world.m[2][c] + model_to_world.m[3][c];
+						}
+					}
+					lens->note(master, model, lens_lights::role::head, id, position, facing, intact & 1, std::move(points));
+				}
+				if (part.lamp_roles & 2) { lens->note(master, model, lens_lights::role::brake, id, position, facing, intact & 2); }
+				if (part.lamp_roles & 4) { lens->note(master, model, lens_lights::role::reverse, id, position, facing, intact & 4); }
 			}
 		}
 	}
@@ -2448,11 +2495,12 @@ namespace comp
 		}
 
 		std::vector<ffp_vertex> vertices;
+		std::vector<uint32_t> vertex_sources;
 		std::vector<geometry_part> parts;
 		std::vector<uint32_t> indices;
 
 		const bool closed_mesh = model->prepared && mesh_is_closed(*model->prepared);
-		if (!extract_geometry(dev, model, fallback_material, closed_mesh, vertices, parts, indices))
+		if (!extract_geometry(dev, model, fallback_material, closed_mesh, vertices, vertex_sources, parts, indices))
 		{
 			note_placement_drift(model, "bake failed: no geometry");
 			return false;
@@ -2709,6 +2757,7 @@ namespace comp
 	{
 		m_in_frontend = true;
 		m_frontend_models.clear();
+		m_head_lamp_materials.clear();
 
 		if (const auto lights = headlights::get(); lights) {
 			lights->on_frame_without_race();

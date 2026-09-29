@@ -50,6 +50,10 @@ namespace comp
 			float cone_softness = 0.30f;
 			float focus = 0.0f;
 
+			// A car with its own headlight geometry moves and turns each beam with its lamp as
+			// the car is crushed. Stored in remix-comp-proxy.ini ([Lights] HeadlightsFollowDamage).
+			bool follow_damage = true;
+
 			// lamp
 			float colour[3] = { 1.0f, 0.93f, 0.80f };
 			float brightness = 2.0f;        // radiance times emitter area, so the radius only softens shadows
@@ -104,6 +108,26 @@ namespace comp
 			uint32_t measured_frame;
 		};
 
+		// How far a side's lamp has moved and turned since its first sight, in the car's own
+		// space: the rigid motion that best carries its lens vertices from then to now.
+		struct lamp_damage
+		{
+			const car_bounds* bounds;   // the box the beam was placed against then
+			float moved[3];             // of the lenses' centre
+			float rotation[3][3];       // v' = R v, limited to MAX_LAMP_TURN
+			float angle;                // radians, before the limit
+		};
+
+		// One side's lamp lenses as first drawn this race, undamaged, and the car's box then.
+		// Once a lamp has one, its beam is always placed against it: `last` is the latest fit,
+		// held through any frame whose lens cannot be matched.
+		struct lamp_origin
+		{
+			std::vector<std::array<float, 3>> points;
+			car_bounds bounds;
+			lamp_damage last;
+		};
+
 		struct lamp
 		{
 			remixapi_LightHandle handle = nullptr;
@@ -116,7 +140,15 @@ namespace comp
 
 		static bool remix_lights_available();
 		const car_bounds* measure(const game::race_car& car);
-		void describe_lamp(const game::race_car& car, const car_bounds& bounds, int side, float brightness);
+		// Every race car's lamps at their first sight this race, whatever the mode: cars start
+		// whole, and one crushed before its lights come on still has its undamaged shape.
+		void remember_lamp_origins();
+
+		// Null model or too few points: the car has no lamp geometry on that side.
+		std::optional<lamp_damage> lamp_damage_on(const game::race_car& car, int side,
+			const game::br_model* model, const std::vector<std::array<float, 3>>& points);
+		void describe_lamp(const game::race_car& car, const car_bounds& bounds, int side, float brightness,
+			const lamp_damage* damage);
 		void destroy_all();
 
 		static std::string ini_path();
@@ -131,6 +163,7 @@ namespace comp
 
 		std::unordered_map<const void*, car_bounds> m_bounds;
 		std::unordered_map<uint64_t, lamp> m_lamps;
+		std::map<std::tuple<const void*, int, const void*>, lamp_origin> m_lamp_origins;   // car spec, side, model
 		std::unordered_set<const game::br_actor*> m_lit_masters;   // master actors of the lit cars
 		std::vector<game::race_car> m_cars;
 

@@ -33,6 +33,23 @@ namespace comp
 			return x ^ (x >> 31);
 		}
 
+		// Into a car's own space. Its matrix is a rotation and a translation; dividing by each
+		// row's squared length also undoes a uniform scale.
+		void to_car(const game::br_matrix34& t, const float v[3], const bool point, float out[3])
+		{
+			const float d[3] = {
+				point ? v[0] - t.m[3][0] : v[0],
+				point ? v[1] - t.m[3][1] : v[1],
+				point ? v[2] - t.m[3][2] : v[2],
+			};
+			for (int row = 0; row < 3; ++row)
+			{
+				const float* axis = t.m[row];
+				const float length_sq = axis[0] * axis[0] + axis[1] * axis[1] + axis[2] * axis[2];
+				out[row] = length_sq > 1e-12f ? (d[0] * axis[0] + d[1] * axis[1] + d[2] * axis[2]) / length_sq : 0.0f;
+			}
+		}
+
 		uint64_t lamp_key(const game::br_actor* master, const lens_lights::role r, const uint64_t id)
 		{
 			return mix(mix(reinterpret_cast<uintptr_t>(master)) ^ mix(id) ^ static_cast<uint64_t>(r));
@@ -149,14 +166,44 @@ namespace comp
 	// ------
 	// lamps
 
-	void lens_lights::note(const game::br_actor* master, const role r, const uint64_t id,
-		const float position[3], const float facing[3], const bool intact)
+	void lens_lights::note(const game::br_actor* master, const game::br_model* model, const role r, const uint64_t id,
+		const float position[3], const float facing[3], const bool intact, std::vector<std::array<float, 3>> points)
 	{
-		spot s{ master, r, id };
+		spot s{ master, model, r, id };
+		s.points = std::move(points);
 		std::memcpy(s.position, position, sizeof(s.position));
 		std::memcpy(s.facing, facing, sizeof(s.facing));
 		s.intact = intact;
 		m_spots.push_back(s);
+	}
+
+	lens_lights::head_lamp_side lens_lights::head_lamps(const game::br_actor* master, const int side) const
+	{
+		head_lamp_side out;
+		for (const auto& s : m_spots)
+		{
+			if (s.master != master || s.r != role::head) {
+				continue;
+			}
+			float position[3];
+			to_car(master->t, s.position, true, position);
+			if ((position[0] < 0.0f) != (side == 0)) {
+				continue;
+			}
+			++out.total;
+			out.intact += s.intact ? 1 : 0;
+
+			if (!out.model) {
+				out.model = s.model;
+			}
+			if (s.model != out.model) {
+				continue;
+			}
+			for (const auto& p : s.points) {
+				to_car(master->t, p.data(), true, out.points.emplace_back().data());
+			}
+		}
+		return out;
 	}
 
 	void lens_lights::light(const uint64_t key, const role r, const float scale, const float position[3], const float facing[3])
