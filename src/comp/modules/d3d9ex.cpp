@@ -8,6 +8,7 @@
 #include "tracer.hpp"
 #include "diagnostics.hpp"
 #include "headlights.hpp"
+#include "frame_pacer.hpp"
 #include "skinning.hpp"
 #include "shared/common/shader_cache.hpp"
 #include "shared/common/ffp_state.hpp"
@@ -205,6 +206,8 @@ namespace comp
 		QueryPerformanceCounter(&after);
 		ffp.set_last_present_ms(static_cast<double>(after.QuadPart - before.QuadPart)
 			* 1000.0 / static_cast<double>(frequency.QuadPart));
+
+		frame_pacer::get().after_present();
 
 		if (auto* t = tracer::get()) t->on_present();
 		return hr;

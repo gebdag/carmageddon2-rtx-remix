@@ -1,5 +1,6 @@
 #include "std_include.hpp"
 #include "imgui.hpp"
+#include "frame_pacer.hpp"
 
 #include "imgui_internal.h"
 #include "renderer.hpp"
@@ -375,6 +376,18 @@ namespace comp
 		if (!effects.backface_culling) {
 			ImGui::TextDisabled("Backface culling is off ([Effects] BackfaceCulling), so this does nothing.");
 		}
+
+		ImGui::Separator();
+
+		auto& timing = config.timing;
+		ImGui::Checkbox("Frame pacing", &timing.frame_pacing);
+		ImGui::SliderFloat("Pacing fraction", &timing.frame_pacing_fraction, 0.5f, 1.0f, "%.2f of average");
+		const auto& pacer = frame_pacer::get();
+		ImGui::TextDisabled("Average frame %.1f ms, last hold %.1f ms", pacer.average_interval_ms(), pacer.last_wait_ms());
+		ImGui::TextWrapped(
+			"Holds a frame that arrives in a burst until the frames are evenly spaced. On a burst frame the "
+			"game places the cars wrongly, which shakes the chase camera up and down on slopes (Bob Slay). "
+			"Takes effect at once. [Timing] FramePacing, FramePacingFraction.");
 
 		ImGui::Separator();
 

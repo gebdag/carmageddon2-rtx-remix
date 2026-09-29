@@ -1317,7 +1317,18 @@ $ 0x0079f40c br_actor** g_enabled_lights        /* v1db.enabled_lights; count at
 @ 0x00442e90 void __fastcall CheckToggles(int in_race /*ecx*/); /* walks g_toggles; ends with 0x00442F90 */
 @ 0x00442f90 void CheckMapRenderMoveEtc(void);          /* first block: map mode (0x0075B9A4 == 2) slots 31..34 pan the map (0x00659B30 y, 0x00659B2C x); rest is unrelated race-state code */
 @ 0x0040ea30 void UpdateCamera(void);                   /* switch g_camera_mode: 0/4/7 (and 5/6) -> 0x00410C60, 3 -> 0x0040EF90, 8 -> 0x0040F590 (name inferred) */
-@ 0x00410c60 void PollCameraControls(void);             /* chase cam: bit1/2 (slots 31/32) zoom g_camera_zoom, bit3/4 (33/34) orbit g_camera_yaw, both = reset; skipped in map mode (C1 name; args not recovered) */
+@ 0x00410c60 void __fastcall PositionExternalCamera(tCar_spec *car /*ecx*/, br_matrix34 *car_mat /*edx*/, br_vector3 *pos, float speed, float speedo_speed, br_vector3 *direction, void *old_frame_mat, unsigned dt_ms); /* C1 NormalPositionExternalCamera with PollCameraControls inlined (bit1/2 zoom, bit3/4 orbit, both = reset). Height: g_camera_height lags pos.y (0.2 s implicit Euler), uphill floor at 0x00411833..0x0041186D from direction.y (velocity dir) -- the slope-jitter cause (findings 70); then CollideCamera2, PointCameraAtCar */
+@ 0x004940e0 void __fastcall UpdateCameras(unsigned dt_ms /*ecx*/); /* from MainGameLoop 0x00493083 (dt = [0x0074ABF0]): UpdateCamera(&g_player_car, dt), then camera matrices (0x0051E7D0) */
+@ 0x00411980 void __thiscall SwingCamera(br_matrix34 *car_mat /*ecx*/, br_vector3 *vn, br_matrix34 *old_mat, float speed, unsigned dt_ms, tCar_spec *car); /* horizontal only; rate-limited swing of vn (C1 name) */
+@ 0x004122b0 int  __fastcall CollideCamera2(br_vector3 *car_pos /*ecx*/, br_vector3 *cam_pos /*edx*/, br_vector3 *old_cam_pos, int manual_move, void *car_physics_obj); /* ray car->1.25x cam (FindFace 0x0045CA60), raise/pull-in/min-distance lift, 3-face push-out; sets g_camera_has_collided; recomputed from scratch each frame */
+@ 0x00411fc0 void __fastcall PointCameraAtCar(br_vector3 *car_pos /*ecx*/, br_matrix34 *cam_mat /*edx*/); /* yaw to car in xz, then PreRotateX by atan2(cam.y-car.y, dist) -- pitch undamped */
+@ 0x00413570 int  CollideCameraWithOtherCars(void);      /* empty stub in C2: returns 0 */
+@ 0x00413580 void InitialiseExternalCamera(void);        /* g_camera_height = car y, g_min_camera_car_distance = 0.6, g_camera_state = -2 */
+@ 0x00492680 void __fastcall FrameTiming(unsigned *camera_dt /*ecx*/); /* QPC ms; g_frame_period (smoothed, drift-corrected) and *camera_dt clamped 10..1000; below 10 resets last_frame_time (name inferred) */
+@ 0x00416340 void __fastcall ApplyPhysicsToCars(unsigned last_frame_time /*ecx*/, unsigned period /*edx*/); /* MainGameLoop 0x00492EC0; DoPhysics then FinishCars */
+@ 0x004b6630 int  __fastcall DoPhysics(void *callbacks /*ecx*/, unsigned start /*edx*/, unsigned period); /* fixed 40 ms steps (g_last_mechanics_time), max 5/frame, then rewinds bodies by mech_time - frame_end (0x004C2830 / 0x004C2600) */
+@ 0x00416500 void __fastcall FinishCars(unsigned frame_end /*ecx*/, unsigned period /*edx*/); /* car->pos = master mat x cmpos; car->direction = normalise(physics v), viewed car lerped from the previous step's v (0x00679390) */
+@ 0x004c2830 void __thiscall RewindPhysicsBody(void *body /*ecx*/, float dt); /* actor t += v*dt (dt negative), rotation 0x004C2670, recurses children (name inferred) */
 @ 0x0040ef90 void __fastcall CameraMode3(void *cam, unsigned dt); /* bit3/4 orbit (both = recentre), bit1/2 closer/further, with Ctrl (bit0) raise/lower */
 @ 0x0040f590 void __fastcall CameraMode8(tCar_spec *car, unsigned dt); /* bit1/2 slide between car +0x18D8 and +0x18E4 positions */
 @ 0x004e69b0 void __fastcall DoActionReplayKeys(void *a, void *b); /* action replay only (0x00676914): raw typed codes, KP4/KP6/PgUp/PgDn rewind/ff, KP5/Space, KP0/1/3/7, Keypad / * (name inferred) */
@@ -1335,6 +1346,18 @@ $ 0x0079efa4 unsigned g_camera_keys             /* bit0 raw Ctrl, bits1..4 slots
 $ 0x0079efa8 int    g_camera_mode               /* 0..8 */
 $ 0x00655f40 float  g_camera_zoom               /* chase-cam distance factor 0.1..2.0 */
 $ 0x0068b908 unsigned short g_camera_yaw        /* chase-cam orbit angle (type inferred) */
+$ 0x0074c9f0 float  g_camera_height             /* smoothed chase-cam base height; camera y = this + zoom^2 + 0.3. Uphill floor store at 0x0041186D */
+$ 0x0074c7b8 float  g_min_camera_car_distance   /* 0.6 */
+$ 0x006793e0 int    g_camera_has_collided       /* set by CollideCamera2 */
+$ 0x00679294 int    g_camera_state              /* C1 gCamera_mode: 0 normal, -1 speed sign flip, 1 collision mode, -2 reset */
+$ 0x006792e8 br_vector3 g_camera_pos_before_collide
+$ 0x00655f48 br_vector3 g_view_direction        /* last chase direction (x, 0, z) */
+$ 0x0074abf0 unsigned g_camera_frame_ms         /* dt passed to UpdateCamera; = frame period, clamped 10..1000 */
+$ 0x0074d3e4 unsigned g_frame_period            /* ms; >= 10; per-frame tick and physics */
+$ 0x0079efb0 unsigned g_last_frame_time         /* GetTotalTime = this + g_frame_period */
+$ 0x0074a5ec unsigned g_last_mechanics_time     /* physics clock, 40 ms steps */
+$ 0x00679390 br_vector3 g_viewed_car_prev_v     /* viewed car's v before the last physics step (0x004158DA) */
+$ 0x00761f48 int    g_countdown                 /* race-start countdown; enables the camera swoop */
 $ 0x0075b9a4 int    g_map_mode                  /* 2 = map shown (inferred from CheckMapRenderMove) */
 $ 0x00676914 int    g_action_replay_mode        /* inferred */
 

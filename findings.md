@@ -5242,6 +5242,274 @@ the car's corners instead. It just gets no light.
 **Not covered.** Cars whose lamps are painted into the body have no lamp run to check, so
 their fallback lamps stay lit when damaged.
 
+## 70. Chase camera jitter on slopes (2026-09-29)
+
+Report: on **Bob Slay** the external chase camera jitters hard in the vertical direction while
+the car drives uphill. Bob Slay is race 22 in the race list (`DATA\DATA.TWT`), text file
+**`SKITRACK2.TXT`**, the second ski-resort track (a bobsleigh run). This section is static
+analysis only, with nothing confirmed live yet.
+
+### 70.1 Where the chase camera is computed
+
+The frame order inside `MainGameLoop` 0x00492950 is as follows:
+
+| Call site | What |
+|---|---|
+| 0x00492BA7 | `FrameTiming` 0x00492680 (ECX = &`g_camera_frame_ms` 0x0074ABF0) |
+| 0x00492CBB | per-frame tick 0x00401170 (ECX = `g_frame_period` 0x0074D3E4) |
+| 0x00492EC0 | `ApplyPhysicsToCars` 0x00416340 (ECX = last frame time - race start, EDX = period) -> `DoPhysics` 0x004B6630 -> `FinishCars` 0x00416500 |
+| 0x00493073 | `PackCameraKeys` 0x00444270 |
+| 0x00493083 | `UpdateCameras` 0x004940E0 -> `UpdateCamera` 0x0040EA30 (ECX = &g_player_car, EDX = `[0x0074ABF0]`) |
+| 0x00493AEA | `RenderAFrame` |
+
+So the camera is placed after the physics and before the render, and it uses this frame's car
+pose. The order is right, and there is no one-frame lag between car and camera.
+
+**`UpdateCamera` 0x0040EA30.** Modes 0, 4 and 7 (and the target cameras 5 and 6) call
+0x00410C60. Before the switch it:
+- writes the camera's hither (`[cam_data+8]` = `[0x0074D3E8]`);
+- returns when the car is above y = 500.
+
+The call for the player (0x0040EDC4..0x0040EDE7) is:
+
+```
+ECX = car (tCar_spec*)        EDX = &car_master_actor->t.t.mat (actor+0x2C)
+stack: &car->pos (+0x4C), [car+0x7C] speed, [car+0x4A4] speedo speed,
+       &car->direction (+0x70), [car+8]+0x74, pTime = [0x0074ABF0]
+```
+
+**`PositionExternalCamera` 0x00410C60** is C1's `NormalPositionExternalCamera`, with the zoom
+and orbit key handling inlined at the top. The kb previously called it PollCameraControls. The
+camera actor is `[0x0074D35C]`, and its translation is at actor+0x50/0x54/0x58.
+
+Its locals sit at ESP+0x10 onward (after `SUB ESP,0x54` and 4 pushes):
+- `[ESP+0x10]` = car matrix;
+- `[ESP+0x18]` = d;
+- `[ESP+0x68]` = height_inc (the param_3 slot, reused);
+- `[ESP+0x74]` = &direction;
+- `[ESP+0x7C]` = pTime.
+
+Per frame it does this:
+1. **Distance** `d = sqrt(g_camera_zoom) + 0.5797` (0x00655F40, default **0.2**, so d = 1.027).
+2. **Horizontal placement is rigid:** `vn = direction` with y dropped, normalised. `SwingCamera`
+   0x00411980 limits how fast it can swing. Then `cam.xz = pos.xz - vn.xz * d`, with no
+   smoothing.
+3. **Height smoothing:** `g_camera_height` 0x0074C9F0 moves toward `car->pos.y` by the implicit
+   Euler step `gh = (gh + 5*dt*y) / (1 + 5*dt)`, with dt = pTime/1000 (0x00411802..0x0041182D).
+   This is a 0.2 s first-order lag and stable at any dt. When pTime >= 5000 it snaps
+   (`gh = y`, 0x004117AE). The countdown "swoop" (`g_countdown` 0x00761F48) is the only other
+   path.
+4. **Uphill floor (0x00411833..0x0041186D), the suspect:**
+
+   ```
+   l = direction.y * d;  if (l > 0) gh = max(gh, pos.y - l - height_inc/2)
+   ```
+
+5. `cam.y = gh + height_inc`, with `height_inc = zoom^2 + 0.3` (default 0.34) (0x00411877..).
+   The result is saved as the "old camera pos" 0x006792E8..F0.
+6. `CollideCameraWithOtherCars` 0x00413570 is an empty stub in C2 (`return 0`).
+7. **`CollideCamera2` 0x004122B0** (ECX = car pos, EDX = camera pos) pushes the camera out of the
+   terrain:
+   - It casts a ray from the car to 1.25 x the camera offset (`FindFace` 0x0045CA60), and also
+     tests the dynamic actors in 0x0079EDA0.
+   - On a hit it raises the camera once along roughly `(n.x, n.y+3, n.z)` and recasts.
+   - It then pulls the camera in (capped at 0.8 of the ray).
+   - If the camera ends up closer than `g_min_camera_car_distance` 0x0074C7B8 (0.6, set in
+     `InitialiseExternalCamera` 0x00413580), it lifts the camera again. This happens only if the
+     first raise did not.
+   - Last come a push-out from up to 3 faces in a hither*3 box (0x004B57D0) and a push-out from
+     the car's own shape.
+   - It sets `g_camera_has_collided` 0x006793E0. It never feeds back into `g_camera_height`.
+8. **`PointCameraAtCar` 0x00411FC0** builds the matrix:
+   - yaw from the camera-to-car direction in the horizontal plane;
+   - then `BrMatrix34PreRotateX` (0x00533760) by `atan2(cam.y - car.y, horizontal dist)`.
+
+   Pitch therefore follows every relative vertical move of camera against car, **undamped**.
+
+**Where `car->direction` and `car->pos` come from.** `FinishCars` 0x00416500 (C1's FinishCars)
+sets them each frame after the physics:
+- `pos = master_matrix x cmpos` (0x0041656A);
+- `direction = normalise(physics v)` (phys+0x68), **the velocity direction, not the chassis
+  axis**;
+- for the viewed car the velocity is lerped between the previous step's v (0x00679390, saved by
+  the pre-step callback 0x00415890) and the current v, by `(mech_time - frame_end)/40`.
+
+The physics (`DoPhysics` 0x004B6630):
+- steps in **fixed 40 ms** steps (`g_last_mechanics_time` 0x0074A5EC), at most 5 per frame;
+- then **rewinds** every body linearly by `mech_time - frame_end` (0x004C2830: `t -= v*dt`, and
+  rotation by 0x004C2670);
+- in frames with no step, first restores the stepped pose (0x004C2600).
+
+So the rendered pose is interpolated between steps. `direction.y` is a piecewise-linear signal
+made from 25 Hz velocity samples.
+
+**Timing.** `FrameTiming` 0x00492680 works on integer-ms QPC time (`PDGetTotalTime` 0x0051D410).
+- It sets game time `GT = now + average period`. The per-frame period (`g_frame_period` 0x0074D3E4
+  and the camera's `[0x0074ABF0]`) is the real frame delta plus the change in the average.
+- Both are clamped to 10..1000 ms. Below 10 it also resets `last_frame_time = now`.
+- Below 100 fps the camera's dt equals the game-time advance exactly.
+- Above 100 fps the camera gets dt = 10 while the car moves by the real delta. The height filter
+  then catches up faster (a smaller mean lag). The per-frame error is only about
+  vy x (frame jitter), a few thousandths of a unit, so **the frame timing is not the jitter**.
+
+### 70.2 Mechanism
+
+The uphill floor is C1's code unchanged: `l = c->direction.v[1] * d; if (l > 0 && pos.y - l -
+height_inc/2 > gCamera_height) gCamera_height = ...`. It is meant to stop the lagging camera from
+dropping into the slope behind a climbing car. Three things make it misbehave:
+
+- **It uses the instantaneous velocity direction.** On bumpy snow the velocity's y component
+  jumps from one 40 ms physics step to the next.
+- **It is a hard `max()` written straight into the smoothing state.** A dip in `direction.y`
+  raises the floor, and the camera is snapped up in that frame. When `direction.y` recovers, the
+  floor drops, but the camera only sinks back at the filter's rate, as lag rebuilds at
+  `vy - 5*L` per second. The result is a sawtooth: an instant snap up, a slow sag, and another
+  snap at the next bump.
+- **It only acts uphill.** On flat ground or downhill `l <= 0` and the floor is skipped, which
+  matches the report.
+
+It binds whenever the filter's lag `L = pos.y - gh` exceeds `height_inc/2 + d*direction.y`. At
+the default zoom that is `0.17 + 1.03*direction.y`. The steady lag is about 0.2 s x vertical
+speed. On a sustained climb, any step where `direction.y` briefly drops below
+`(L - 0.17)/1.03` snaps the camera up by the difference.
+
+Example: L = 0.4 and `direction.y` goes 0.5 -> 0.2 -> 0.5.
+- The camera jumps up about 0.2 units in one frame, against a camera-to-car distance of about 1
+  unit.
+- `PointCameraAtCar` turns that into a pitch jump of about 10 degrees, since the pitch is aimed
+  straight at the car with no damping.
+
+Violent vertical shake, only uphill, only on rough surfaces. Zooming out (larger d and
+height_inc) makes the floor bind less often, which the user can use to check the diagnosis.
+
+A secondary source of small vertical pops is `CollideCamera2`. Its result is recomputed from
+scratch every frame, and its branches do not join up smoothly:
+- first-raise versus pull-in;
+- the min-distance lift, which is allowed only when no raise happened;
+- the nearest-3-faces push-out.
+
+When the chase ray grazes the terrain, the camera can flip between branches from one frame to
+the next. It is recognisable by `g_camera_has_collided` 0x006793E0 = 1 on the jitter frames. On
+climbs the camera sits above the slope, so the ray rarely grazes it except in dips and
+steepening sections.
+
+### 70.3 Remedies (ranked)
+
+**(a) Patch the game: one byte, skip the uphill floor.** Recommended first, and it also serves
+as the live test.
+
+```
+0x00411849  75 2A   JNZ 0x00411875   ->   EB 2A   JMP 0x00411875
+```
+
+The on-disk bytes are verified in CARMA2_HW0.EXE: `0x00411833: 8B 44 24 74 D9 40 04 D8 4C 24 18
+D8 15 18 94 58 00 DF E0 F6 C4 41 75 2A`.
+
+Why it is safe:
+- The jump target is the existing `l <= 0` path, which the game takes every frame on flat ground
+  and downhill.
+- That path's `FSTP ST0` pops `l`, so the x87 stack stays balanced.
+- No other state is touched.
+
+Side effect: on long fast climbs the camera trails lower, by 0.2 s x vertical speed, instead of
+being held up. Terrain penetration is still handled by `CollideCamera2`. The patch changes every
+mode that uses 0x00410C60 (0/4/7 and the target cameras 5/6). Apply it with
+`utils::hook::set<uint8_t>(0x00411849, 0xEB)` at startup.
+
+**(b) Keep the floor but feed it a stable slope.** This is a 7-byte call-out, if (a) makes
+climbs look too low.
+
+Replace `0x00411833: 8B 44 24 74 D9 40 04` (`MOV EAX,[ESP+0x74]; FLD [EAX+4]`) with
+`E8 <rel32> 90 90`, calling a naked stub in the proxy that returns the slope in ST0. Inside the
+stub, with the return address on the stack:
+- `[ESP+0x78]` = &direction;
+- `[ESP+0x80]` = pTime (ms);
+- `[ESP+0x14]` = car matrix.
+
+EAX is free, because the next use is `FNSTSW AX`. The x87 stack is empty at 0x00411833, since
+every path into it ends in FSTP. The stub must preserve ECX/EDX/EBX/ESI/EDI/EBP.
+
+The slope value to return:
+- **either** the chassis forward y `-m[2][1]` (`-[mat+0x1C]`). That is the slope the floor's
+  geometry actually assumes, and the body's rotational inertia filters it;
+- **or** `direction.y` low-passed with a dt-aware exponential (tau about 0.15 s, reset when the
+  camera cuts).
+
+Only the value loaded at 0x00411833 changes. The function's other reads of `direction` are left
+alone:
+- 0x0041106E, the chase-sign dot product;
+- 0x004110F1 and 0x0041139D, the horizontal vn.
+
+**(c) Filter in the proxy: last resort.** The Remix camera is captured in `hk_setup_camera`
+(`SceneSetupCameraMatrices` 0x00521C10) -> `brender_inject::capture_camera`. That snapshots
+BRender's world_to_view, and `m_view_inverse` recovers model_to_world for every draw. A filtered
+view would need two matrices:
+- the unfiltered one for the model_to_world reconstruction;
+- a filtered one for Remix's view.
+
+Otherwise geometry moves. The game's own raster passes (HUD 3D widgets, mirror) would also still
+see the unfiltered camera. Fixing it in the game, as in (a) or (b), needs no proxy camera changes,
+because the corrected actor matrix reaches Remix through the existing capture.
+
+### 70.4 Live confirmation (user drives Bob Slay)
+
+- **Deciding test:** apply (a), then drive the same climbs. If the shake goes and any residual
+  is small pops, the floor was the cause.
+- **Without the patch:** watch writes to `g_camera_height` 0x0074C9F0 from **0x0041186D** (the
+  floor store). They should fire in bursts on the climbs, with `[0x0075BC2C+0x74]`
+  (direction.y) dipping on those frames.
+- **Any leftover pops:** check `g_camera_has_collided` 0x006793E0. If it reads 1 on the pop
+  frames, that is `CollideCamera2` (70.2, secondary).
+- **Stated but not measured:** the world units (about 1 unit = 6.9 m, as in C1) and typical
+  climb speeds, which are what put the floor into its binding range. The frame-rate independence
+  in 70.1 is by construction.
+
+**Applied, then removed (same day).** Remedy 1 went in as `[Camera] SteadyClimb`, but the shake
+stayed. The live log in 70.5 shows that the clamp is not the cause, so the patch is gone again and
+the game keeps its own camera code.
+
+### 70.5 The measured cause: burst frames
+
+**How it was measured.** `tools/camera_log.py` attaches with Frida and hooks three functions:
+- `UpdateCamera` 0x0040EA30: the car's pos and direction, and `g_camera_height` before and after;
+- `CollideCamera2` 0x004122B0: the camera's position before and after;
+- `SceneSetupCameraMatrices` 0x00521C10: the camera matrix the scene renders with.
+
+It recorded 50 s of Bob Slay, with the worst climb repeated several times (`runs/camera_bobslay.jsonl`).
+
+**The frame times split into two groups.** They are either 25 ms or more, or under 10 ms, with
+nothing in between. A short frame comes every 3 to 4 frames: three at the render's pace, then one
+4 to 5 ms after the last, because the Remix bridge lets presents through in bursts.
+
+**On a short frame, the game places the car wrongly:**
+
+| Frames | Count | Vertical step vs its velocity | Reversed | Horizontal step |
+|---|---|---|---|---|
+| wall gap < 10 ms | 200 | -2.1x (median) | 150 of 200 | 2.6x too far |
+| wall gap >= 25 ms | 913 | 0.93x | | 0.95x |
+
+FrameTiming 0x00492680 counts a frame as at least 10 ms and predicts game time from the average
+period, and the physics interpolation (70.1) builds on that. On a short frame the rendered pose
+lands at the wrong point of the 40 ms step: a climbing car drops back, then jumps ahead on the
+next frame.
+
+**Why it shows as a vertical shake.**
+- Across the ground, the chase camera follows the car rigidly, so the error moves both together
+  and does not show.
+- Vertically, the camera's height is a 0.2 s lag, so it does not follow. The car moves up and
+  down against the camera, and `PointCameraAtCar` turns that into a pitch jump of about 1.5
+  degrees every 3 to 4 frames. That is roughly 8 Hz, and on flat ground it is invisible.
+
+The collision code moved the camera on only 108 of 1772 frames, by 0.007 units on average, so it
+is not the cause.
+
+**Fix.** `frame_pacer` (`src/comp/modules/frame_pacer.*`) runs after every Present. It holds the
+frame until `FramePacingFraction` (0.85) of the recent average interval has passed, and never less
+than 12 ms, just above the game's 10 ms clamp. A frame that already took that long passes
+straight through, so the frame rate stays where the render puts it. It is controlled by
+`[Timing] FramePacing` and `FramePacingFraction`, with a checkbox and a slider in the F4 Effects
+tab. It has not yet been verified with the same log.
+
 ## 71. Brake and reverse lens lights face straight back (2026-09-29)
 
 In game, some brake and reverse lights sat too far from the lamp and appeared further away.

@@ -130,6 +130,8 @@ namespace shared::common
 		culling.disable_frustum = get_bool("Culling", "DisableFrustum", true);
 		culling.bubble_radius = get_float("Culling", "BubbleRadius", 0.0f);
 		display.hor_plus = get_bool("Display", "HorPlus", true);
+		timing.frame_pacing = get_bool("Timing", "FramePacing", true);
+		timing.frame_pacing_fraction = std::clamp(get_float("Timing", "FramePacingFraction", 0.85f), 0.0f, 1.0f);
 		culling.cull_pickups = get_bool("Culling", "CullPickups", true);
 
 		// [Controls]

@@ -127,6 +127,17 @@ namespace shared::common
 			bool hor_plus = true;
 		} display;
 
+		struct timing_settings
+		{
+			// Even out the spacing of presented frames (frame_pacer.hpp, findings 70.5). The
+			// bridge lets frames through in bursts, and on a burst frame the game places the
+			// cars wrongly: the chase camera shakes vertically on every slope.
+			bool frame_pacing = true;
+
+			// A frame is held until this fraction of the recent average interval has passed.
+			float frame_pacing_fraction = 0.85f;
+		} timing;
+
 		struct glass_settings
 		{
 			// Pixelmap names (case-insensitive) of glass textures that paint their frames
