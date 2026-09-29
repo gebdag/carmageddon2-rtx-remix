@@ -151,6 +151,17 @@ namespace shared::common
 			std::vector<std::string> headlight_textures = { "eheadlig", "eheadligv", "eheadligb", "eheadligz", "eheadligc", "eheadligg", "eheadligx", "eheadligl", "eheadligi", "eheadligp", "eheadligw", "eheadligy", "frlite", "bghlite", "mehlite", "dfhlite", "fahlte", "rzhlte", "slhlte", "smhlite", "zehlte", "wbhlite", "mbhlit", "tbflit", "clightsh", "fordligh", "cerlight", "bdlit", "hlights", "hindicat", "vlights", "volight" };
 		} lights;
 
+		struct water_settings
+		{
+			// RTX Remix texture hashes of the water the mod turns into animated water (the
+			// same list as rtx.animatedWaterTextures).
+			std::vector<uint64_t> textures = { 0x207656C26F8A30D3ull };
+
+			// How many times larger one repeat of those textures is drawn than the game maps
+			// it: the texture coordinates are divided by this, after the game's own scroll.
+			float tile_scale = 2.0f;
+		} water;
+
 		struct controls_settings
 		{
 			// Steer, accelerate and brake on the arrow keys, and move the external camera the

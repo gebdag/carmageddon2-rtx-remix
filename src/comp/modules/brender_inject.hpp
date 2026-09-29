@@ -691,7 +691,10 @@ namespace comp
 		// Adds the frame run of a split glass texture after the run it was cut from.
 		void append_glass_frame(IDirect3DDevice9* dev, const geometry_part& glass,
 			std::vector<ffp_vertex>& vertices, std::vector<uint32_t>& indices, std::vector<geometry_part>& parts);
-		IDirect3DTexture9* upload_pixelmap(IDirect3DDevice9* dev, const game::br_pixelmap* pm);
+		// RTX Remix's hash of every texture texture_for uploaded: XXH3-64 of the A8R8G8B8
+		// upload, which is what the runtime hashes. [Water] names textures by it.
+		std::unordered_map<const game::br_pixelmap*, uint64_t> m_texture_hashes;
+		bool is_water(const game::br_material* material) const;
 
 		// A pixelmap's pixels as tightly packed A8R8G8B8, whatever BRender type they are stored in.
 		bool decode_pixelmap(const game::br_pixelmap* pm, std::vector<uint32_t>& argb);

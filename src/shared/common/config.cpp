@@ -169,6 +169,18 @@ namespace shared::common
 			"conwin,r50gl,glass,glass1,glass2,glass4,glasspro,r25gl1,rollglas,wind,mswindow,barnwind");
 		glass.frame_offset = get_float("Glass", "FrameOffset", 0.004f);
 
+		// [Water]
+		water.textures.clear();
+		for (const auto& entry : get_list("Water", "Textures", "0x207656C26F8A30D3"))
+		{
+			char* end = nullptr;
+			const uint64_t hash = std::strtoull(entry.c_str(), &end, 16);
+			if (end != entry.c_str()) {
+				water.textures.push_back(hash);
+			}
+		}
+		water.tile_scale = std::clamp(get_float("Water", "TileScale", 2.0f), 0.05f, 64.0f);
+
 		// [Lights]
 		lights.headlight_textures = get_list("Lights", "HeadlightTextures", "eheadlig,eheadligv,eheadligb,eheadligz,eheadligc,eheadligg,eheadligx,eheadligl,eheadligi,eheadligp,eheadligw,eheadligy,frlite,bghlite,mehlite,dfhlite,fahlte,rzhlte,slhlte,smhlite,zehlte,wbhlite,mbhlit,tbflit,clightsh,fordligh,cerlight,bdlit,hlights,hindicat,vlights,volight");
 

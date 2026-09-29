@@ -1,5 +1,8 @@
 #include "std_include.hpp"
 #include "brender_inject.hpp"
+
+#define XXH_INLINE_ALL
+#include "xxhash.h"
 #include "headlights.hpp"
 #include "sun.hpp"
 #include "time_of_day.hpp"
@@ -1505,6 +1508,24 @@ namespace comp
 						build_texture_matrix(material->map_transform, state.texture_transform);
 				}
 
+				// Water repeats over a larger area than the game maps it ([Water] TileScale).
+				// The scale follows the game's scroll, so the water still moves across the
+				// world at the game's speed.
+				if (is_water(material))
+				{
+					const float scale = 1.0f / shared::common::config::get().water.tile_scale;
+					if (!state.texture_transform_active)
+					{
+						state.texture_transform = IDENTITY_MATRIX;
+						state.texture_transform_active = true;
+					}
+					for (int row = 0; row < 3; ++row)
+					{
+						state.texture_transform.m[row][0] *= scale;
+						state.texture_transform.m[row][1] *= scale;
+					}
+				}
+
 				if (effects.material_opacity) {
 					state.opacity = material_opacity(material);
 				}
@@ -2507,6 +2528,7 @@ namespace comp
 			if (cached.texture) { cached.texture->Release(); }
 		}
 		m_textures.clear();
+		m_texture_hashes.clear();
 
 		for (auto& [pixelmap, cached] : m_glass_frames)
 		{
@@ -4266,7 +4288,13 @@ namespace comp
 			m_textures.erase(it);
 		}
 
-		IDirect3DTexture9* texture = upload_pixelmap(dev, pm);
+		IDirect3DTexture9* texture = nullptr;
+		std::vector<uint32_t> argb;
+		if (decode_pixelmap(pm, argb))
+		{
+			texture = upload_argb(dev, pm->width, pm->height, argb);
+			m_texture_hashes[pm] = XXH3_64bits(argb.data(), argb.size() * sizeof(uint32_t));
+		}
 		m_textures[pm] = { texture, identity };
 
 		if (texture) { ++m_textures_ok; }
@@ -4322,13 +4350,14 @@ namespace comp
 		return texture;
 	}
 
-	IDirect3DTexture9* brender_inject::upload_pixelmap(IDirect3DDevice9* dev, const game::br_pixelmap* pm)
+	bool brender_inject::is_water(const game::br_material* material) const
 	{
-		std::vector<uint32_t> argb;
-		if (!decode_pixelmap(pm, argb)) {
-			return nullptr;
+		const auto it = m_texture_hashes.find(static_cast<const game::br_pixelmap*>(material->colour_map));
+		if (it == m_texture_hashes.end()) {
+			return false;
 		}
-		return upload_argb(dev, pm->width, pm->height, argb);
+		const auto& water = shared::common::config::get().water.textures;
+		return std::find(water.begin(), water.end(), it->second) != water.end();
 	}
 
 	IDirect3DTexture9* brender_inject::upload_argb(IDirect3DDevice9* dev, const uint32_t w, const uint32_t h,

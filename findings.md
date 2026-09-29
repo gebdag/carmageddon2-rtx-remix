@@ -4947,3 +4947,19 @@ and a material cannot go below 1 to compensate.
   quarry, junkyard, ski) can join the same layer and list.
 
 Not verified in game yet.
+
+**Tile size** (in game: the water looked right but repeated visibly). Remix's translucent
+material has no UV-scale input, so the proxy scales the water's texture coordinates.
+- **Setting:** `[Water] TileScale` (default 2) divides them after the game's own map_transform
+  scroll, so the scroll keeps its world speed.
+- **Which water:** `[Water] Textures` names the water by RTX Remix hash, the same list as
+  `rtx.animatedWaterTextures`. Several tracks have a texture called WATER, so a name would
+  also stretch water the mod does not replace.
+- **Hashing:** the proxy computes the hash itself: XXH3-64 of the A8R8G8B8 upload
+  (`m_texture_hashes`, filled by `texture_for`), with xxHash 0.8.0 vendored under
+  `deps/xxhash`.
+- **Sliding speeds:** Remix's animated water moves in texture repeats per second. They were
+  halved (0.005 and −0.003) so the sliding keeps its world speed on the larger tile.
+
+Not verified in game yet.
+
