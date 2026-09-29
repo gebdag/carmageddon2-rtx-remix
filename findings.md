@@ -4829,7 +4829,20 @@ listed in `[Lights] HeadlightTextures` with a lit copy (`lit_texture_for`).
   was flipped.
 - **Existing layers:** none of the 32 unlit hashes appears in the rtxmod emissive layers, so
   nothing glows while the lights are off.
-- **Scope:** only cars drawn as moving models get the swap. A car baked into the static world
-  (standing still for three frames, e.g. on the grid) keeps the texture it was baked with
-  until it moves and is taken back out.
+- **Scope:** only cars drawn as moving models get the swap. That is now every race car (see
+  below).
 - Not verified in game yet.
+
+**Race cars never bake.**
+- **Before:** a car holding still for three frames (on the grid through the countdown) baked
+  into the static world like scenery. It was punched back out when it drove off, which left
+  dead geometry in its chunks and froze its textures (the lit-lens swap) while it was baked.
+- **Now:** every race scene refreshes the set of race cars' master actors
+  (`game::collect_race_cars`: the player, opponents and cops). When an actor would bake,
+  `on_race_car` walks up its parents.
+  - An actor under a car master is marked unbakeable, with the new dynamic reason `vehicle`.
+  - The check is made at the bake rather than at first sight, because the car list is only
+    certain once the race is running.
+- **Unaffected:** scenery (nothing hangs under a car master), and cars outside the race list
+  (parked or scenery noncars, drones), which bake as before.
+

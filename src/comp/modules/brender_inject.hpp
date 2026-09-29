@@ -412,6 +412,7 @@ namespace comp
 			uint32_t last_seen_scene; // catches an actor re-placed between draws of one scene
 			uint8_t bakes;            // times it has entered a chunk, capped
 			bool bakeable;  // cleared for anything that can vanish, or that failed to bake
+			bool vehicle;   // part of a race car, found when it would first have baked
 			bool demoted;   // has been unbaked at least once, so a later bake is a recovery
 			bool noncar;    // bakes into the noncar chunks, apart from the pristine world
 			bool baked;     // copied into a chunk, possibly one still accumulating
@@ -564,6 +565,7 @@ namespace comp
 			overlay,     // not the race view -- HUD widgets and menus
 			callback,    // the model draws through its own render callback
 			vanishing,   // pickup or decal quad: the game deletes it rather than moving it
+			vehicle,     // part of a race car: it drives off, so it is never baked
 			instanced,   // one actor re-placed between draws of a single scene
 			unbakeable,  // extraction failed, or it has used up its bakes
 			moving,      // its placement changed recently
@@ -576,6 +578,12 @@ namespace comp
 
 		void classify_actor(actor_record& record, const game::br_actor* actor,
 		                    game::br_model* model) const;
+
+		// Whether `actor` is part of one of the race's cars (the player, opponents, cops):
+		// the car's master actor or anything under it. Refreshed at every race scene.
+		bool on_race_car(const game::br_actor* actor) const;
+		std::vector<game::race_car> m_race_cars;
+		std::unordered_set<const game::br_actor*> m_car_masters;
 
 		// Follows one actor's placement and keeps the chunks in step with it. Returns
 		// `chunked` when the actor is already live in a sealed chunk, so the caller neither

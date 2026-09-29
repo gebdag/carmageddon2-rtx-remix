@@ -2009,6 +2009,19 @@ namespace comp
 
 	// The two things about an actor that follow from its model rather than from what it is
 	// doing: which chunks it may join, and whether it may join any at all.
+	bool brender_inject::on_race_car(const game::br_actor* actor) const
+	{
+		// A car is a handful of levels deep: master, the loaded .ACT, its parts.
+		constexpr int MAX_DEPTH = 16;
+		for (int depth = 0; actor && depth < MAX_DEPTH; ++depth, actor = actor->parent)
+		{
+			if (m_car_masters.contains(actor)) {
+				return true;
+			}
+		}
+		return false;
+	}
+
 	void brender_inject::classify_actor(actor_record& record, const game::br_actor* actor,
 		game::br_model* model) const
 	{
@@ -2089,7 +2102,8 @@ namespace comp
 		// no placement to follow: skipping the chain walk keeps the pickups, the decal
 		// pools and every model that failed extraction off the per-frame hashing path.
 		if (!record.bakeable) {
-			return record.bakes ? dynamic_reason::unbakeable : dynamic_reason::vanishing;
+			return record.vehicle ? dynamic_reason::vehicle
+				: record.bakes ? dynamic_reason::unbakeable : dynamic_reason::vanishing;
 		}
 
 		const placement_id placement = placement_fingerprint(actor);
@@ -2112,6 +2126,17 @@ namespace comp
 		const uint32_t settle = record.demoted ? STATIC_REBAKE_SIGHTINGS
 		                                      : STATIC_PROMOTE_SIGHTINGS;
 		const bool moved = record.sightings == 0;
+
+		// A car on the grid holds still for as long as the countdown lasts, and would bake
+		// until it drives off and is punched back out. The car list is only certain once the
+		// race is running, so this is decided here, at the bake, not when the actor is first
+		// seen.
+		if (!record.baked && record.sightings + 1 >= settle && on_race_car(actor))
+		{
+			record.bakeable = false;
+			record.vehicle = true;
+			return dynamic_reason::vehicle;
+		}
 
 		if (!record.baked && ++record.sightings >= settle)
 		{
@@ -2733,6 +2758,12 @@ namespace comp
 
 		// The queue held pointers into these until the previous scene submitted.
 		m_transient_used = 0;
+
+		game::collect_race_cars(m_race_cars);
+		m_car_masters.clear();
+		for (const auto& car : m_race_cars) {
+			m_car_masters.insert(car.master);
+		}
 	}
 
 	/*
@@ -3958,6 +3989,7 @@ namespace comp
 		case dynamic_reason::overlay:    return "overlay";
 		case dynamic_reason::callback:   return "callback";
 		case dynamic_reason::vanishing:  return "vanishing";
+		case dynamic_reason::vehicle:    return "vehicle";
 		case dynamic_reason::instanced:  return "instanced";
 		case dynamic_reason::unbakeable: return "unbakeable";
 		case dynamic_reason::moving:     return "moving";
