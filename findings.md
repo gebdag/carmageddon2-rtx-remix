@@ -4846,3 +4846,34 @@ listed in `[Lights] HeadlightTextures` with a lit copy (`lit_texture_for`).
 - **Unaffected:** scenery (nothing hangs under a car master), and cars outside the race list
   (parked or scenery noncars, drones), which bake as before.
 
+
+## 62. Level-edge fog follows the view (2026-09-29)
+
+In game, section 54's fog left the level's end polygons plainly visible near an edge. Two
+causes:
+- **Wrong direction:** the fog end was the distance to the level's farthest point in any
+  direction. Near an edge, the far side of the map set it, so the nearby boundary in front
+  of the camera stayed unfogged.
+- **Convex outline:** the footprint was a convex hull. Around concave bays and notches it
+  lies beyond the real geometry, so edges there showed too.
+
+**Footprint** (`level_footprint`, rewritten).
+- **Grid:** every baked actor marks the 8-unit ground cells its world-space bounds cover.
+  An actor wider than 512 cells marks only its corners.
+- **Edge:** the edge is the cells with an empty 4-neighbour, so concave outlines are kept.
+- **Rebuilds:** the edge list is rebuilt when cells were added, at most once every 30
+  frames while the city streams in.
+
+**Fog end** (`fog_range_for`).
+- **Target:** the farthest edge cell within the view, plus the height range.
+  - The view is half the horizontal field of view, taken from the projection (`atan(1/_11)`,
+    so it includes Hor+), plus a 15-degree margin.
+  - A cell counts when any part of it is in view.
+- **Easing:** the distance eases towards the target, closing with a 0.2 s time constant and
+  opening with 1 s. An edge the camera turns towards is fogged almost at once, and turning
+  away does not pump.
+- **Unchanged:** it still never comes closer than the track's own fog, and the start keeps
+  the track's ratio to the end.
+- **Trade-off:** turning the camera now changes the fog.
+
+Not verified in game yet.

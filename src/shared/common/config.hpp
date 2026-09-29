@@ -235,8 +235,8 @@ namespace shared::common
 			// Put the fog at the level's far side instead of the game's own distances. The
 			// game fogs close to hide where it stops drawing; the conversion draws the
 			// whole level, so only the level's own edge needs hiding. The fog end follows
-			// the camera: the distance to the level's farthest point, never closer than the
-			// track's own depth cue.
+			// the view: the distance to the level's farthest edge inside it, never closer
+			// than the track's own depth cue.
 			bool fog_level_edge = true;
 
 			// Multiplies the fog's start and end distances before Remix reads them: those

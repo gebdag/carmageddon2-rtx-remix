@@ -3112,6 +3112,7 @@ namespace comp
 		if (!build_projection(dev, projection)) {
 			return;
 		}
+		m_view_half_angle = std::atan(1.0f / projection._11);
 
 		// This scene proved itself the race view, so its camera is the one models are
 		// measured against from now on.
@@ -3389,22 +3390,49 @@ namespace comp
 	/*
 	 * The game sets its fog close because it stops drawing at the yon plane, and the fog hides
 	 * that edge. The conversion draws the whole level, so the edge to hide is the level's own:
-	 * with FogLevelEdge the fog is full at the level's farthest point from the camera. That
-	 * follows the camera -- a long runway ahead needs far more than a city block -- and moves
-	 * smoothly as it drives, but not as it turns. The start keeps the track's own ratio to the
-	 * end, so a gradual haze stays gradual, and neither ever comes closer than the game's own.
-	 * Until anything has baked, and without the static world, the game's distances stand.
+	 * with FogLevelEdge the fog is full at the farthest edge of the level inside the view.
+	 * Looking across a long runway that is far; looking at a nearby boundary it is that
+	 * boundary, so the ground's end fades out wherever the camera is.
+	 *
+	 * The view widens by VIEW_MARGIN for the screen corners and for turning. The distance
+	 * eases towards its target: closing in fast, so an edge turned towards is fogged almost at
+	 * once, and opening out slowly, so turning away does not pump the fog. The start keeps the
+	 * track's own ratio to the end, so a gradual haze stays gradual, and neither ever comes
+	 * closer than the game's own. Until anything has baked, the game's distances stand.
 	 */
 	brender_inject::fog_range brender_inject::fog_range_for(const game::scene_fog& fog)
 	{
+		constexpr float VIEW_MARGIN = 0.26f;   // radians, ~15 degrees
+		constexpr float CLOSE_SECONDS = 0.2f;
+		constexpr float OPEN_SECONDS = 1.0f;
+
 		const auto& effects = shared::common::config::get().effects;
 		const float trim = std::max(effects.fog_distance, 0.1f);
 
-		if (!effects.fog_level_edge || m_footprint.empty()) {
+		if (!effects.fog_level_edge || m_footprint.empty())
+		{
+			m_edge_fog_end = std::numeric_limits<float>::quiet_NaN();
 			return { fog.min_distance * trim, fog.max_distance * trim, false };
 		}
 
-		const float end = std::max(fog.max_distance, m_footprint.farthest_from(m_view_inverse.m[3]) * trim);
+		// The camera looks down its local -Z.
+		const float forward[3] = { -m_view_inverse.m[2][0], -m_view_inverse.m[2][1], -m_view_inverse.m[2][2] };
+		const float edge = m_footprint.farthest_in_view(m_view_inverse.m[3], forward, m_view_half_angle + VIEW_MARGIN);
+		const float target = std::max(fog.max_distance, edge * trim);
+
+		const auto now = std::chrono::steady_clock::now();
+		if (std::isnan(m_edge_fog_end)) {
+			m_edge_fog_end = target;
+		}
+		else
+		{
+			const float seconds = std::min(std::chrono::duration<float>(now - m_edge_fog_time).count(), 1.0f);
+			const float tau = target < m_edge_fog_end ? CLOSE_SECONDS : OPEN_SECONDS;
+			m_edge_fog_end += (target - m_edge_fog_end) * (1.0f - std::exp(-seconds / tau));
+		}
+		m_edge_fog_time = now;
+
+		const float end = m_edge_fog_end;
 		return { end * (fog.min_distance / fog.max_distance), end, true };
 	}
 

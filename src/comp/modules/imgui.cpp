@@ -437,8 +437,8 @@ namespace comp
 		ImGui::BeginDisabled(!effects.fog);
 		ImGui::Checkbox("Fog at the level's edge", &effects.fog_level_edge);
 		ImGui::TextWrapped(effects.fog_level_edge
-			? "The fog is full at the level's farthest point from the camera, so the level's edge fades out "
-			  "wherever you are. It never comes closer than the track's own fog."
+			? "The fog is full at the level's edge in the direction you are looking: its far side when looking "
+			  "across the level, a nearby boundary when facing one. It never comes closer than the track's own fog."
 			: "The track's own fog distances, as the game set them to hide where it stopped drawing.");
 
 		ImGui::SliderFloat("Distance", &effects.fog_distance, 0.5f, 10.0f, "x %.2f", ImGuiSliderFlags_Logarithmic);

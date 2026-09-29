@@ -469,6 +469,14 @@ namespace comp
 		// Everything baked into the static world, seen from above: where the level ends.
 		level_footprint m_footprint;
 
+		// Half the race view's horizontal angle, from the last projection built.
+		float m_view_half_angle = 0.0f;
+
+		// The level-edge fog end as it eases towards where the view says it should be, and
+		// when it last moved. NaN until the first level-edge frame.
+		float m_edge_fog_end = std::numeric_limits<float>::quiet_NaN();
+		std::chrono::steady_clock::time_point m_edge_fog_time{};
+
 		enum class pass_kind
 		{
 			opaque,    // depth writes on, blending off
