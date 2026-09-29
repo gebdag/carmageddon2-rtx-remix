@@ -7,4 +7,5 @@
 | RTX Remix bridge API headers | `deps/bridge_api/` | NVIDIA Corporation | MIT, file headers |
 | Dear ImGui | `deps/imgui/` | Omar Cornut | MIT, `deps/imgui/LICENSE.txt` |
 | MinHook | `deps/minhook/` | Tsuda Kageyu; HDE by Vyacheslav Patkov | BSD-2-Clause, `deps/minhook/LICENSE.txt` |
+| xxHash 0.8.0 | `deps/xxhash/` | Yann Collet | BSD-2-Clause, `deps/xxhash/LICENSE.txt` |
 | DirectX SDK (June 2010) headers and `d3dx9.lib` | `deps/dxsdk/` | Microsoft Corporation | DirectX SDK license |

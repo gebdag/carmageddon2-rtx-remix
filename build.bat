@@ -73,7 +73,7 @@ mkdir "%GAME_OUT%" 2>nul
 mkdir "%GAME_OBJ%" 2>nul
 
 :: Include paths
-set "INC=/I"%SRC%" /I"%DEPS%\bridge_api" /I"%DEPS%\dxsdk\Include" /I"%DEPS%\imgui" /I"%DEPS%\minhook\include""
+set "INC=/I"%SRC%" /I"%DEPS%\bridge_api" /I"%DEPS%\dxsdk\Include" /I"%DEPS%\imgui" /I"%DEPS%\minhook\include" /I"%DEPS%\xxhash""
 
 :: Lib search path
 set "LIBPATH=/LIBPATH:"%DEPS%\dxsdk\Lib\x86""

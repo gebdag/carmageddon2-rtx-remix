@@ -25,10 +25,14 @@ copy /y "%~dp0package\.trex\bridge.conf"      "%OUT%\.trex\" >nul || exit /b 1
 rem Not README.txt: the GOG game folder has a ReadMe.txt, and Windows would treat the two
 rem as the same file, so copying the release in would overwrite the game's.
 copy /y "%~dp0package\carma2-rtx_README.txt"  "%OUT%\" >nul || exit /b 1
-rem What passing the DLL on requires: our own licence, and the notices of the code
-rem compiled into it.
+rem What passing the DLL on requires: our own licence, the notices of the code compiled
+rem into it, and the licence texts of the libraries whose terms ask a binary to carry them.
 copy /y "%~dp0LICENSE"                        "%OUT%\" >nul || exit /b 1
 copy /y "%~dp0THIRD_PARTY_NOTICES.md"         "%OUT%\" >nul || exit /b 1
+mkdir "%OUT%\licenses" || exit /b 1
+copy /y "%~dp0deps\imgui\LICENSE.txt"         "%OUT%\licenses\imgui.txt" >nul || exit /b 1
+copy /y "%~dp0deps\minhook\LICENSE.txt"       "%OUT%\licenses\minhook.txt" >nul || exit /b 1
+copy /y "%~dp0deps\xxhash\LICENSE.txt"        "%OUT%\licenses\xxhash.txt" >nul || exit /b 1
 
 echo.
 echo Release assembled in %OUT%

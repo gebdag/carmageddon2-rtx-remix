@@ -22,6 +22,7 @@ What is in this folder
                           glass and chrome
   carma2-rtx_README.txt   this file (named so it cannot replace the game's ReadMe.txt)
   LICENSE, THIRD_PARTY_NOTICES.md
+  licenses\               licence texts of the libraries compiled into d3d9.dll
 
 
 Requirements
