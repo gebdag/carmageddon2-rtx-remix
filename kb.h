@@ -1206,3 +1206,63 @@ $ 0x00655f40 float  g_camera_zoom               /* chase-cam distance factor 0.1
 $ 0x0068b908 unsigned short g_camera_yaw        /* chase-cam orbit angle (type inferred) */
 $ 0x0075b9a4 int    g_map_mode                  /* 2 = map shown (inferred from CheckMapRenderMove) */
 $ 0x00676914 int    g_action_replay_mode        /* inferred */
+
+/* --- Heads-up text messages (findings.md section 58); C1 displays.c names --- */
+@ 0x00449fd0 int   __fastcall NewTextHeadupSlot2(int slot /*ecx*/, int flash_rate /*edx*/, int lifetime_ms, int neg_font, const char *text, int queue_it); /* ret 0x10; text strcpy'd (< 252 bytes); returns headup index or -1 */
+@ 0x0044a380 int   __fastcall NewTextHeadupSlot(int slot /*ecx*/, int flash_rate /*edx*/, int lifetime_ms, int neg_font, const char *text); /* = NewTextHeadupSlot2(..., 1); ret 0xC. Misc centre message: (4, 0, 500..3000, -4 MEDIUMHD, text) */
+@ 0x0044a3a0 int   __fastcall NewImageHeadupSlot(int slot /*ecx*/, int flash_rate /*edx*/, int lifetime_ms, int image);
+@ 0x0044a600 void  __fastcall DoFancyHeadup(int index /*ecx*/);
+@ 0x00449b10 void  __fastcall DoHeadups(unsigned now /*ecx*/);   /* drains the queue, expires and draws g_headups; only caller RenderAFrame 0x004E53FE */
+@ 0x00449090 void  InitHeadups(void);                             /* start-up only (0x0047E09A): clears g_headups, loads HUD pixelmaps */
+@ 0x00466000 void  __fastcall DrawBoxText(int font /*ecx*/, const char *text /*edx*/, br_pixelmap *pm, int left, int top, int right, int bottom, int centred); /* slot-4 box text (C1 OoerrIveGotTextInMeBoxMissus, name inferred) */
+@ 0x00465850 void  __fastcall LoadFont(int font /*ecx*/);         /* no-op when g_fonts[font] is loaded; InitRace loads 3..8, 0x17 (and 1, 2 unless 0x00461990) */
+@ 0x00514d70 char* __fastcall GetMiscString(int index /*ecx*/);   /* g_misc_strings[index]; 2 MirrorOn, 3 MirrorOff as in C1 */
+@ 0x00514d80 void  __fastcall GetCopyOfMiscString(int index /*ecx*/, char *dst /*edx*/);
+@ 0x00514c30 unsigned GetTotalTime(void);                         /* game ms (replay/network aware); headup end_time base */
+@ 0x0051d410 unsigned PDGetTotalTime(void);                       /* raw ms */
+@ 0x004420e0 void  ToggleMirror(void);                            /* g_toggles[0]; returns if g_map_mode == 2; flips g_mirror_on, NewTextHeadupSlot(4,0,500,-4,GetMiscString(2/3)) at 0x0044211D */
+@ 0x00481830 void  InitRace(void);                                /* from DoGame 0x00503F0C; loads the headup fonts */
+
+$ 0x0067c500 char   g_headups[37][356]        /* +0 type (0 free, 1 text, 2 coloured, 3 image, 4 fancy, 5 box), +4 x, +8 y, +0x18 slot, +0x44 end_time, +0x4C text[252], +0x148 tFont* */
+$ 0x0067f888 int    g_queued_headup_count       /* max 4 */
+$ 0x0067f890 char   g_queued_headups[4][268]  /* {flash_rate, lifetime, font, text[256]} */
+$ 0x0067fcf8 unsigned g_last_centre_headup      /* PDGetTotalTime of the last slot-4 message */
+$ 0x007663e0 char   g_fonts[24][224]           /* headup font = &g_fonts[-neg_font]; names at 0x0059AD30 (C1 order: 1 ORANGHED .. 4 MEDIUMHD ..) */
+$ 0x006b5f40 char*  g_misc_strings[300]         /* TEXT.TXT lines */
+$ 0x00655dfc int    g_mirror_on
+$ 0x0075c354 char   g_headup_slots[2][20][44] /* g_player_car headup_slots[cockpit_on][slot]: +0 x, +4 y, +0xC cockpit_anchored, +0x24 justification */
+$ 0x0075bbcc int    g_cockpit_on
+
+/* --- Pedestrian skeleton ("boner") actors (findings.md section 59); names ours ---
+ * Bone actors are pooled per form, flat: root under [0x007634B8], attached limbs drawn via Limbs_actor
+ * (0x004D3610 draws the ATTACHED limbs, despite its kb name), severed limbs under [0x007634B8].
+ * actor+0x5C (type_data) = character instance; every bone t is body space -> world. */
+@ 0x00404410 void* __fastcall LoadRemap(const char *name /*ecx*/);          /* cached in g_remaps */
+@ 0x00404f60 void* LoadForm(void);                  /* form TXT: bones, pools, moves; allocates the bone actor sets at 0x00405C25 (args not recovered) */
+@ 0x00406ab0 void* LoadPersonality(void);           /* ped TXT: per-bone models[8] + two joint points (args not recovered) */
+@ 0x004079a0 void* __fastcall CreateCharacterInstance(const char *personality /*ecx*/, br_matrix34 *m /*edx*/); /* 0xEC-byte instance */
+@ 0x004083b0 int   __fastcall AcquireActorSet(void *inst /*ecx*/);          /* 0 ok, 1 none free, 2 already has one */
+@ 0x00408200 int   __fastcall AssignActorSet(void *inst /*ecx*/, int set /*edx*/); /* actor+0x5C = inst, model, style 0; root -> [0x007634B8] */
+@ 0x00408400 int   __fastcall ReleaseActorSet(void *inst /*ecx*/);          /* stores severed matrices, removes all bone actors, set = -1 */
+@ 0x00407b30 void  __fastcall PoseCharacterActors(void *inst /*ecx*/, int mode /*edx*/, int move_root); /* root t = frame x inst+0x8C; children via PoseChildBone */
+@ 0x00407e70 void  PoseChildBone(br_matrix34 *parent_t, br_matrix34 *body_rot, int rx, int ry, int rz, br_vector3 *pivot, br_vector3 *parent_joint); /* edx = child t: T(-pivot)*R, Post(body_rot), + parent_joint*parent_t */
+@ 0x0040b860 int   __fastcall DetachBone(void *inst /*ecx*/, int bone /*edx*/); /* boned-physics slot + velocity for a severed piece (stack args not recovered) */
+@ 0x0040ca40 void  ReparentActorKeepWorld(br_actor *parent, br_actor *actor); /* cdecl; relinks keeping the world transform */
+@ 0x004cbc70 void  __fastcall AddBoneActorToWorld(br_actor *a /*ecx*/, int bone /*edx*/, void *inst); /* ret 4; adds under [0x007634B8] if no parent and (bone 0 or severed) */
+@ 0x004cbca0 void  __fastcall RemoveBoneActor(br_actor *a /*ecx*/);
+@ 0x004ca900 void  __fastcall SeverBone(void *ped /*ecx*/, int bone /*edx*/, int slot); /* replay path: mask |= 1<<bone, physics, add to world */
+@ 0x004cd9e0 int   __fastcall SeverBoneRecursive(void *ped /*ecx*/, int bone /*edx*/); /* children first, then DetachBone */
+@ 0x004cd640 int   __fastcall DamagePed(void *ped /*ecx*/, int a, int b, int c); /* health at ped+4; severs up to 5 pieces; 0x004CCE70 kills */
+@ 0x004d34e0 void  SpineModelCustom(br_actor *a, br_model *m, br_material *mat, void *rd, int style, int on_screen); /* br_model custom cb on spine models: records body in g_rendered_bodies, then renders */
+@ 0x004d2cc0 void  SpawnPedsOnFace(void);           /* creates ped records + instances; installs SpineModelCustom (args not recovered) */
+@ 0x004d3520 void  FinalisePedArray(void);          /* reallocs g_ped_array, sets inst+0xE4 back-pointers */
+@ 0x004d3740 void  MungePedestrians(void);          /* per-frame: active flag by camera distance, Acquire/ReleaseActorSet */
+
+$ 0x00744808 void*  g_ped_array                 /* 0x54-byte records: +0 inst, +4 u8 health, +8 u16 flags (bit0 active), +0x1C pos */
+$ 0x007447d4 int    g_ped_count                 /* max 2000 */
+$ 0x006a0424 br_actor* g_limbs_actor            /* "Limbs_actor", under g_world_root_actor */
+$ 0x006a0420 int    g_rendered_body_count       /* reset by 0x004D3610 each frame */
+$ 0x00694280 br_actor* g_rendered_bodies[30]    /* spine actors drawn this frame */
+$ 0x00677260 void*  g_personalities[50]
+$ 0x00677238 void*  g_remaps[10]
+$ 0x0058f2d8 unsigned g_bone_bits[32]           /* 1 << i */

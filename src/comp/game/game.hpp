@@ -293,6 +293,21 @@ namespace comp::game
 	// valid for part of a race go through this before they are followed.
 	bool can_read(const void* p, size_t bytes);
 
+	/*
+	 * Heads-up text: the centred message box the game uses for "Mirror On" (findings 58).
+	 * NewTextHeadupSlot2 is __fastcall (slot in ecx, flash rate in edx) and pops its four
+	 * stack arguments. The text is copied.
+	 */
+	constexpr uint32_t ADDR_NewTextHeadupSlot2 = 0x00449FD0u;
+	constexpr uint32_t ADDR_g_map_mode = 0x0075B9A4u;       // int; 2 hides the heads-up messages
+	constexpr int HEADUP_SLOT_MISC = 4;
+	constexpr int FONT_MEDIUMHD = 4;
+
+	// Shows `text` in the game's centred message box for `lifetime_ms`, replacing whatever
+	// it holds. Only during a race, and only from the game's thread outside its draw calls
+	// (a Present hook is right). Returns false when the game is not showing messages.
+	bool show_headup_message(const char* text, int lifetime_ms);
+
 	// ---
 
 	extern void init_game_addresses();

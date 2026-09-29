@@ -7,6 +7,7 @@
 #include "renderer.hpp"
 #include "tracer.hpp"
 #include "diagnostics.hpp"
+#include "headlights.hpp"
 #include "skinning.hpp"
 #include "shared/common/shader_cache.hpp"
 #include "shared/common/ffp_state.hpp"
@@ -188,6 +189,10 @@ namespace comp
 		auto& ffp = shared::common::ffp_state::get();
 		if (auto* d = diagnostics::get()) d->on_present(ffp.frame_count(), ffp.draw_call_count(), ffp.scene_count());
 		ffp.on_present();
+
+		if (const auto lights = headlights::get(); lights) {
+			lights->post_mode_notice();
+		}
 
 		draw_overlay();
 

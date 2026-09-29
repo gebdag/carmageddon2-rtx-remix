@@ -78,7 +78,10 @@ namespace comp
 		void set_night(bool night);
 
 		void draw_menu();
-		void draw_mode_notice();
+
+		// Shows a mode change in the game's own message box. Called from Present, where the
+		// game is between frames and the heads-up table is not being walked.
+		void post_mode_notice();
 
 	private:
 		struct car_bounds
@@ -122,6 +125,6 @@ namespace comp
 		std::string m_player_status;
 		bool m_create_failed = false;
 
-		std::chrono::steady_clock::time_point m_notice_until{};
+		bool m_notice_pending = false;
 	};
 }

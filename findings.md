@@ -4529,3 +4529,287 @@ light more, compressed.
 Not verified in game yet. The in-game measurement comes from the proxy's own bake, which
 blurs the edge rows exactly rather than approximately as the offline script did, so it may
 differ slightly from the table.
+
+## 58. The game's heads-up text messages (static)
+
+Static analysis of CARMA2_HW0.EXE (capstone, plus the Ghidra project's CARMA2_HW.EXE, the same
+image). Not checked in game. Function names follow dethrace (C1 `displays.c`); the C2 code has
+the same shape as C1's.
+
+**Functions.**
+- **NewTextHeadupSlot2 0x00449FD0**: `int __fastcall (int slot /*ecx*/, int flash_rate /*edx*/,
+  int lifetime_ms, int font, const char *text, int queue_it)`. It ends with `ret 0x10`, so the
+  callee pops the four stack arguments. Returns the headup index, or -1 when the message was
+  queued or no headup was free.
+- **NewTextHeadupSlot 0x0044A380**: the same call without `queue_it`. It pushes 1 and calls
+  0x00449FD0, then `ret 0xC`.
+- **GetMiscString 0x00514D70**: `char* __fastcall (int index /*ecx*/)` returns
+  `g_misc_strings[index]`. The table is at 0x006B5F40 (300 pointers, filled from TEXT.TXT by
+  the loader around 0x0048CFD3). GetCopyOfMiscString is at 0x00514D80 (ecx index, edx dest).
+
+**Call sites checked.**
+- **ToggleMirror 0x004420E0** (first entry of `g_toggles`, pointer at 0x005900B4, key slot 35):
+  - It returns at once when `g_map_mode` (0x0075B9A4) is 2.
+  - Otherwise it flips `g_mirror_on` (0x00655DFC) and calls
+    `NewTextHeadupSlot(4, 0, 500, -4, GetMiscString(on ? 2 : 3))` at 0x0044211D.
+  - It then tail-jumps to 0x00497610, which calls 0x00496E30 and then SaveOptions.
+  - The misc string indices 2 and 3 are the same as C1's MirrorOn and MirrorOff.
+- **"Car Car Collisions" / "Ghost Cars"** at 0x0041F389 and 0x0041F3A2: `(4, 0, 3000, -4, literal)`.
+- **"Original Controls" .. "New controls"** at 0x004170FC..0x00417160: `(4, 0, 500, -1, literal)`.
+- **"Edit mode: %s"** at 0x0044156C:
+  - The call is `NewTextHeadupSlot2(4, 0, 2000, -4, buf, 0)`.
+  - `buf` is a sprintf buffer on the caller's stack, which shows that the text is copied.
+- **All callers:** the 162 callers of 0x0044A380 load ecx and edx in registers and push the
+  other three arguments, with no `add esp` after the call.
+
+**Arguments.**
+- **Slot:** 4 is the centred misc message, used by nearly every caller. It is the only slot
+  drawn as box text (headup type 5).
+  - The box is drawn by 0x00466000, centred between 1/10 and 9/10 of the screen width, from
+    the slot's y to y+0x3C.
+  - Other slots give coloured text (type 2) at the slot's position and justification. 6 is
+    fancies, 7 to 14 are timer, lap and similar slots, as in C1.
+  - Slot positions come from the player car's `headup_slots[cockpit_on][slot]`: base
+    0x0075C354, stride 0x2C, 20 slots per view, cockpit flag at 0x0075BBCC.
+- **Flash rate:** 0 means steady. Otherwise the period is 1000/rate ms.
+- **Lifetime:**
+  - Milliseconds of game time: end_time = GetTotalTime (0x00514C30) + lifetime.
+  - 0 means the message never expires.
+  - The game uses 500 for toggles, 1000 to 3000 for most others, and 5000 for a few.
+- **Font:**
+  - The font is passed negated. The code takes `&g_fonts[-font]`, with `g_fonts` at 0x007663E0
+    and a stride of 0xE0.
+  - The font names at 0x0059AD30 are C1's: 1 ORANGHED, 2 BLUEHEAD, 3 GREENHED, 4 MEDIUMHD,
+    5 TIMER, 6 NEWHITE, 7 NEWRED, 8 NEWBIGGR, ...
+  - InitRace (0x00481830) loads fonts 3 to 8 and 0x17 on every race, and 1 and 2 only when
+    0x00461990 returns 0.
+  - The mirror message and most misc messages use -4 (MEDIUMHD). Use -4.
+- **Text:**
+  - It is copied with strcpy into the headup (field +0x4C), or into the queue entry (256 bytes),
+    so the pointer need not outlive the call.
+  - The headup field is 252 bytes and the font pointer follows it at +0x148, so keep the text
+    well under 252 bytes. There is no bounds check.
+
+**Headup storage and the queue.**
+- **Headups:** `g_headups` is at 0x0067C500, 37 entries of 0x164 bytes.
+  - The type is at +0x00 (0 free), the slot at +0x18, end_time at +0x44 and the text at +0x4C.
+  - A new message first reuses any entry whose slot equals the requested slot, so a slot holds
+    one message at a time; otherwise it takes a free entry. The allocation is inlined in
+    0x00449FD0.
+- **Queue:** a slot-4 call with `queue_it`=1 (every NewTextHeadupSlot call) is queued when the
+  last centre message started less than 1000 ms ago.
+  - The last start time is 0x0067FCF8, in PDGetTotalTime (0x0051D410) ms.
+  - The queue holds 4 entries of 0x10C bytes at 0x0067F890, with the count at 0x0067F888. When
+    it is full, the oldest entry is dropped.
+  - DoHeadups releases one queued message per second.
+  - With `queue_it`=0 (call 0x00449FD0 directly) the message replaces the current centre
+    message at once.
+
+**Where the messages are drawn.**
+- **DoHeadups 0x00449B10** (`__fastcall`, ecx = now): drains the queue, expires entries and
+  draws each type:
+  - type 1: BrPixelmapText;
+  - type 2: 0x00465A70 or 0x00465AA0;
+  - types 3 and 4: 0x00464E40;
+  - type 5: 0x00466000.
+- **Caller:** its only caller is RenderAFrame at 0x004E53FE. In action replay it is called only
+  when 0x006A2358 is 0.
+- **Other functions:** InitHeadups 0x00449090 (called once, at start-up, from 0x0047E09A;
+  clears the table and loads the HUD pixelmaps), NewImageHeadupSlot 0x0044A3A0,
+  DoFancyHeadup 0x0044A600, and LoadFont 0x00465850 (ecx = index; returns at once when the
+  font is already loaded).
+
+**Preconditions for the proxy.**
+- **Race only:** call it only while racing. That means `g_racing` (0x0075BBA8) is 1 and
+  ideally `g_map_mode` != 2, as ToggleMirror requires.
+  - Outside a race, the slot positions (from the current car) and the fonts may not be set up.
+  - Headups are drawn only by RenderAFrame.
+  - The pause front end runs with `g_racing` = 0.
+- **Thread:** the game is single-threaded and nothing locks the headup table. Call it on the
+  game's thread only.
+- **Where to call from:**
+  - A d3d9 Present, EndScene or BeginScene hook is fine.
+  - Do not call it from a draw-call hook. DoHeadups renders the HUD glyphs through
+    BrZbSceneAddActorIncremental while it iterates the table, so those draws happen inside
+    its loop.
+  - The window procedure runs on the same thread (from the message pump), so a direct call
+    there is not a data race. It is still cleaner to set a flag there and post the message
+    on the next Present.
+
+## 59. Pedestrian actor hierarchy (static)
+
+Static analysis of CARMA2_HW0.EXE (Ghidra project CARMA2_HW.EXE plus capstone). Not checked in
+game. Function names are ours. The code is the "boner" skeleton system (strings `BONER ERROR`,
+`kBoner_mem_type_*`), which peds and animals share.
+
+**Data chain: form, personality, instance, ped.**
+- **Form** (DATA/PEDS/FORMS/*.TXT), loaded by LoadForm 0x00404F60.
+  - +0x29 is the bone count.
+  - The four header numbers set the pool sizes:
+    - simple physics: pool at +0x38;
+    - boned physics: count at +0x2C, pool at +0x34;
+    - rendering (actor sets): count at +0x2A, pool at +0x30;
+    - stored dismembered: count at +0x2D, pool at +0x48.
+  - Bone info is at +0x3C, stride 0x34: the name, then the parent index as a signed byte at
+    +0x28 (-1 for the root).
+- **Personality** (each ped's TXT in PEEPS/*.TWT), 0x68 bytes, loaded by LoadPersonality
+  0x00406AB0.
+  - It starts with its name. Loaded personalities are cached in the 50-entry table at
+    0x00677260.
+  - +0x28 is the form. +0x2C is the per-bone table, stride 0x3C: `br_model *models[8]` (remap
+    variants), then the TXT's first joint point at +0x20 and the second at +0x2C, both in
+    body space.
+- **Character instance**, 0xEC bytes, created by CreateCharacterInstance 0x004079A0
+  (ecx = personality name, edx = initial matrix). Fields:
+  - +0x00 personality;
+  - +0x04 s8 actor-set index (-1 none);
+  - +0x06 s8 boned-physics slot;
+  - +0x07 s8 move;
+  - +0x0A u8 model variant;
+  - +0x0C u32 detached-bone mask (bit i set = bone i severed);
+  - +0x10 a second mask;
+  - +0x28 stored per-bone matrices of a dismembered body;
+  - +0x2C br_matrix34 of the root while it has no actors;
+  - +0x8C br_matrix34 orientation of the whole body (its translation is kept at zero,
+    0x0040B770);
+  - +0xBC boned-physics state;
+  - +0xE4 back-pointer to the ped record;
+  - +0xE8 optional per-bone matrix array (stride 0x30), used instead of the actors' `t` when
+    set.
+- **Peds** are records of 0x54 bytes in the array whose pointer is at 0x00744808. The count is
+  at 0x007447D4 (max 2000).
+  - Fields: +0x00 instance, +0x04 u8 health (100 at spawn), +0x08 u16 flags (bit 0 = active,
+    near the camera), +0x1C position.
+  - SpawnPedsOnFace 0x004D2CC0 creates them. 0x004D3520 finalises the array and sets each
+    instance's +0xE4.
+
+**Actors.**
+- **Allocation:** each bone has its own br_actor. LoadForm allocates them at 0x00405C25 as
+  `BrActorAllocate(BR_ACTOR_MODEL, 0)`, one set of bone-count actors per rendering slot
+  (30 sets for BIPED1).
+  - They are pooled per form, not per ped, and hold no parent and **no identifier** (+0x14
+    stays NULL).
+- **Assignment:** a set is lent to a ped only while it is active (bit 0 of ped +0x08,
+  distance to the camera).
+  - MungePedestrians 0x004D3740 calls AcquireActorSet 0x004083B0 (a free set, then
+    AssignActorSet 0x00408200) or ReleaseActorSet 0x00408400.
+  - AssignActorSet sets, for each bone i:
+    - `actor+0x5C` (type_data) = the instance;
+    - render_style = 0;
+    - model = `personality->bones[i].models[variant]`;
+    - type = 1 if it has a model.
+  - The same actor pointers are reused for other peds, so a proxy must re-read +0x5C every
+    frame instead of caching the mapping.
+- **Layout: flat, not nested.**
+  - The root bone (0, Spine) is added by 0x004CBC70 as a direct child of the actor at
+    [0x007634B8], the world-content actor (kb `g_effects_parent_actor`).
+  - Attached non-root bones (mask bit clear) have no parent between frames.
+  - **Attached limbs:** every spine model of every variant gets `flags |= 0x20` (custom) and
+    `custom = 0x004D34E0` (at 0x004D307A, in SpawnPedsOnFace).
+  - When the spine is rendered, that callback records the spine actor in `g_rendered_bodies`
+    (0x00694280, max 30, count 0x006A0420) and then draws it.
+  - After the world pass, 0x004D3610 (kb calls it DrawSeveredLimbs, but it draws the
+    **attached** limbs) creates "Limbs_actor" (0x006A0424, a NONE actor under the world root
+    0x0074D44C).
+  - For each recorded body it adds every bone i >= 1 whose mask bit is clear, calls
+    BrZbSceneRenderAdd(Limbs_actor), and removes them all again.
+  - So attached limbs are drawn only when their spine was drawn, and at most for 30 bodies.
+- **Severed bones** (mask bit set) are the same actors, added directly under [0x007634B8]:
+  - SeverBone 0x004CA900 (replay path), and SeverBoneRecursive 0x004CD9E0 via DetachBone
+    0x0040B860.
+  - Nothing is duplicated. Render style is not used to hide anything.
+- **Walking up the tree:** it therefore finds 0x007634B8 or Limbs_actor, never a
+  per-ped actor.
+
+**Transforms (PoseCharacterActors 0x00407B30).**
+- **The result:** every bone actor's `t` is a full body-space-to-world matrix, relative to the
+  pedestrian's actual scene parent, which is not a parent bone. This assumes that [0x007634B8]
+  and Limbs_actor carry identity transforms. Limbs_actor is freshly allocated and never
+  moved; [0x007634B8] is not checked.
+- **Root:** `t = frame_matrix(move, frame) × instance+0x8C`. The translation is kept from the
+  previous `t` and advanced by the move's displacement, so it is the ped's world position.
+- **Child bones** use PoseChildBone 0x00407E70 (edx = child `t`, arg 1 = parent's `t`,
+  arg 2 = instance+0x8C, then the frame's rotation bytes, then the bone's two joint points).
+  - It builds `R` from the frame's angles.
+  - It sets `t = T(-p1) · R`, post-multiplies by the body orientation (BrMatrix34Post
+    0x00533730), then adds `p2 · parent_t`.
+  - A body-space vertex v therefore lands at `(v - p1)·R·W + p2·parent_t`. The joint
+    point p1 on the child meets the parent's p2 carried through the parent's world matrix.
+  - Bones are posed in parent order, and the parent's matrix is already in world space.
+- **Physics:** severed bones and ragdolls (boned physics, instance +0xBC, via 0x004097B0) write
+  world matrices into the same actors' `t`, or into the +0xE8 override array.
+
+**Dismemberment and death.**
+- **DamagePed 0x004CD640** takes damage from ped +0x04. For each severing threshold
+  (0x00694234 HP, or 5 in some modes) it calls SeverBoneRecursive 0x004CD9E0 on a random
+  bone, up to 5 pieces. At zero health it kills the ped (0x004CCE70).
+- **SeverBoneRecursive:**
+  - It first recurses into the still-attached children (form bone info parent == bone).
+  - DetachBone 0x0040B860 then takes a boned-physics slot (form +0x34 pool, "Max boned
+    physicing"; instance +0x06) and gives the piece a random or impact velocity.
+  - The bone's actor is added under [0x007634B8] if it has no parent.
+  - The per-bone flag to read is **instance +0x0C bit i** (the `1 << i` table at 0x0058F2D8).
+- **Ragdoll:** the ped keeps the same instance, actor set and bone actors. Only the source of
+  the matrices changes.
+- **Release:** when a dismembered body is released (out of range), ReleaseActorSet stores the
+  severed bones' matrices in the form's "stored dismembered" pool (form +0x48; instance
+  +0x28). It then removes every bone actor from its parent (0x004CBCA0), and the set returns
+  to the pool.
+
+**Recognising a ped bone from a br_actor* in the proxy.**
+- **Candidate:** the actor has no identifier (+0x14 NULL), type 1, and its parent is
+  [0x007634B8] (a root or severed bone) or the actor whose identifier is "Limbs_actor" (an
+  attached limb).
+- **Owner:** `inst = *(void**)(actor+0x5C)`, then `personality = *(void**)inst` (it starts
+  with its name), then `form = *(void**)(personality+0x28)`.
+- **Check and bone index:** `set = *(signed char*)(inst+4)`. The actor is bone i when
+  `((br_actor***)(form+0x30))[set*2+1][i] == actor`, for i below `*(uint8_t*)(form+0x29)`.
+  This also confirms the actor belongs to that instance.
+- **Other fields:** `*(uint32_t*)(inst+0x0C) & (1<<i)` says severed. `*(void**)(inst+0xE4)`
+  is the ped record for peds from the ped array.
+- **Caveat:** other boner users (the animals under PEDS/FORMS) look the same.
+
+## 60. Hor+, the overlay, the headlight message, headlight textures (2026-09-29)
+
+**Hor+ widescreen** (`[Display] HorPlus`, on by default).
+- **The problem:** the race camera is 4:3 (`br_camera::aspect`), but Remix path-traces into the
+  render target nGlide draws to, at nGlide's resolution. On a widescreen target the picture was
+  stretched sideways.
+- **Now:** `build_projection` keeps the camera's vertical field of view and uses the aspect of
+  the render target bound at submit. It follows any aspect (16:9, 16:10, ultrawide), as far as
+  nGlide offers the resolution. Verified in game at 16:9.
+- **Edges:** frustum culling is already off, so the extra width has geometry. Pickups are the
+  exception: the game still culls them to its 4:3 view.
+
+**Overlay size.** ImGui's Win32 backend sizes the overlay from the window's client area, but
+it draws into the back buffer. nGlide rendered at 1080p in a larger window, so the centred
+headlight notice landed at the right edge. The overlay is now laid out in back-buffer pixels,
+with the cursor scaled to match (`match_display_to_back_buffer`).
+
+**Shadow terminator.** The black wedges along the kerbs were Remix's shadow terminator.
+- Its fix only applies to polygons under `rtx.shadowTerminator.maxArea` (0.05 m²) and caps
+  the offset at `maxLength` (0.02 m). At `sceneScale 0.001449` one game unit is about 6.9 m, so
+  road triangles never qualified.
+- rtx.conf now sets maxArea 100 and maxLength 0.3. Confirmed in game (Alt+X).
+
+**Headlight message in the game's font.** The F key's mode change now goes through
+`NewTextHeadupSlot2(4, 0, 1500, -4, text, 0)` (section 58).
+- The call is made from Present, only while racing, and not when map mode is 2.
+- The ImGui notice is gone.
+- Not verified in game yet.
+
+**Headlight textures** (for texture swaps, in `rtx-remix\captures\textures\headlights`, 32
+textures with index.csv; 9 of them match hashes already in the captures). Of 52 car
+archives, 41 are distinct cars plus 11 Eagle colour variants.
+- **Own headlight material, 16 cars:**
+  - Eagle (`eheadlig` on EALITL/R) and all colour variants;
+  - SKYLINE `frlite`; bugtoo5 `bghlite`; copcar `mehlite`; delorean `Dfhlite`;
+  - fatlane `fahlte`; razorback2 `Rzhlte`; screw28 `slhlte`; semi2 `smhlite`; zee `zehlte`;
+  - wideboy `wbhlite`; monsterbug `mbhlit`; tbucket `tbflit`; cobra `clightsh`;
+  - fordpick `fordligh`; cerby `cerlight`.
+- **Probably headlights, 4 cars:** bigdump `bdlit`, newhawk `hlights`/`hindicat`, corvette
+  `vlights`, volvo `volight`.
+- **No separate material, 21 cars.** Their lamps are painted into the body texture, which
+  would need a masked lit copy.
+- **Coverage of a plain material swap:** 39% of distinct cars (up to 49%); 52 to 60% counting
+  the Eagle variants.

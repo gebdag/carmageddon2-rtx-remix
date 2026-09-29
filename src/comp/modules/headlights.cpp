@@ -16,7 +16,7 @@ namespace comp
 		constexpr uint32_t MAX_TREE_ACTORS = 256;
 		constexpr uint32_t MAX_TREE_DEPTH = 8;
 
-		constexpr auto NOTICE_DURATION = std::chrono::milliseconds(2000);
+		constexpr int NOTICE_MS = 1500;
 
 		constexpr float DEG_TO_RAD = 3.14159265f / 180.0f;
 		constexpr float PI = 3.14159265f;
@@ -291,7 +291,7 @@ namespace comp
 	{
 		m_night_switched = false;
 		m_mode = static_cast<mode>((static_cast<int>(m_mode) + 1) % 3);
-		m_notice_until = std::chrono::steady_clock::now() + NOTICE_DURATION;
+		m_notice_pending = true;
 		shared::common::log("Headlights", std::format("headlights: {}", mode_name(m_mode)));
 	}
 
@@ -556,21 +556,13 @@ namespace comp
 	// ------
 	// menu
 
-	void headlights::draw_mode_notice()
+	void headlights::post_mode_notice()
 	{
-		if (std::chrono::steady_clock::now() >= m_notice_until) {
+		if (!m_notice_pending) {
 			return;
 		}
-
-		const std::string text = std::format("Headlights: {}", mode_name(m_mode));
-		const ImVec2 size = ImGui::CalcTextSize(text.c_str());
-		const ImVec2 display = ImGui::GetIO().DisplaySize;
-		const ImVec2 pos((display.x - size.x) * 0.5f, display.y * 0.12f);
-
-		auto* draw_list = ImGui::GetForegroundDrawList();
-		draw_list->AddRectFilled(pos - ImVec2(12.0f, 6.0f), pos + size + ImVec2(12.0f, 6.0f),
-			IM_COL32(0, 0, 0, 170), 4.0f);
-		draw_list->AddText(pos, IM_COL32(255, 238, 200, 255), text.c_str());
+		m_notice_pending = false;
+		game::show_headup_message(std::format("Headlights: {}", mode_name(m_mode)).c_str(), NOTICE_MS);
 	}
 
 	void headlights::draw_menu()

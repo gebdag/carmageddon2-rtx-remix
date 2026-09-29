@@ -237,6 +237,20 @@ namespace comp::game
 		return fog;
 	}
 
+	bool show_headup_message(const char* text, const int lifetime_ms)
+	{
+		if (*reinterpret_cast<const int*>(rebase(ADDR_g_racing)) != 1
+			|| *reinterpret_cast<const int*>(rebase(ADDR_g_map_mode)) == 2) {
+			return false;
+		}
+
+		using new_text_headup_slot2_t = int(__fastcall*)(int slot, int flash_rate, int lifetime_ms,
+			int neg_font, const char* text, int queue_it);
+		const auto new_text_headup_slot2 = reinterpret_cast<new_text_headup_slot2_t>(rebase(ADDR_NewTextHeadupSlot2));
+		new_text_headup_slot2(HEADUP_SLOT_MISC, 0, lifetime_ms, -FONT_MEDIUMHD, text, 0);
+		return true;
+	}
+
 	// Every address this port needs is a fixed RVA in a non-relocatable executable, so there
 	// is nothing to pattern-scan for. They live as constants in game.hpp; this hook only
 	// reports the module base so a mismatch is obvious in the log.

@@ -925,10 +925,6 @@ namespace comp
 						im->m_stats.reset_stats();
 					}
 
-					if (const auto lights = headlights::get(); lights) {
-						lights->draw_mode_notice();
-					}
-
 					shared::globals::imgui_is_rendering = true;
 					ImGui::EndFrame();
 					ImGui::Render();
