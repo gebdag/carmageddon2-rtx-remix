@@ -4877,3 +4877,73 @@ causes:
 - **Trade-off:** turning the camera now changes the fog.
 
 Not verified in game yet.
+
+## 63. The city's water as refractive animated water (2026-09-29)
+
+**Target.** The city's `WATER` (NEWC, `207656C26F8A30D3`, 64x64 ARGB4444) is the one water
+texture the mod overrides.
+- **Before:** a thick translucent material: IOR 1.01, a subsurface transmittance texture.
+- **Geometry:** it covers 527 faces in 107 models, about 12,600 square units, at heights −11
+  to 3.4.
+- **Game animation:** the game scrolls its UVs (map_transform), so the proxy keeps it dynamic.
+- **UV scale:** one texture repeat covers 0.59 to 3.48 world units (median 2.24, about 15 m at
+  sceneScale 0.001449).
+
+**Approach: the Bloodborne port's** (`bloodborne_rtx/tools/export_remix.py`). Its water is:
+- a translucent material that is not thin-walled, so it refracts and tints what lies below;
+- IOR 1.33, a transmittance colour and a measurement distance;
+- Remix's animated water on top: `remix_category:animated_water` on the mesh, and
+  `rtx.translucentMaterial.animatedWaterPrimaryNormalMotion` 0.01, secondary −0.006.
+
+That port found that a pre-scrolled sprite sheet alone looked choppy.
+
+**What Remix does with it.**
+- **Tagging:** textures listed in `rtx.animatedWaterTextures` set the instance's
+  animated-water category. Translucent materials then sample the normal map twice, at UV
+  offsets moving with time (`animatedWaterEnable`, default on).
+- **Sprite sheets:** the sliding runs on top of a sprite sheet (it recovers the in-cell UV,
+  moves it, maps it back).
+- **Normal decode:** normal maps are decoded with `unsignedOctahedralToHemisphereDirection`,
+  the octahedral encoding rotated 45 degrees. The same holds in the Remix Plus source.
+  Bloodborne's encoder writes the plain sphere octahedral encoding, which this decode would
+  read rotated.
+
+**Built.**
+- **Normal map:** the fractal-cascade ocean flipbook baked with the water flipbook generator (12x10
+  frames of 256 px, 60 fps, 2 s loop, 10 m tile).
+  - Its OpenGL normals are flipped in green (Remix's bitangent is +v, down the image) and
+    encoded to Remix's hemisphere octahedral. The round trip is within 0.55 degrees; median
+    tilt 7 degrees, 99th percentile 19.
+  - Compressed with nvcompress BC5, with mips: `rtxmod/assets/generated/water_cascade_normal.n.dds`,
+    10 MB.
+  - Frame 0 alone is `water_cascade_normal_still.n.dds`, for a static map under the same
+    sliding.
+- **Material:** `rtxmod/materials_water.usda`, a sub-layer of mod.usda (the old water block is
+  removed from mod.usda; backup `mod.usda.pre-water-bak`):
+  - AperturePBR_Translucent, not thin-walled, IOR 1.33;
+  - transmittance (0.24, 0.92, 1.0) over 0.5 units (the flipbook's shallow colour
+    `#1d6e78`, normalised);
+  - the normal sheet as a 12x10 sprite sheet at 60 fps, wrap clamp (the generator's advice
+    for sheet borders).
+- **rtx.conf:**
+  - `rtx.animatedWaterTextures = 0x207656C26F8A30D3`;
+  - `animatedWaterEnable = True`;
+  - primary 0.01, 0.01; secondary −0.006, −0.006.
+
+**IOR scale removed.** `rtx.translucentMaterial.refractiveIndexScale = 1.69` multiplied every
+translucent IOR. Remix calls it look development only. Water at 1.33 would have been 2.25,
+and a material cannot go below 1 to compensate.
+- The scale is removed from rtx.conf.
+- Its effect is folded into the glass, so glass looks exactly as it did: 13 track-glass
+  materials 1.02 → 1.724, SCRN 1.02 → 1.724, the other windscreen default 1.3 → 2.197.
+- The packaged mod carries no translucent materials yet (glass and water await the Toolkit
+  repackage), so the package is unaffected.
+
+**Open.**
+- **Uneven wave size:** the city water's uneven UV scale will show as waves of different size
+  on neighbouring polygons. The proxy could give water draws world-projected UVs (X/Z over a
+  tile size) if that is visible.
+- **Other tracks:** about 20 other tracks' water textures (airport, desert, timber, funfair,
+  quarry, junkyard, ski) can join the same layer and list.
+
+Not verified in game yet.
