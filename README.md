@@ -2,7 +2,7 @@
 
 An RTX Remix compatibility mod for Carmageddon 2: Carpocalypse Now (`CARMA2_HW.EXE`).
 
-<img width="480" alt="c2_transp" src="https://github.com/user-attachments/assets/c9ff94bb-d63d-438c-bd4b-ef3309fd76d0" /><
+<img width="480" alt="c2_transp" src="https://github.com/user-attachments/assets/c9ff94bb-d63d-438c-bd4b-ef3309fd76d0" />
 
 <img width="1920" alt="Carmageddon II(carma2_hw exe) Screenshot 2026 10 02 - 01 29 14 63" src="https://github.com/user-attachments/assets/465702d3-cec2-4f9f-8c31-e5204113f0f4" />
 <img width="1920" alt="Carmageddon II(carma2_hw exe) Screenshot 2026 10 02 - 01 30 28 58" src="https://github.com/user-attachments/assets/df2c280b-42cc-4acb-8459-909d113eac74" />
