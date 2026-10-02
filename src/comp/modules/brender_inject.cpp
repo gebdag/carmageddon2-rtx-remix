@@ -2357,6 +2357,8 @@ namespace comp
 		if (fresh)
 		{
 			classify_actor(record, actor, model);
+			record.fallback_material = fallback_material;
+			record.identity = identify(model);
 			record.last_seen_scene = m_scene_walks;
 
 			if (!record.bakeable)
@@ -2398,11 +2400,14 @@ namespace comp
 
 		record.last_seen_scene = m_scene_walks;
 
-		if (record.model != model)
+		if (record.model != model || record.fallback_material != fallback_material
+			|| !(record.identity == identify(model)))
 		{
 			note_placement_drift(model, "model swapped");
 			if (unbake_actor(record)) { ++m_demotions.swapped; }
 			classify_actor(record, actor, model);
+			record.fallback_material = fallback_material;
+			record.identity = identify(model);
 		}
 
 		// An actor the game deletes rather than moves can never enter a chunk, so there is
@@ -2478,12 +2483,13 @@ namespace comp
 			}
 		}
 
-		if (record.live) {
+		if (static_bake_coverage::complete(record.ranges, record.part_count,
+			[&](uint32_t chunk) { return m_chunks[chunk].sealed; })) {
 			return dynamic_reason::chunked;
 		}
 
 		if (record.baked) {
-			return dynamic_reason::unsealed;
+			return record.live ? dynamic_reason::mixed : dynamic_reason::unsealed;
 		}
 
 		return moved ? dynamic_reason::moving : dynamic_reason::probation;
@@ -2517,16 +2523,17 @@ namespace comp
 			return false;
 		}
 
-		// An animated material needs its colour map and UV transform re-read every frame,
-		// which only the dynamic path does. The funk table names what the game animates from
-		// load; m_animated_materials adds what has since been seen to change without one.
-		for (const auto& part : parts)
+		// Source part numbers must describe the buffers used by the dynamic draw too.
+		// Inherited materials and split glass can change extraction's run layout.
+		const auto geometry = geometry_for(dev, model, fallback_material);
+		if (!geometry || geometry->parts.size() != parts.size()) { return false; }
+		for (size_t i = 0; i < parts.size(); ++i)
 		{
-			if (funk_animates(part.material) || m_animated_materials.contains(part.material))
-			{
-				note_placement_drift(model, "kept dynamic: animated material");
-				return false;
-			}
+			const auto& a = parts[i];
+			const auto& b = geometry->parts[i];
+			if (a.index_start != b.index_start || a.triangle_count != b.triangle_count
+				|| a.material != b.material || a.glass_frame != b.glass_frame
+				|| a.inherits_material != b.inherits_material) { return false; }
 		}
 
 		// The chunks draw with WORLD = identity, so the placement lives in the data.
@@ -2559,11 +2566,25 @@ namespace comp
 		}
 
 		record.ranges.clear();
-		record.materials.clear();
-		for (const auto& part : parts)
+		record.part_count = static_cast<uint32_t>(parts.size());
+		for (size_t i = 0; i < parts.size(); ++i)
 		{
-			append_part_to_chunk(part, vertices, indices, record);
-			record.materials.push_back(part.material);
+			const auto& part = parts[i];
+			// Only animated runs need live material resolution; adjacent walls remain
+			// persistent even when the game's visibility walk omits this terrain actor.
+			if (funk_animates(part.material) || m_animated_materials.contains(part.material)) {
+				continue;
+			}
+			append_part_to_chunk(part, static_cast<uint32_t>(i), vertices, indices, record);
+		}
+
+		if (!record.ranges.empty() && record.ranges.size() < parts.size())
+		{
+			shared::common::log("BRender", std::format(
+				"model '{}' split bake: {} static runs, {} dynamic runs",
+				model->identifier ? model->identifier : "<null>",
+				record.ranges.size(), parts.size() - record.ranges.size()),
+				shared::common::LOG_TYPE::LOG_TYPE_DEFAULT, false);
 		}
 
 		return !record.ranges.empty();
@@ -2572,7 +2593,7 @@ namespace comp
 	// Copies one material run into the open chunk for its (texture, blend) pair, remapping
 	// the vertices it references into the chunk and recording where the indices landed so
 	// the actor can be punched back out if it ever moves.
-	void brender_inject::append_part_to_chunk(const geometry_part& part,
+	void brender_inject::append_part_to_chunk(const geometry_part& part, const uint32_t source_part,
 		const std::vector<ffp_vertex>& vertices, const std::vector<uint32_t>& indices,
 		actor_record& record)
 	{
@@ -2623,6 +2644,8 @@ namespace comp
 		}
 
 		baked_range range{};
+		range.part = source_part;
+		range.material = part.material;
 		range.chunk = static_cast<uint32_t>(chunk_index);
 		range.index_start = static_cast<uint32_t>(chunk.indices.size());
 		range.index_count = index_end - part.index_start;
@@ -2642,30 +2665,27 @@ namespace comp
 	 * immutability rule allows: the alternative is rebuilding the chunk, which is exactly
 	 * the hitch this design exists to avoid.
 	 */
-	void brender_inject::punch_out(const actor_record& record)
+	void brender_inject::punch_out(const baked_range& range)
 	{
-		for (const baked_range& range : record.ranges)
+		static_chunk& chunk = m_chunks[range.chunk];
+
+		if (!chunk.sealed)
 		{
-			static_chunk& chunk = m_chunks[range.chunk];
+			std::fill_n(chunk.indices.begin() + range.index_start, range.index_count,
+				static_cast<uint16_t>(0));
+			return;
+		}
 
-			if (!chunk.sealed)
-			{
-				std::fill_n(chunk.indices.begin() + range.index_start, range.index_count,
-					static_cast<uint16_t>(0));
-				continue;
-			}
+		if (!chunk.index_buffer) {
+			return;
+		}
 
-			if (!chunk.index_buffer) {
-				continue;
-			}
-
-			void* mapped = nullptr;
-			if (SUCCEEDED(chunk.index_buffer->Lock(range.index_start * sizeof(uint16_t),
-				range.index_count * sizeof(uint16_t), &mapped, 0)))
-			{
-				std::memset(mapped, 0, range.index_count * sizeof(uint16_t));
-				chunk.index_buffer->Unlock();
-			}
+		void* mapped = nullptr;
+		if (SUCCEEDED(chunk.index_buffer->Lock(range.index_start * sizeof(uint16_t),
+			range.index_count * sizeof(uint16_t), &mapped, 0)))
+		{
+			std::memset(mapped, 0, range.index_count * sizeof(uint16_t));
+			chunk.index_buffer->Unlock();
 		}
 	}
 
@@ -2682,7 +2702,7 @@ namespace comp
 	 */
 	bool brender_inject::unbake_actor(actor_record& record)
 	{
-		punch_out(record);
+		for (const auto& range : record.ranges) { punch_out(range); }
 
 		if (record.live && m_live_actors) {
 			--m_live_actors;
@@ -2694,7 +2714,8 @@ namespace comp
 		record.demoted = record.demoted || was_baked;
 		record.sightings = 0;
 		record.ranges.clear();
-		record.materials.clear();
+		record.part_count = 0;
+		++record.bake_generation;
 
 		// The dead vertices a rebake leaves behind are never reclaimed, so an actor that
 		// has used up its bakes has proved it is not scenery and stops trying.
@@ -2930,15 +2951,22 @@ namespace comp
 			return;
 		}
 
-		// Anything already baked with it is showing a frozen frame of the animation.
+		// Release only the animated runs. Terrain actors can share walls and animated
+		// water in one model, and the walls still need persistent ray-traced occlusion.
 		uint32_t evicted = 0;
+		uint32_t affected = 0;
 		for (auto& [actor, record] : m_actors)
 		{
-			if (record.baked
-				&& std::find(record.materials.begin(), record.materials.end(), material)
-					!= record.materials.end())
+			const auto removed = static_cast<uint32_t>(static_bake_coverage::remove_material(
+				record.ranges, material, [&](const baked_range& range) { punch_out(range); }));
+			evicted += removed;
+			if (removed) { ++affected; }
+			if (record.baked && record.ranges.empty())
 			{
-				if (unbake_actor(record)) { ++evicted; }
+				if (record.live && m_live_actors) { --m_live_actors; }
+				record.live = false;
+				record.baked = false;
+				record.bakeable = false;
 			}
 		}
 
@@ -2946,14 +2974,10 @@ namespace comp
 			return;
 		}
 
-		m_demotions.animated += evicted;
+		m_demotions.animated += affected;
 
-		// One animated material can take a large share of the static world with it, and the
-		// trigger is named because the two have different failure modes: a UV transform is
-		// the funk system and almost certainly genuine, while an opacity move on something
-		// like a road would mean the byte is being misread and the eviction is the bug.
 		shared::common::log("BRender", std::format(
-			"material '{}' animates ({}) - {} baked actors returned to the dynamic path",
+			"material '{}' animates ({}) - {} baked material runs returned to the dynamic path",
 			material->identifier && readable(material->identifier, 1)
 				? material->identifier : "<null>",
 			uv_moved && opacity_moved
@@ -3240,6 +3264,14 @@ namespace comp
 		++m_dynamic_reasons[static_cast<size_t>(reason)];
 
 		queued_model queued{};
+		if (race_scene && optimization.static_world && actor && !(model->flags & BR_MODF_CUSTOM))
+		{
+			if (const auto tracked = m_actors.find(actor); tracked != m_actors.end())
+			{
+				queued.actor = actor;
+				queued.bake_generation = tracked->second.bake_generation;
+			}
+		}
 		queued.world = to_d3d(model_to_world);
 		queued.model_name = model->identifier ? model->identifier : "<null>";
 
@@ -4023,6 +4055,11 @@ namespace comp
 		for (const auto& queued : m_queue)
 		{
 			const model_geometry& geometry = *queued.geometry;
+			const actor_record* record = nullptr;
+			if (const auto tracked = m_actors.find(queued.actor); tracked != m_actors.end()
+				&& tracked->second.bake_generation == queued.bake_generation) {
+				record = &tracked->second;
+			}
 			if (!combined && (blended ? !queued.has_blended : !queued.has_opaque)) {
 				continue;
 			}
@@ -4034,6 +4071,12 @@ namespace comp
 			const draw_state* states = &m_draw_states[queued.state_first];
 			for (size_t i = 0; i < geometry.parts.size(); ++i)
 			{
+				// Resolve ownership at submission: sealing or a material update may have
+				// changed it since capture. Unsealed and removed ranges stay dynamic.
+				if (record && static_bake_coverage::covers(record->ranges, i,
+					[&](uint32_t chunk) { return m_chunks[chunk].sealed; })) {
+					continue;
+				}
 				const geometry_part& part = geometry.parts[i];
 				const draw_state& state = states[i];
 				if (!combined && state.blended != blended) {
@@ -4400,6 +4443,7 @@ namespace comp
 		case dynamic_reason::moving:     return "moving";
 		case dynamic_reason::probation:  return "probation";
 		case dynamic_reason::unsealed:   return "unsealed";
+		case dynamic_reason::mixed:      return "mixed";
 		default:                         return "chunked";
 		}
 	}

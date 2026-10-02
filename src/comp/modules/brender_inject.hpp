@@ -1,6 +1,7 @@
 #pragma once
 #include "sky_dome.hpp"
 #include "level_footprint.hpp"
+#include "static_bake_coverage.hpp"
 
 namespace comp
 {
@@ -370,6 +371,8 @@ namespace comp
 		struct queued_model
 		{
 			const model_geometry* geometry;
+			game::br_actor* actor;
+			uint32_t bake_generation;
 			D3DMATRIX world;
 			const char* model_name;
 
@@ -410,12 +413,7 @@ namespace comp
 
 		// Where one baked actor's indices ended up, so it can be punched back out (the
 		// range overwritten with degenerate triangles) if the actor turns out to move.
-		struct baked_range
-		{
-			uint32_t chunk;
-			uint32_t index_start;
-			uint32_t index_count;
-		};
+		using baked_range = static_bake_coverage::range;
 
 		/*
 		 * One actor's placement history. Keyed by actor rather than model because scenery
@@ -426,6 +424,10 @@ namespace comp
 		struct actor_record
 		{
 			game::br_model* model;
+			game::br_material* fallback_material;
+			model_identity identity;
+			uint32_t part_count;
+			uint32_t bake_generation;
 			uint64_t placement;      // fingerprint of the actor's transform chain
 			uint64_t parent_chain;   // node addresses, to tell a relink from a move
 			uint32_t sightings;       // consecutive scenes holding this placement
@@ -437,9 +439,8 @@ namespace comp
 			bool demoted;   // has been unbaked at least once, so a later bake is a recovery
 			bool noncar;    // bakes into the noncar chunks, apart from the pristine world
 			bool baked;     // copied into a chunk, possibly one still accumulating
-			bool live;      // its chunks are sealed and drawing; the game render is redundant
+			bool live;      // its static ranges are sealed; other parts may still be dynamic
 			std::vector<baked_range> ranges;
-			std::vector<game::br_material*> materials;  // compared only, never dereferenced
 		};
 
 		// Where the static world loses geometry. Every eviction lands in exactly one bucket,
@@ -451,7 +452,7 @@ namespace comp
 			uint32_t moved = 0;
 			uint32_t swapped = 0;
 			uint32_t deformed = 0;
-			uint32_t animated = 0;
+			uint32_t animated = 0; // actors that lost one or more animated runs
 			uint32_t instanced = 0;
 
 			uint32_t total() const
@@ -614,6 +615,7 @@ namespace comp
 			moving,      // its placement changed recently
 			probation,   // holding still, not yet promoted
 			unsealed,    // baked, but its chunk has not sealed yet
+			mixed,       // static ranges are live; remaining parts still need dynamic draws
 			count
 		};
 
@@ -650,10 +652,10 @@ namespace comp
 
 		bool bake_actor(actor_record& record, game::br_model* model,
 		                game::br_material* fallback_material, const game::br_matrix34& world);
-		void append_part_to_chunk(const geometry_part& part,
+		void append_part_to_chunk(const geometry_part& part, uint32_t source_part,
 		                          const std::vector<ffp_vertex>& vertices,
 		                          const std::vector<uint32_t>& indices, actor_record& record);
-		void punch_out(const actor_record& record);
+		void punch_out(const baked_range& range);
 
 		// Takes an actor's geometry back out of the chunks and restarts its probation. The
 		// record survives, so scenery that comes to rest -- a knocked lamppost, a settled
