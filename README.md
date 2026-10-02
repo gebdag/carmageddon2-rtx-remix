@@ -2,50 +2,41 @@
 
 An RTX Remix compatibility mod for Carmageddon 2: Carpocalypse Now (`CARMA2_HW.EXE`).
 
-Carmageddon 2 transforms and lights everything on the CPU through BRender, so what reaches the
-graphics driver is already in screen space, which Remix skips. This mod is a `d3d9.dll` proxy
-that hooks BRender's model renderer (`BrZbModelRender`) while the vertices are still in model
-space, and submits them to Remix with separate world, view and projection transforms.
+<img width="480" alt="c2_transp" src="https://github.com/user-attachments/assets/c9ff94bb-d63d-438c-bd4b-ef3309fd76d0" /><
+
+<img width="1920" alt="Carmageddon II(carma2_hw exe) Screenshot 2026 10 02 - 01 29 14 63" src="https://github.com/user-attachments/assets/465702d3-cec2-4f9f-8c31-e5204113f0f4" />
+<img width="1920" alt="Carmageddon II(carma2_hw exe) Screenshot 2026 10 02 - 01 30 28 58" src="https://github.com/user-attachments/assets/df2c280b-42cc-4acb-8459-909d113eac74" />
+<img width="1920" alt="Carmageddon II(carma2_hw exe) Screenshot 2026 10 02 - 01 31 17 61" src="https://github.com/user-attachments/assets/7b66170b-4a45-41f0-9471-55980380cb78" />
+<img width="1920" alt="Carmageddon II(carma2_hw exe) Screenshot 2026 10 02 - 01 34 22 30" src="https://github.com/user-attachments/assets/ff2830b0-40b9-4ac0-83f9-55f3e45671fc" />
+<img width="1920" alt="Carmageddon II(carma2_hw exe) Screenshot 2026 10 02 - 01 44 44 29" src="https://github.com/user-attachments/assets/d25feb57-d428-410a-a10e-b06b85850f58" />
+
+
+Features:
+- Full RTX Remix compatible rendering of the game
+- Full sky handling (vanilla skybox or Numos via RTX Remix Plus)
+- Emissive maps for some of the game's textures, shipped as a Remix mod
+- Working car head, brake and reversing lights
+- Illuminated street and traffic lights as well as checkpoints
+- Path traced water and glass materials
+- F4 in game settings panel for adjusting aspects of rendering
+- Widescreen support
+- Option to steer with arrow keys (camera on Numpad)
 
 ```
 CARMA2_HW.EXE (BRender) -> Glide -> nGlide -> d3d9.dll (this mod) -> d3d9_remix.dll (RTX Remix)
 ```
 
-## Features
-
-- Static scenery baked into per-texture chunks that Remix keeps between frames
-- The game's own render of injected models suppressed, so it isn't drawn over the path-traced frame
-- Frustum culling disabled and a longer far plane for path tracing; powerup pickups keep the game's own culling
-- Time of day per race, read from each race's sky: the sun's angle, colour and strength for day, overcast, dusk, fog and night. Tuned from the F4 menu and saved to `carma2-sun.ini`
-- On NVIDIA's RTX Remix, a sky built from each race's horizon texture and a Remix distant light for the sun; on Remix Plus, its physical sky in place of that, with the sun placed the same way and clouds and haze matched to each race's sky texture
-- Night races: the sun just below the horizon, headlights on for every car, a light under every city street lamp, and traffic lights cycling green, amber and red (`carma2-streetlights.ini`)
-- Headlights: two Remix spot lights per car. F cycles off, player car, all cars. Tuned from the F4 menu and saved to `carma2-headlights.ini`
-- Shading normals that keep hard edges sharp, so flat roads and walls shade flat
-- Fire, explosions and powerup sparkles glow, and smoke is no longer drawn black
-- Destructible scenery kept out of the static world, so it can still be smashed
-- Tyre tracks and other decals lifted off the road, with a separate translucent pass
-- Sparks rebuilt as billboards
-- Car rear light panels showing the right cell of their texture atlas
-- Smoke and dust tinted by vertex colour and faded by material opacity
-- The game's back-face culling handed to Remix, so car glass stays single-sided and crushed doors don't flicker
-- The race's depth cue passed on as fog and to Remix's volumetrics, placed at the level's far side from wherever the camera is (or at the game's own distances)
-- A Remix mod with emissive maps for fire, flames and car lights, and material overrides for water, glass and chrome
-- Works with NVIDIA's RTX Remix and with Remix Plus
-- Driving on the arrow keys, with the camera moved to the numpad; the game's own Controls screen can't do this
-- A patch for the game's own out-of-bounds crash in the tint-poly code when pressing ESC
-- F4 menu, with a Conversion switch that shows the game's own rendering for comparison
-
 All options are documented in `remix-comp-proxy.ini`.
 
 ## Requirements
 
-- Carmageddon 2: Carpocalypse Now (developed against the GOG version; no game files are included)
-- nGlide (included with the GOG version)
-- RTX Remix runtime: NVIDIA's RTX Remix, or Remix Plus 1.4 or newer. The proxy recognises which one it is running on
+- Carmageddon 2: Carpocalypse Now (developed against the GOG version; Steam version should also work)
+- nGlide (included with the GOG & Steam version)
+- RTX Remix runtime: NVIDIA's RTX Remix, or Remix Plus 1.4 or newer for dynamic Numos sky. The proxy recognises which one it is running on and choses accordingly. 
 
 ## Installing
 
-1. Install the RTX Remix runtime into the game folder, then rename its `d3d9.dll` to `d3d9_remix.dll`.
+1. Install the RTX Remix runtime into the game folder, then <b>rename its `d3d9.dll` to `d3d9_remix.dll`</b>.
 2. Copy everything from a release into the game folder: `d3d9.dll`, `remix-comp-proxy.ini`, `rtx.conf` and
    `.trex\bridge.conf`, which sets `exposeRemixApi = True` (the headlights are created through the Remix API).
    `carma2-rtx_README.txt` in the release has the details.
